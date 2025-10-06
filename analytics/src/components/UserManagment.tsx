@@ -128,17 +128,40 @@ interface UserLog {
   authProvider: string;
 }
 
+interface DeviceLog {
+  id: string;
+  user: string;
+  activity: string;
+  officeRoom: string;
+  outletSource: string;
+  applianceConnected: string;
+  timestamp: string;
+  userId?: string;
+  userRole?: string;
+}
+
 type Props = { 
   onNavigate?: (key: string) => void;
   currentView?: string;
 }
 
 const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) => {
+  // Helper function to format numbers with commas
+  const formatNumber = (num: number, decimals: number = 3): string => {
+    return num.toLocaleString('en-US', {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals
+    })
+  }
+
   const [searchTerm, setSearchTerm] = useState('');
   const [userLogsSearchTerm, setUserLogsSearchTerm] = useState('');
   const [userLogsFilter, setUserLogsFilter] = useState<'all' | 'day' | 'week' | 'month' | 'year'>('all');
   const [users, setUsers] = useState<User[]>([]);
   const [userLogs, setUserLogs] = useState<UserLog[]>([]);
+  const [deviceLogs, setDeviceLogs] = useState<DeviceLog[]>([]);
+  const [deviceLogsSearchTerm, setDeviceLogsSearchTerm] = useState('');
+  const [deviceLogsFilter, setDeviceLogsFilter] = useState<'all' | 'day' | 'week' | 'month' | 'year'>('all');
   const [modalOpen, setModalOpen] = useState(false);
   const [modalType, setModalType] = useState<'edit' | 'delete' | 'feedback' | null>(null);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
@@ -388,7 +411,7 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
           role: logData.userId ? getRoleFromUserId(logData.userId) : 'Unknown',
           action: logData.action || 'Unknown Action',
           timestamp: logData.timestamp || new Date().toISOString(),
-          status: logData.type === 'success' ? 'Success' : 'Failed',
+          status: (logData.type === 'success' || logData.type === 'info') ? 'Success' : 'Failed',
           authProvider: logData.authProvider || 'email'
         }));
         // Sort by timestamp (newest first)
@@ -401,6 +424,34 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
     onValue(userLogsRef, handleUserLogsValue);
     return () => off(userLogsRef, 'value', handleUserLogsValue);
   }, [users]);
+
+  // Fetch device logs data
+  useEffect(() => {
+    const deviceLogsRef = ref(realtimeDb, 'device_logs');
+    const handleDeviceLogsValue = (snapshot: any) => {
+      const data = snapshot.val();
+      if (data) {
+        const logsList: DeviceLog[] = Object.entries(data).map(([logId, logData]: any) => ({
+          id: logId,
+          user: logData.user || 'Unknown',
+          activity: logData.activity || 'Unknown Activity',
+          officeRoom: logData.officeRoom || 'Unknown',
+          outletSource: logData.outletSource || 'Unknown',
+          applianceConnected: logData.applianceConnected || 'Unknown',
+          timestamp: logData.timestamp || new Date().toISOString(),
+          userId: logData.userId,
+          userRole: logData.userRole
+        }));
+        // Sort by timestamp (newest first)
+        logsList.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+        setDeviceLogs(logsList);
+      } else {
+        setDeviceLogs([]);
+      }
+    };
+    onValue(deviceLogsRef, handleDeviceLogsValue);
+    return () => off(deviceLogsRef, 'value', handleDeviceLogsValue);
+  }, []);
 
   // Helper function to get user role from userId
   const getRoleFromUserId = (userId: string): string => {
@@ -503,6 +554,43 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
       log.role.toLowerCase().includes(userLogsSearchTerm.toLowerCase())
     ),
     userLogsFilter
+  );
+
+  // Helper function to filter device logs by time period
+  const filterDeviceLogsByTimePeriod = (logs: DeviceLog[], period: 'all' | 'day' | 'week' | 'month' | 'year'): DeviceLog[] => {
+    if (period === 'all') return logs;
+    
+    const now = new Date();
+    const logDate = new Date();
+    
+    return logs.filter(log => {
+      logDate.setTime(new Date(log.timestamp).getTime());
+      
+      switch (period) {
+        case 'day':
+          return logDate.toDateString() === now.toDateString();
+        case 'week':
+          const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+          return logDate >= weekAgo;
+        case 'month':
+          return logDate.getMonth() === now.getMonth() && logDate.getFullYear() === now.getFullYear();
+        case 'year':
+          return logDate.getFullYear() === now.getFullYear();
+        default:
+          return true;
+      }
+    });
+  };
+
+  const filteredDeviceLogs = filterDeviceLogsByTimePeriod(
+    deviceLogs.filter(log =>
+      log.user.toLowerCase().includes(deviceLogsSearchTerm.toLowerCase()) ||
+      log.activity.toLowerCase().includes(deviceLogsSearchTerm.toLowerCase()) ||
+      log.officeRoom.toLowerCase().includes(deviceLogsSearchTerm.toLowerCase()) ||
+      log.outletSource.toLowerCase().includes(deviceLogsSearchTerm.toLowerCase()) ||
+      log.applianceConnected.toLowerCase().includes(deviceLogsSearchTerm.toLowerCase())
+    ),
+    deviceLogsFilter
   );
 
   // Function to check if device should be active based on schedule
@@ -616,7 +704,7 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
       // If device has a power limit and today's energy exceeds it, don't activate
       if (powerLimit > 0 && todayTotalEnergy >= powerLimit) {
         console.log(`UserManagement: Schedule check - Device power limit exceeded:`, {
-          todayTotalEnergy: `${(todayTotalEnergy * 1000).toFixed(3)}W`,
+          todayTotalEnergy: `${formatNumber(todayTotalEnergy * 1000)}W`,
           powerLimit: `${(powerLimit * 1000)}W`,
           todayDateKey: todayDateKey,
           scheduleResult: false,
@@ -850,37 +938,58 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
                     <circle cx="11" cy="11" r="8" stroke="currentColor" strokeWidth="2"/>
                     <path d="m21 21-4.35-4.35" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
                   </svg>
-                  <input type="text" placeholder="Search device logs..." />
+                  <input 
+                    type="text" 
+                    placeholder="Search device logs..." 
+                    value={deviceLogsSearchTerm}
+                    onChange={(e) => setDeviceLogsSearchTerm(e.target.value)}
+                  />
+                </div>
+                <div className="um-filter-dropdown">
+                  <select 
+                    value={deviceLogsFilter}
+                    onChange={(e) => setDeviceLogsFilter(e.target.value as 'all' | 'day' | 'week' | 'month' | 'year')}
+                    className="um-filter-select"
+                  >
+                    <option value="all">All Time</option>
+                    <option value="day">Today</option>
+                    <option value="week">This Week</option>
+                    <option value="month">This Month</option>
+                    <option value="year">This Year</option>
+                  </select>
                 </div>
               </div>
             </div>
 
             <div className="um-table-container">
               <table className="um-table">
-                <thead>
-                  <tr>
-                    <th>User</th>
-                    <th>Activity</th>
-                    <th>Office/ Room</th>
-                    <th>Outlet/ Source</th>
-                    <th>Appliance Connected</th>
-                  </tr>
-                </thead>
+                    <thead>
+                      <tr>
+                        <th>User</th>
+                        <th>Activity</th>
+                        <th>Outlet/ Source</th>
+                        <th>Appliance Connected</th>
+                        <th>Timestamp</th>
+                      </tr>
+                    </thead>
                 <tbody>
-                  <tr>
-                    <td>John Karl Portugal</td>
-                    <td>Edit schedule</td>
-                    <td>Laboratory 1</td>
-                    <td>Outlet 1</td>
-                    <td>Aircon</td>
-                  </tr>
-                  <tr>
-                    <td>John Karl Portugal</td>
-                    <td>Turn off appliance</td>
-                    <td>Dean's office</td>
-                    <td>Outlet 2</td>
-                    <td>Printer</td>
-                  </tr>
+                  {filteredDeviceLogs.length > 0 ? (
+                    filteredDeviceLogs.map((log) => (
+                      <tr key={log.id}>
+                        <td>{log.user}</td>
+                        <td>{log.activity}</td>
+                        <td>{log.outletSource}</td>
+                        <td>{log.applianceConnected}</td>
+                        <td>{new Date(log.timestamp).toLocaleString()}</td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan={5} style={{ textAlign: 'center', padding: '2rem', color: '#6b7280' }}>
+                        {deviceLogs.length === 0 ? 'No device logs found' : 'No logs match your search criteria'}
+                      </td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>

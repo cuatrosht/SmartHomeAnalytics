@@ -20,7 +20,7 @@ function App() {
   const [userRole, setUserRole] = useState<'faculty' | 'admin'>('faculty')
   const [authView, setAuthView] = useState<'login' | 'signup'>('login')
   const [activeView, setActiveView] = useState<'dashboard' | 'setup' | 'schedule' | 'activeDevice' | 'reports' | 'users' | 'userLogs' | 'deviceLogs'>('dashboard')
-  const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [sidebarOpen, setSidebarOpen] = useState(true)
   const [isMobile, setIsMobile] = useState(false)
   const [showNotificationModal, setShowNotificationModal] = useState(false)
   const [notifications, setNotifications] = useState<Array<{
@@ -35,6 +35,26 @@ function App() {
     deviceId?: string
   }>>([])
   
+  // Handle sidebar state based on screen size
+  useEffect(() => {
+    const handleResize = () => {
+      const mobile = window.innerWidth <= 768
+      setIsMobile(mobile)
+      // On desktop, always show sidebar. On mobile, hide by default
+      if (!mobile) {
+        setSidebarOpen(true)
+      } else {
+        setSidebarOpen(false)
+      }
+    }
+
+    // Set initial state
+    handleResize()
+    
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [])
+
   // Helper function to check if notification should be created
   const shouldCreateNotification = (outletName: string, title: string) => {
     const now = Date.now()
@@ -1617,15 +1637,11 @@ function App() {
       />
       <main style={{
         flex:1, 
-        padding: isMobile ? '8px' : '16px', 
+        padding:16, 
         position:'relative', 
-        paddingTop: isMobile ? '60px' : '80px', 
+        paddingTop:80, 
         marginLeft: isMobile ? 0 : '260px',
-        transition: 'margin-left 0.3s ease',
-        width: isMobile ? '100vw' : 'calc(100vw - 260px)',
-        maxWidth: isMobile ? '100vw' : 'calc(100vw - 260px)',
-        overflowX: 'hidden',
-        boxSizing: 'border-box'
+        transition: 'margin-left 0.3s ease'
       }}>
         {/* Mobile menu toggle button */}
         {isMobile && (
@@ -1656,28 +1672,30 @@ function App() {
         
         <div style={{
           position:'absolute', 
-          top: isMobile ? 16 : 24, 
+          top:24, 
           right: isMobile ? 16 : 24, 
-          left: isMobile ? 60 : 'auto',
           display:'flex', 
           alignItems:'center', 
-          gap: isMobile ? 6 : 8,
-          zIndex: 1000
+          gap: isMobile ? 12 : 16,
+          marginLeft: isMobile ? 60 : 0,
+          zIndex: 1000,
+          flexWrap: 'nowrap'
         }}>
           {/* Notification Button */}
           <button
             style={{
               display: 'inline-grid',
               placeItems: 'center',
-              width: 36,
-              height: 36,
+              width: isMobile ? 32 : 36,
+              height: isMobile ? 32 : 36,
               background: '#0b3e86',
               color: '#ffffff',
               border: 'none',
               borderRadius: '50%',
               cursor: 'pointer',
               transition: 'all 0.2s ease',
-              position: 'relative'
+              position: 'relative',
+              flexShrink: 0
             }}
             onMouseEnter={(e) => {
               e.currentTarget.style.background = '#052f66'
@@ -1733,15 +1751,24 @@ function App() {
           </button>
           
           {/* Admin Profile Icon */}
-          <span style={{display:'inline-grid', placeItems:'center', width:36, height:36, background:'#0b3e86', color:'#fff', borderRadius:'50%'}}>
+          <span style={{
+            display:'inline-grid', 
+            placeItems:'center', 
+            width: isMobile ? 32 : 36, 
+            height: isMobile ? 32 : 36, 
+            background:'#0b3e86', 
+            color:'#fff', 
+            borderRadius:'50%',
+            flexShrink: 0
+          }}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
               <circle cx="12" cy="8" r="3.2" stroke="currentColor" strokeWidth="1.8"/>
               <path d="M4.5 20c1.8-3.5 5-5.3 7.5-5.3S17.7 16.5 19.5 20" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
             </svg>
           </span>
-          <div style={{lineHeight:1, display: isMobile ? 'none' : 'block'}}>
-            <div style={{fontWeight:800, color:'#0b3e86', fontSize: isMobile ? 14 : 18}}>{userName || 'User'}</div>
-            <div style={{fontSize: isMobile ? 11 : 13, color:'#4b5563'}}>{today}</div>
+          <div style={{lineHeight:1}}>
+            <div style={{fontWeight:800, color:'#0b3e86', fontSize:18}}>{userName || 'User'}</div>
+            <div style={{fontSize:13, color:'#4b5563'}}>{today}</div>
           </div>
         </div>
         {activeView === 'dashboard' && <Dashboard onNavigate={(key) => setActiveView(key as any)} />}
@@ -1765,9 +1792,9 @@ function App() {
             background: 'rgba(0, 0, 0, 0.5)',
             display: 'flex',
             alignItems: 'flex-start',
-            justifyContent: isMobile ? 'center' : 'flex-end',
+            justifyContent: 'flex-end',
             zIndex: 2000,
-            padding: isMobile ? '60px 16px 16px 16px' : '80px 24px 24px 24px'
+            padding: '80px 24px 24px 24px'
           }}
           onClick={() => setShowNotificationModal(false)}
         >
@@ -1776,9 +1803,8 @@ function App() {
               background: 'white',
               borderRadius: '12px',
               boxShadow: '0 20px 25px rgba(0, 0, 0, 0.1)',
-              width: isMobile ? '100%' : '400px',
-              maxWidth: isMobile ? '100%' : '400px',
-              maxHeight: isMobile ? '70vh' : '600px',
+              width: '400px',
+              maxHeight: '600px',
               overflow: 'hidden',
               display: 'flex',
               flexDirection: 'column'

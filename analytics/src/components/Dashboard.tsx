@@ -210,6 +210,14 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     return `day_${year}_${month}_${day}`
   }
 
+  // Helper function to format numbers with commas
+  const formatNumber = (num: number, decimals: number = 3): string => {
+    return num.toLocaleString('en-US', {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals
+    })
+  }
+
   // Function to check if device should be active based on schedule
   const isDeviceActiveBySchedule = (schedule: any, controlState: string, deviceData?: any, skipIndividualLimitCheck?: boolean): boolean => {
     // If no schedule exists, use control state
@@ -356,6 +364,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
   const [monthlyBill, setMonthlyBill] = useState(0)
   const [filteredDevices, setFilteredDevices] = useState<DeviceData[]>([])
   const [filteredDevicesRank, setFilteredDevicesRank] = useState<DeviceData[]>([])
+  const [overallConsumptionDevices, setOverallConsumptionDevices] = useState<DeviceData[]>([])
   const dropdownRef = useRef<HTMLDivElement | null>(null)
 
   // Philippine electricity rate (per kWh) - automatically updated
@@ -435,15 +444,18 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     return actualMonthlyEnergy * PHILIPPINE_RATE_PER_KWH
   }
 
-  // Calculate estimated monthly bill based on daily average consumption
+  // Calculate estimated monthly bill based on daily average consumption pattern
   const calculateMonthlyBill = async (devices: DeviceData[]) => {
     const now = new Date()
     const currentYear = now.getFullYear()
     const currentMonth = now.getMonth() + 1
     const daysInMonth = new Date(currentYear, currentMonth, 0).getDate()
+    const currentDay = now.getDate()
     
-    // Calculate daily average energy consumption
-    let totalDailyEnergy = 0
+    console.log(`🔍 Estimated monthly bill calculation: Processing ${currentYear}-${String(currentMonth).padStart(2, '0')} with ${daysInMonth} days (current day: ${currentDay})`)
+    console.log(`📅 Today is: ${now.toDateString()}`)
+    
+    let totalEnergySoFar = 0
     let daysWithData = 0
     
     try {
@@ -453,71 +465,61 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
       
       if (snapshot.exists()) {
         const devicesData = snapshot.val()
-        const monthPattern = `day_${currentYear}_${String(currentMonth).padStart(2, '0')}_`
         
-        // Calculate total energy for each day in the current month
+        console.log(`📊 Processing ${devices.length} filtered devices for estimated monthly bill calculation`)
+        
+        // Process each day in the current month to count days with data
         for (let day = 1; day <= daysInMonth; day++) {
           const dayStr = String(day).padStart(2, '0')
           const dateKey = `day_${currentYear}_${String(currentMonth).padStart(2, '0')}_${dayStr}`
           let dayEnergy = 0
           
+          // Process each filtered device for this day
           devices.forEach((device) => {
             const outletKey = device.outletId
             const outlet = devicesData[outletKey]
             
-            if (!outlet) return
+            if (!outlet || !outlet.daily_logs) return
             
-            const dailyLogs = outlet.daily_logs || {}
-            const dayData = dailyLogs[dateKey]
+            const dayData = outlet.daily_logs[dateKey]
             
             if (dayData) {
-              const measuredEnergy = dayData.total_energy || 0
-              const avgPower = dayData.avg_power || 0
-              const usageTimeHours = dayData.usage_time_hours || 0
-              
-              // Calculate expected energy from runtime
-              const expectedEnergy = (avgPower * usageTimeHours) / 1000
-              
-              // Use runtime verification to determine which energy value to use
-              let finalEnergy = measuredEnergy
-              
-              if (usageTimeHours > 0 && avgPower > 0) {
-                const energyDifference = Math.abs(measuredEnergy - expectedEnergy)
-                const accuracy = Math.min(measuredEnergy, expectedEnergy) / Math.max(measuredEnergy, expectedEnergy)
-                
-                if (accuracy < 0.95 && energyDifference > 0.1) {
-                  finalEnergy = expectedEnergy
-                }
-              }
-              
-              dayEnergy += finalEnergy
+              dayEnergy += dayData.total_energy || 0 // Already in kWh
             }
           })
           
           if (dayEnergy > 0) {
-            totalDailyEnergy += dayEnergy
+            totalEnergySoFar += dayEnergy
             daysWithData++
+            console.log(`📅 Day ${day}: Energy = ${dayEnergy.toFixed(6)} kWh`)
+          } else {
+            console.log(`📅 Day ${day}: No energy data`)
           }
         }
       }
     } catch (error) {
-      console.error('Error calculating daily average:', error)
+      console.error('❌ Error calculating estimated monthly bill:', error)
       // Fallback: use current day's data
-      const currentDayEnergy = devices.reduce((sum, device) => {
+      totalEnergySoFar = devices.reduce((sum, device) => {
         return sum + (device.total_energy || 0)
       }, 0)
-      totalDailyEnergy = currentDayEnergy
       daysWithData = 1
     }
     
-    // Calculate daily average
-    const dailyAverage = daysWithData > 0 ? totalDailyEnergy / daysWithData : 0
+    // Calculate daily average from days with actual data
+    const dailyAverage = daysWithData > 0 ? totalEnergySoFar / daysWithData : 0
     
-    // Estimate monthly bill based on daily average
+    // Estimate monthly bill based on daily average projected to full month
     const estimatedMonthlyEnergy = dailyAverage * daysInMonth
     const estimatedMonthlyBill = estimatedMonthlyEnergy * PHILIPPINE_RATE_PER_KWH
     
-    console.log(`Dashboard estimated monthly bill: Daily average = ${dailyAverage.toFixed(3)} kWh, Days in month = ${daysInMonth}, Estimated monthly energy = ${estimatedMonthlyEnergy.toFixed(3)} kWh, Estimated bill = PHP ${estimatedMonthlyBill.toFixed(2)}`)
+    console.log(`📊 Estimated monthly bill calculation results:`)
+    console.log(`   Total energy so far: ${totalEnergySoFar.toFixed(6)} kWh`)
+    console.log(`   Days with data: ${daysWithData}`)
+    console.log(`   Daily average: ${dailyAverage.toFixed(6)} kWh`)
+    console.log(`   Estimated monthly energy: ${estimatedMonthlyEnergy.toFixed(6)} kWh`)
+    console.log(`   Rate: ₱${PHILIPPINE_RATE_PER_KWH} per kWh`)
+    console.log(`   Estimated monthly bill: ₱${estimatedMonthlyBill.toFixed(2)}`)
     
     return estimatedMonthlyBill
   }
@@ -537,6 +539,12 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
   // Calculate total energy from all daily logs
   const calculateTotalEnergy = async () => {
     try {
+      // If no filtered devices, set to 0
+      if (overallConsumptionDevices.length === 0) {
+        setTotalLifetimeEnergy(0)
+        return
+      }
+
       const devicesRef = ref(realtimeDb, 'devices')
       const snapshot = await get(devicesRef)
       
@@ -548,8 +556,8 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
       const devicesData = snapshot.val()
       let totalLifetimeEnergy = 0
       
-      // Loop through filtered devices only
-      for (const device of filteredDevices) {
+      // Loop through filtered devices (respects department filter)
+      for (const device of overallConsumptionDevices) {
         const outletKey = device.outletId
         const deviceData = devicesData[outletKey]
         
@@ -585,6 +593,13 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
   // Calculate today's total energy and daily average
   const calculateTodayEnergyAndAverage = async () => {
     try {
+      // If no filtered devices, set to 0
+      if (overallConsumptionDevices.length === 0) {
+        setTodayTotalEnergy(0)
+        setDailyAverage(0)
+        return
+      }
+
       const devicesRef = ref(realtimeDb, 'devices')
       const snapshot = await get(devicesRef)
       
@@ -596,40 +611,97 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
       
       const devicesData = snapshot.val()
       const now = new Date()
+      const currentYear = now.getFullYear()
+      const currentMonth = now.getMonth() + 1
+      const currentDay = now.getDate()
       
-      // Helper function to get today's date key
-      const getTodayDateKey = () => {
-        const year = now.getFullYear()
-        const month = String(now.getMonth() + 1).padStart(2, '0')
-        const day = String(now.getDate()).padStart(2, '0')
-        return `day_${year}_${month}_${day}`
+      // Helper function to get date key
+      const getDateKey = (year: number, month: number, day: number) => {
+        return `day_${year}_${String(month).padStart(2, '0')}_${String(day).padStart(2, '0')}`
       }
       
-      const todayKey = getTodayDateKey()
+      const todayKey = getDateKey(currentYear, currentMonth, currentDay)
       let totalTodayEnergy = 0
+      let totalMonthlyEnergy = 0
+      let daysWithData = 0
       
-      // Sum today's energy from filtered devices only
-      for (const device of filteredDevices) {
+      // Calculate today's energy and monthly energy for daily average with runtime verification
+      for (const device of overallConsumptionDevices) {
         const outletKey = device.outletId
         const deviceData = devicesData[outletKey]
         
         if (!deviceData) continue
         
+        // Today's energy with runtime verification
         const todayLogs = deviceData?.daily_logs?.[todayKey]
-        const dayEnergy = todayLogs?.total_energy || 0 // Energy in kW
-        totalTodayEnergy += dayEnergy
+        if (todayLogs) {
+          const measuredEnergy = todayLogs.total_energy || 0 // Energy in kWh
+          const avgPower = todayLogs.avg_power || 0 // Average power in Wh
+          const usageTimeHours = todayLogs.usage_time_hours || 0 // Usage time in hours
+          
+          // Calculate expected energy from runtime
+          const expectedEnergy = (avgPower * usageTimeHours) / 1000
+          
+          // Use runtime verification
+          let finalTodayEnergy = measuredEnergy
+          if (usageTimeHours > 0 && avgPower > 0) {
+            const energyDifference = Math.abs(measuredEnergy - expectedEnergy)
+            const accuracy = Math.min(measuredEnergy, expectedEnergy) / Math.max(measuredEnergy, expectedEnergy)
+            
+            if (accuracy < 0.95 && energyDifference > 0.001) {
+              finalTodayEnergy = expectedEnergy
+            }
+          }
+          
+          totalTodayEnergy += finalTodayEnergy
+        }
+        
+        // Monthly energy for daily average calculation with runtime verification
+        for (let day = 1; day <= currentDay; day++) {
+          const dayKey = getDateKey(currentYear, currentMonth, day)
+          const dayLogs = deviceData?.daily_logs?.[dayKey]
+          
+          if (dayLogs) {
+            const measuredEnergy = dayLogs.total_energy || 0
+            const avgPower = dayLogs.avg_power || 0
+            const usageTimeHours = dayLogs.usage_time_hours || 0
+            
+            // Calculate expected energy from runtime
+            const expectedEnergy = (avgPower * usageTimeHours) / 1000
+            
+            // Use runtime verification
+            let finalDayEnergy = measuredEnergy
+            if (usageTimeHours > 0 && avgPower > 0) {
+              const energyDifference = Math.abs(measuredEnergy - expectedEnergy)
+              const accuracy = Math.min(measuredEnergy, expectedEnergy) / Math.max(measuredEnergy, expectedEnergy)
+              
+              if (accuracy < 0.95 && energyDifference > 0.001) {
+                finalDayEnergy = expectedEnergy
+              }
+            }
+            
+            if (finalDayEnergy > 0) {
+              totalMonthlyEnergy += finalDayEnergy
+              daysWithData++ // Count all days with data, not just current day
+            }
+          }
+        }
       }
       
-      // Calculate daily average (total energy / 24 hours)
-      const dailyAverageKw = totalTodayEnergy / 24
+      // Calculate daily average using the formula: Daily Average (Wh) = Total Energy Used for current month (Wh) ÷ Number of active days
+      const totalMonthlyEnergyWh = totalMonthlyEnergy * 1000 // Convert kWh to Wh
+      const dailyAverageWh = daysWithData > 0 ? totalMonthlyEnergyWh / daysWithData : 0
       
       // Convert to Watts and set states
       setTodayTotalEnergy(totalTodayEnergy * 1000) // Convert kW to W
-      setDailyAverage(dailyAverageKw * 1000) // Convert kW to W
+      setDailyAverage(dailyAverageWh) // Already in Wh
       
-      console.log('Today energy and daily average calculated:', {
-        todayTotalEnergy: `${(totalTodayEnergy * 1000).toFixed(3)} W`,
-        dailyAverage: `${(dailyAverageKw * 1000).toFixed(3)} W`,
+      console.log('Daily Average Calculation (Updated Formula):', {
+        totalMonthlyEnergyKwh: `${totalMonthlyEnergy.toFixed(6)} kWh`,
+        totalMonthlyEnergyWh: `${totalMonthlyEnergyWh.toFixed(3)} Wh`,
+        activeDays: daysWithData,
+        dailyAverageWh: `${dailyAverageWh.toFixed(3)} Wh`,
+        formula: `Daily Average = ${totalMonthlyEnergyWh.toFixed(3)} Wh ÷ ${daysWithData} days = ${dailyAverageWh.toFixed(3)} Wh`,
         todayKey: todayKey,
         department: department,
         filteredDevicesCount: filteredDevices.length
@@ -645,6 +717,12 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
   // Calculate current month's total energy from daily logs
   const calculateCurrentMonthEnergy = async () => {
     try {
+      // If no filtered devices, set to 0
+      if (overallConsumptionDevices.length === 0) {
+        setMonthlyEnergy(0)
+        return
+      }
+
       const devicesRef = ref(realtimeDb, 'devices')
       const snapshot = await get(devicesRef)
       
@@ -671,20 +749,24 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
       // Get all days in current month
       const daysInMonth = new Date(currentYear, currentMonth, 0).getDate()
       
-      // Loop through filtered devices only
-      for (const device of filteredDevices) {
+      // Loop through filtered devices (respects department filter)
+      for (const device of overallConsumptionDevices) {
         const outletKey = device.outletId
         const deviceData = devicesData[outletKey]
         
         if (!deviceData) continue
         
-        // Sum energy for all days in current month
+        // Sum energy for all days in current month (only days with actual data)
         for (let day = 1; day <= daysInMonth; day++) {
           const date = new Date(currentYear, currentMonth - 1, day)
           const dateKey = getDateKey(date)
           const dayLogs = deviceData?.daily_logs?.[dateKey]
           const dayEnergy = dayLogs?.total_energy || 0 // Energy in kW
-          totalMonthlyEnergy += dayEnergy
+          
+          // Only add energy if there's actual data for this day
+          if (dayEnergy > 0) {
+            totalMonthlyEnergy += dayEnergy
+          }
         }
       }
       
@@ -1349,7 +1431,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
   const deviceUsage = filteredDevices.map(device => {
     // total_energy is today's energy from daily_logs, already in kW from database, convert to W for display
     const todayEnergyKw = device.total_energy
-    const usageDisplay = `${(todayEnergyKw * 1000).toFixed(3)} Wh`
+    const usageDisplay = `${formatNumber(todayEnergyKw * 1000)} Wh`
     
     return {
       name: `Outlet ${device.outletId.split('_')[1]}`,
@@ -1368,75 +1450,86 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     'Faculty Office'
   ]
 
-  // Filter devices based on selected department and time period
+  // Filter devices based on selected department (for Overall Consumption metrics)
   useEffect(() => {
-    const updateFilteredDevices = async () => {
     let filteredByOffice = devices
     
-    // First filter by office selection
+    // Filter by office selection
     if (department !== 'College of Computer and Multimedia Studies') {
       filteredByOffice = devices.filter(device => device.officeRoom === department)
     }
     
-    // Then apply time period filtering if a specific period is selected
-    if (selectedFilter1 !== 'Filter') {
+    // Set filtered devices for Overall Consumption metrics (department only)
+    const sorted = [...filteredByOffice].sort((a, b) => {
+      const outletNumA = parseInt(a.outletId.split('_')[1]) || 0
+      const outletNumB = parseInt(b.outletId.split('_')[1]) || 0
+      return outletNumA - outletNumB
+    })
+    setOverallConsumptionDevices(sorted)
+  }, [department, devices])
+
+  // Filter devices for Energy Consumption tables (department + time period)
+  useEffect(() => {
+    const updateEnergyConsumptionTables = async () => {
+      let filteredByOffice = devices
+      
+      // First filter by office selection
+      if (department !== 'College of Computer and Multimedia Studies') {
+        filteredByOffice = devices.filter(device => device.officeRoom === department)
+      }
+      
+      // Apply time period filtering for Per Device Consumption table
+      if (selectedFilter1 !== 'Day') {
         const timeFiltered = await filterDevicesByPeriod(filteredByOffice, selectedFilter1)
-      // Sort by outlet number (1, 2, 3, 4, 5...) for Per Device Consumption table
-      const sorted = [...timeFiltered].sort((a, b) => {
-        const outletNumA = parseInt(a.outletId.split('_')[1]) || 0
-        const outletNumB = parseInt(b.outletId.split('_')[1]) || 0
-        return outletNumA - outletNumB
-      })
-      setFilteredDevices(sorted)
-    } else {
-      // Sort by outlet number when no time filter is applied
-      const sorted = [...filteredByOffice].sort((a, b) => {
-        const outletNumA = parseInt(a.outletId.split('_')[1]) || 0
-        const outletNumB = parseInt(b.outletId.split('_')[1]) || 0
-        return outletNumA - outletNumB
-      })
-      setFilteredDevices(sorted)
-    }
-    
-    if (selectedFilter2 !== 'Filter') {
+        const sorted = [...timeFiltered].sort((a, b) => {
+          const outletNumA = parseInt(a.outletId.split('_')[1]) || 0
+          const outletNumB = parseInt(b.outletId.split('_')[1]) || 0
+          return outletNumA - outletNumB
+        })
+        setFilteredDevices(sorted)
+      } else {
+        // Use department-filtered devices for Day filter
+        const sorted = [...filteredByOffice].sort((a, b) => {
+          const outletNumA = parseInt(a.outletId.split('_')[1]) || 0
+          const outletNumB = parseInt(b.outletId.split('_')[1]) || 0
+          return outletNumA - outletNumB
+        })
+        setFilteredDevices(sorted)
+      }
+      
+      // Apply time period filtering for Usage Rank table
+      if (selectedFilter2 !== 'Day') {
         const timeFiltered = await filterDevicesByPeriod(filteredByOffice, selectedFilter2)
-      // Sort by consumption (highest to lowest) for Usage Rank table
-      const sorted = [...timeFiltered].sort((a, b) => {
-        return b.total_energy - a.total_energy
-      })
-      setFilteredDevicesRank(sorted)
-    } else {
-      // Sort by consumption when no time filter is applied
-      const sorted = [...filteredByOffice].sort((a, b) => {
-        return b.total_energy - a.total_energy
-      })
-      setFilteredDevicesRank(sorted)
-    }
+        const sorted = [...timeFiltered].sort((a, b) => {
+          return b.total_energy - a.total_energy
+        })
+        setFilteredDevicesRank(sorted)
+      } else {
+        // Use department-filtered devices for Day filter
+        const sorted = [...filteredByOffice].sort((a, b) => {
+          return b.total_energy - a.total_energy
+        })
+        setFilteredDevicesRank(sorted)
+      }
     }
     
-    updateFilteredDevices()
+    updateEnergyConsumptionTables()
   }, [department, devices, selectedFilter1, selectedFilter2])
 
-  // Calculate current month energy when filtered devices change
+  // Calculate current month energy when overall consumption devices change (respects department filter only)
   useEffect(() => {
-    if (filteredDevices.length > 0) {
-      calculateCurrentMonthEnergy()
-    }
-  }, [filteredDevices])
+    calculateCurrentMonthEnergy()
+  }, [overallConsumptionDevices])
 
-  // Calculate total energy when filtered devices change
+  // Calculate total energy when overall consumption devices change (respects department filter only)
   useEffect(() => {
-    if (filteredDevices.length > 0) {
-      calculateTotalEnergy()
-    }
-  }, [filteredDevices])
+    calculateTotalEnergy()
+  }, [overallConsumptionDevices])
 
-  // Calculate today's energy and daily average when filtered devices change
+  // Calculate today's energy and daily average when overall consumption devices change (respects department filter only)
   useEffect(() => {
-    if (filteredDevices.length > 0) {
-      calculateTodayEnergyAndAverage()
-    }
-  }, [filteredDevices])
+    calculateTodayEnergyAndAverage()
+  }, [overallConsumptionDevices])
 
 
   // Recalculate stats when filtered devices change
@@ -1460,12 +1553,13 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     }
   }, [filteredDevices])
 
-  // Calculate current and monthly bills when devices or rate changes
+  // Calculate current and monthly bills when overall consumption devices or rate changes
   useEffect(() => {
     const calculateBills = async () => {
-      if (filteredDevices.length > 0) {
-        const currentBillValue = await calculateCurrentBill(filteredDevices)
-        const monthlyBillValue = await calculateMonthlyBill(filteredDevices)
+      if (overallConsumptionDevices.length > 0) {
+        // Use overall consumption devices for bill calculations (respects department filter only)
+        const currentBillValue = await calculateCurrentBill(overallConsumptionDevices)
+        const monthlyBillValue = await calculateMonthlyBill(overallConsumptionDevices)
         setCurrentBill(currentBillValue)
         setMonthlyBill(monthlyBillValue)
       } else {
@@ -1475,7 +1569,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     }
     
     calculateBills()
-  }, [filteredDevices, currentRate])
+  }, [overallConsumptionDevices, currentRate])
 
   useEffect(() => {
     const onDocClick = (e: MouseEvent) => {
@@ -1548,18 +1642,18 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
         <header className="panel-head">
           <span className="bolt" aria-hidden="true">⚡</span>
           <h2>Overall Consumption</h2>
-          {department !== 'College of Computer and Multimedia Studies' && (
-            <p className="panel-subtitle">
-              Showing data for {department} ({filteredDevices.length} devices)
-              {selectedFilter1 !== 'Filter' && ` • ${selectedFilter1} period`}
-            </p>
-          )}
+          <p className="panel-subtitle">
+            {department === 'College of Computer and Multimedia Studies' 
+              ? `Showing data for all offices (${overallConsumptionDevices.length} devices)`
+              : `Showing data for ${department} (${overallConsumptionDevices.length} devices)`
+            }
+          </p>
         </header>
         <div className="stats-grid">
           <article className="stat-card stat-accent">
             <div className="stat-title">CURRENT USAGE THIS MONTH</div>
             <div className="stat-value">
-              {monthlyEnergy.toFixed(3)}
+              {formatNumber(monthlyEnergy)}
             </div>
             <div className="stat-unit">Wh</div>
             <div className="stat-badge up">↑ This Month</div>
@@ -1567,13 +1661,13 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
           <article className="stat-card">
             <div className="stat-title">DAILY AVERAGE</div>
             <div className="stat-value">
-              {dailyAverage.toFixed(3)}
+              {formatNumber(dailyAverage)}
             </div>
             <div className="stat-unit">Wh</div>
           </article>
           <article className="stat-card">
             <div className="stat-title">CURRENT RATE</div>
-            <div className="stat-value">₱{PHILIPPINE_RATE_PER_KWH.toFixed(2)}</div>
+            <div className="stat-value">₱{formatNumber(PHILIPPINE_RATE_PER_KWH, 2)}</div>
             <div className="stat-unit">per kWh</div>
             {lastRateUpdate && (
               <div className="stat-badge" style={{ fontSize: '10px', marginTop: '4px' }}>
@@ -1593,7 +1687,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
           </div>
           <div className="mini-main">
             <div className="mini-title">
-              {totalLifetimeEnergy.toFixed(3)} Wh
+              {formatNumber(totalLifetimeEnergy)} Wh
             </div>
             <div className="mini-sub">Total Energy Usage</div>
           </div>
@@ -1610,7 +1704,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
           </div>
           <div className="mini-main">
             <div className="mini-title">
-              {(totalEnergy * 1000).toFixed(3)} Wh
+              {formatNumber(totalEnergy * 1000)} Wh
             </div>
             <div className="mini-sub">Today Consumption</div>
           </div>
@@ -1624,7 +1718,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
             </svg>
           </div>
           <div className="mini-main">
-            <div className="mini-title">₱{monthlyBill.toFixed(2)}</div>
+            <div className="mini-title">₱{formatNumber(monthlyBill, 2)}</div>
             <div className="mini-sub">Estimated Monthly Bill</div>
           </div>
           <div className="mini-badge">Based on current consumption</div>
@@ -1650,40 +1744,29 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                     <path d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
                   </svg>
-                                      <span>
-                      {selectedFilter1 === 'Filter' ? 'Filter' : 
-                       selectedFilter1 === 'Day' ? getCurrentTimeLabel().day :
-                       selectedFilter1 === 'Week' ? getCurrentTimeLabel().week :
-                       selectedFilter1 === 'Month' ? getCurrentTimeLabel().month :
-                       selectedFilter1 === 'Year' ? getCurrentTimeLabel().year : 'Filter'
-                      }
+                                        <span>
+                       {selectedFilter1 === 'Day' ? getCurrentTimeLabel().day :
+                        selectedFilter1 === 'Week' ? getCurrentTimeLabel().week :
+                        selectedFilter1 === 'Month' ? getCurrentTimeLabel().month :
+                        selectedFilter1 === 'Year' ? getCurrentTimeLabel().year : 'Day'
+                       }
                     </span>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ transform: filterOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform .2s ease' }}>
                     <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
                   </svg>
                 </button>
-                                  {filterOpen && (
-                    <div className="filter-dropdown-menu">
-                      <button 
-                        className={`filter-option ${selectedFilter1 === 'Filter' ? 'active' : ''}`} 
-                        type="button"
-                        onClick={() => {
-                          setSelectedFilter1('Filter')
-                          setFilterOpen(false)
-                        }}
-                      >
-                        All Data
-                      </button>
-                      <button 
-                        className={`filter-option ${selectedFilter1 === 'Day' ? 'active' : ''}`} 
-                        type="button"
-                        onClick={() => {
-                          setSelectedFilter1('Day')
-                          setFilterOpen(false)
-                        }}
-                      >
-                        Day
-                      </button>
+                                    {filterOpen && (
+                      <div className="filter-dropdown-menu">
+                        <button 
+                          className={`filter-option ${selectedFilter1 === 'Day' ? 'active' : ''}`} 
+                          type="button"
+                          onClick={() => {
+                            setSelectedFilter1('Day')
+                            setFilterOpen(false)
+                          }}
+                        >
+                          Day
+                        </button>
                       <button 
                         className={`filter-option ${selectedFilter1 === 'Week' ? 'active' : ''}`} 
                         type="button"
@@ -1737,7 +1820,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                         <td>{(index + 1).toString().padStart(3, '0')}</td>
                         <td>{device.outletId.split('_')[1]}</td>
                         <td>{device.appliances}</td>
-                        <td>{(device.total_energy * 1000).toFixed(3)} Wh</td>
+                        <td>{formatNumber(device.total_energy * 1000)} Wh</td>
                         <td>{device.officeRoom}</td>
                         <td>
                           {getStatusBadge(device.status)}
@@ -1747,7 +1830,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                   ) : (
                     <tr>
                       <td colSpan={6} className="no-data-message">
-                        {selectedFilter1 === 'Filter' ? 'No devices found' : `No data available for ${selectedFilter1.toLowerCase()} period`}
+                         {`No data available for ${selectedFilter1.toLowerCase()} period`}
                       </td>
                     </tr>
                   )}
@@ -1766,40 +1849,29 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                     <path d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
                   </svg>
-                                      <span>
-                      {selectedFilter2 === 'Filter' ? 'Filter' : 
-                       selectedFilter2 === 'Day' ? getCurrentTimeLabel().day :
-                       selectedFilter2 === 'Week' ? getCurrentTimeLabel().week :
-                       selectedFilter2 === 'Month' ? getCurrentTimeLabel().month :
-                       selectedFilter2 === 'Year' ? getCurrentTimeLabel().year : 'Filter'
-                      }
+                                        <span>
+                       {selectedFilter2 === 'Day' ? getCurrentTimeLabel().day :
+                        selectedFilter2 === 'Week' ? getCurrentTimeLabel().week :
+                        selectedFilter2 === 'Month' ? getCurrentTimeLabel().month :
+                        selectedFilter2 === 'Year' ? getCurrentTimeLabel().year : 'Day'
+                       }
                     </span>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ transform: filterOpen2 ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform .2s ease' }}>
                     <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
                   </svg>
                 </button>
-                                  {filterOpen2 && (
-                    <div className="filter-dropdown-menu">
-                      <button 
-                        className={`filter-option ${selectedFilter2 === 'Filter' ? 'active' : ''}`} 
-                        type="button"
-                        onClick={() => {
-                          setSelectedFilter2('Filter')
-                          setFilterOpen2(false)
-                        }}
-                      >
-                        All Data
-                      </button>
-                      <button 
-                        className={`filter-option ${selectedFilter2 === 'Day' ? 'active' : ''}`} 
-                        type="button"
-                        onClick={() => {
-                          setSelectedFilter2('Day')
-                          setFilterOpen2(false)
-                        }}
-                      >
-                        Day
-                      </button>
+                                    {filterOpen2 && (
+                      <div className="filter-dropdown-menu">
+                        <button 
+                          className={`filter-option ${selectedFilter2 === 'Day' ? 'active' : ''}`} 
+                          type="button"
+                          onClick={() => {
+                            setSelectedFilter2('Day')
+                            setFilterOpen2(false)
+                          }}
+                        >
+                          Day
+                        </button>
                       <button 
                         className={`filter-option ${selectedFilter2 === 'Week' ? 'active' : ''}`} 
                         type="button"
@@ -1855,7 +1927,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                         <td>{index + 1}</td>
                         <td>{device.outletId.split('_')[1]}</td>
                         <td>{device.appliances}</td>
-                        <td>{(device.total_energy * 1000).toFixed(3)} Wh</td>
+                        <td>{formatNumber(device.total_energy * 1000)} Wh</td>
                         <td>{device.officeRoom}</td>
                         <td>
                           {getStatusBadge(device.status)}
@@ -1865,7 +1937,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                   ) : (
                     <tr>
                       <td colSpan={6} className="no-data-message">
-                        {selectedFilter2 === 'Filter' ? 'No devices found' : `No data available for ${selectedFilter2.toLowerCase()} period`}
+                         {`No data available for ${selectedFilter2.toLowerCase()} period`}
                       </td>
                     </tr>
                   )}
@@ -1945,7 +2017,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                             label: function(context) {
                               const value = context.parsed.y
                                 // Data is already in watts
-                                return `Energy Usage: ${value.toFixed(3)} Wh`
+                                return `Energy Usage: ${formatNumber(value)} Wh`
                             }
                           }
                         }
@@ -2078,7 +2150,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                         label: function(context) {
                           const value = context.parsed.y
                           const label = context.dataset.label || ''
-                          return `${label}: ${value.toFixed(3)} Wh`
+                          return `${label}: ${formatNumber(value)} Wh`
                         }
                       }
                       }
@@ -2178,7 +2250,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                 <div key={index} className="dashboard-device-item">
                   <div className="dashboard-device-info">
                     <span className="dashboard-device-name">{device.name}</span>
-                    <span className="dashboard-device-usage">{device.usageDisplay} ({device.percentage.toFixed(1)}%)</span>
+                    <span className="dashboard-device-usage">{device.usageDisplay} ({formatNumber(device.percentage, 1)}%)</span>
                   </div>
                   <div className="dashboard-progress-bar">
                     <div className="dashboard-progress-fill" style={{ width: `${device.percentage}%` }}></div>
@@ -2252,7 +2324,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                           callbacks: {
                             label: function(context) {
                               const value = context.parsed.y
-                              return `Energy Usage: ${value.toFixed(3)} W`
+                              return `Energy Usage: ${formatNumber(value)} W`
                             }
                           }
                         }
@@ -2386,7 +2458,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                         label: function(context) {
                           const value = context.parsed.y
                           const label = context.dataset.label || ''
-                          return `${label}: ${value.toFixed(3)} Wh`
+                          return `${label}: ${formatNumber(value)} Wh`
                         }
                       }
                       }

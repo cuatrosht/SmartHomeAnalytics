@@ -1,7 +1,16 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { ref, onValue, off, update, remove, get } from 'firebase/database'
 import { realtimeDb } from '../firebase/config'
+import { logCombinedLimitActivity, logIndividualLimitActivity, logScheduleActivity, logDeviceControlActivity } from '../utils/deviceLogging'
 import './SetUp.css'
+
+// Helper function to format numbers with commas
+const formatNumber = (num: number, decimals: number = 3): string => {
+  return num.toLocaleString('en-US', {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals
+  })
+}
 
 // Function to calculate monthly energy for a device
 const calculateMonthlyEnergy = (outlet: any): string => {
@@ -24,7 +33,7 @@ const calculateMonthlyEnergy = (outlet: any): string => {
     }
     
     // Convert to watts and format
-    return `${(totalMonthlyEnergy * 1000).toFixed(3)} Wh`
+    return `${formatNumber(totalMonthlyEnergy * 1000)} Wh`
   } catch (error) {
     console.error('Error calculating monthly energy:', error)
     return '0.000 Wh'
@@ -470,8 +479,8 @@ function SuccessModal({
 
   return (
     <div className="modal-overlay success-overlay" onClick={onClose}>
-      <div className="success-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="success-icon">
+      <div className="setup-success-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="setup-success-icon">
           <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
             <circle cx="12" cy="12" r="10" fill="#10b981" stroke="#10b981" strokeWidth="2"/>
             <path d="M9 12l2 2 4-4" stroke="#ffffff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/>
@@ -539,8 +548,8 @@ function DeleteSuccessModal({
 
   return (
     <div className="modal-overlay success-overlay" onClick={onClose}>
-      <div className="success-modal delete-success-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="success-icon delete-success-icon">
+      <div className="setup-delete-success-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="setup-delete-success-icon">
           <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
             <circle cx="12" cy="12" r="10" fill="#10b981" stroke="#10b981" strokeWidth="2"/>
             <path d="M9 12l2 2 4-4" stroke="#ffffff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/>
@@ -596,7 +605,7 @@ function NoPowerLimitWarningModal({
     title = 'Power Limit Exceeded!'
     message = `"${device.outletName}" cannot be turned ON because today's energy consumption has exceeded the power limit.`
     statusLabel = 'Today\'s Energy:'
-    statusValue = `${((device as any).todayTotalEnergy * 1000)?.toFixed(3) || '0.000'} Wh`
+    statusValue = `${formatNumber(((device as any).todayTotalEnergy * 1000) || 0)} Wh`
     actionLabel = 'Power Limit:'
     actionValue = `${((device as any).powerLimit * 1000) || '0'} Wh`
     warningMessage = 'Today\'s total energy consumption has reached or exceeded the daily power limit. The device cannot be activated until tomorrow or the power limit is increased.'
@@ -753,11 +762,11 @@ function MonthlyLimitWarningModal({
           <div className="monthly-limit-details">
             <div className="limit-stat">
               <span className="label">Current Monthly Energy:</span>
-              <span className="value">{currentMonthlyEnergy ? `${(currentMonthlyEnergy / 1000).toFixed(3)} kW` : 'N/A'}</span>
+              <span className="value">{currentMonthlyEnergy ? `${formatNumber(currentMonthlyEnergy / 1000)} kW` : 'N/A'}</span>
             </div>
             <div className="limit-stat">
               <span className="label">Monthly Limit:</span>
-              <span className="value">{combinedLimit ? `${(combinedLimit / 1000).toFixed(3)} kW` : 'N/A'}</span>
+              <span className="value">{combinedLimit ? `${formatNumber(combinedLimit / 1000)} kW` : 'N/A'}</span>
             </div>
             <div className="limit-stat">
               <span className="label">Date:</span>
@@ -931,9 +940,23 @@ function EditDeviceModal({
         enabled: device.status === 'Active' || device.status === 'Warning' // Set enabled based on current status
       })
       
-      // Set checkbox states based on power limit value
-      setEnablePowerLimit(powerLimitValue !== 'No Limit')
-      setEnableScheduling(powerLimitValue === 'No Limit')
+      // Set checkbox states based on power limit value and device state
+      // If power limit is "No Limit", enable scheduling and disable power limit
+      // If power limit has a value, enable power limit and disable scheduling
+      const hasPowerLimit = Boolean(powerLimitValue && powerLimitValue !== 'No Limit' && powerLimitValue !== '0' && powerLimitValue !== '')
+      const isNoLimit = Boolean(powerLimitValue === 'No Limit' || powerLimitValue === '0' || powerLimitValue === '')
+      
+      setEnablePowerLimit(hasPowerLimit)
+      setEnableScheduling(isNoLimit)
+      
+      console.log('EditDeviceModal: Device data mapping:', {
+        device: device.outletName,
+        powerLimitValue,
+        hasPowerLimit,
+        isNoLimit,
+        enablePowerLimit: hasPowerLimit,
+        enableScheduling: isNoLimit
+      })
       
       setErrors({})
     }
@@ -1168,7 +1191,7 @@ function EditDeviceModal({
         })
         console.log('Edit modal: Control state update result:', controlUpdate)
 
-        // Update office information
+        // Update office information with scheduling settings
         const officeRef = ref(realtimeDb, `devices/${outletKey}/office_info`)
         if (formData.officeRoom.trim()) {
           // Map display names back to database values
@@ -1182,21 +1205,36 @@ function EditDeviceModal({
           
           const officeValue = officeMapping[formData.officeRoom] || formData.officeRoom
           console.log('Edit modal: Updating office info at path:', `devices/${outletKey}/office_info`)
+          console.log('Edit modal: Scheduling settings:', { enableScheduling, enablePowerLimit })
           
           const officeUpdate = await update(officeRef, {
             office: officeValue,
-            assigned_date: new Date().toISOString()
+            assigned_date: new Date().toISOString(),
+            enable_power_scheduling: enableScheduling // ✅ Update scheduling setting
           })
           console.log('Edit modal: Office update result:', officeUpdate)
         } else {
-          // Clear office assignment
+          // Clear office assignment but keep scheduling setting
           console.log('Edit modal: Clearing office info at path:', `devices/${outletKey}/office_info`)
-          const officeUpdate = await update(officeRef, {})
+          const officeUpdate = await update(officeRef, {
+            enable_power_scheduling: enableScheduling // ✅ Update scheduling setting
+          })
           console.log('Edit modal: Office update result:', officeUpdate)
         }
 
         
         console.log('Edit modal: Database updates completed successfully!')
+        
+        // Log the individual limit activity
+        const activity = 'Edit individual limit'
+        const limitValue = formData.powerLimit === 'No Limit' ? 'No Limit' : formData.powerLimit
+        await logIndividualLimitActivity(
+          activity,
+          device.outletName,
+          limitValue,
+          formData.officeRoom || device.officeRoom || 'Unknown',
+          device.appliances || 'Unknown'
+        )
         
         // Create updated device object
         const updatedDevice: Device & { enableScheduling: boolean; enablePowerLimit: boolean } = {
@@ -1438,11 +1476,20 @@ function EditDeviceModal({
                   type="checkbox"
                   checked={enableScheduling}
                   onChange={(e) => {
-                    setEnableScheduling(e.target.checked)
-                    // Auto-set device control to OFF when only scheduling is enabled (no power limit)
-                    if (e.target.checked && !enablePowerLimit) {
-                      setFormData(prev => ({ ...prev, enabled: false }))
+                    const isChecked = e.target.checked
+                    setEnableScheduling(isChecked)
+                    
+                    // If enabling scheduling, disable power limit and set power limit to "No Limit"
+                    if (isChecked) {
+                      setEnablePowerLimit(false)
+                      setFormData(prev => ({ 
+                        ...prev, 
+                        powerLimit: 'No Limit',
+                        enabled: false // Auto-set device control to OFF when only scheduling is enabled
+                      }))
                     }
+                    
+                    console.log('Enable Scheduling changed:', isChecked)
                   }}
                   className="checkbox-input"
                 />
@@ -1461,17 +1508,27 @@ function EditDeviceModal({
                   type="checkbox"
                   checked={enablePowerLimit}
                   onChange={(e) => {
-                    setEnablePowerLimit(e.target.checked)
-                    if (!e.target.checked && enableScheduling) {
-                      // If power limit is unchecked and scheduling is checked, set power limit to "No Limit"
-                      setFormData(prev => ({ ...prev, powerLimit: 'No Limit' }))
-                      setFormData(prev => ({ ...prev, enabled: false })) // Auto-set to OFF when power limit is disabled
-                    } else if (e.target.checked && formData.powerLimit === 'No Limit') {
-                      // If power limit is checked and current value is "No Limit", clear it
-                      setFormData(prev => ({ ...prev, powerLimit: '' }))
-                    } else if (!e.target.checked) {
-                      setFormData(prev => ({ ...prev, enabled: false })) // Auto-set to OFF when power limit is disabled
+                    const isChecked = e.target.checked
+                    setEnablePowerLimit(isChecked)
+                    
+                    if (isChecked) {
+                      // If enabling power limit, disable scheduling
+                      setEnableScheduling(false)
+                      // Clear the power limit field to allow user to enter new value
+                      if (formData.powerLimit === 'No Limit') {
+                        setFormData(prev => ({ ...prev, powerLimit: '' }))
+                      }
+                    } else {
+                      // If disabling power limit, enable scheduling and set to "No Limit"
+                      setEnableScheduling(true)
+                      setFormData(prev => ({ 
+                        ...prev, 
+                        powerLimit: 'No Limit',
+                        enabled: false // Auto-set to OFF when power limit is disabled
+                      }))
                     }
+                    
+                    console.log('Enable Power Limit changed:', isChecked)
                   }}
                   className="checkbox-input"
                 />
@@ -1695,7 +1752,8 @@ function CombinedLimitModal({
   const validateForm = () => {
     const newErrors: Record<string, string> = {}
     
-    if (selectedOutlets.length === 0) {
+    // Only require outlets when creating a new combined limit, not when editing (allowing disable)
+    if (!existingData && selectedOutlets.length === 0) {
       newErrors.outlets = 'Please select at least one outlet'
     }
     
@@ -1966,7 +2024,7 @@ function CombinedLimitModal({
             <button
               type="submit"
               className="btn-primary"
-              disabled={selectedOutlets.length === 0 || !combinedLimit}
+              disabled={!existingData && (selectedOutlets.length === 0 || !combinedLimit)}
             >
               {existingData && existingData.enabled ? 'Update Combined Limit' : 'Set Combined Limit'}
             </button>
@@ -1995,9 +2053,9 @@ function CombinedLimitSuccessModal({
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content success-modal" onClick={(e) => e.stopPropagation()}>
+      <div className="setup-combined-limit-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
-          <div className="success-icon">
+          <div className="setup-combined-limit-icon">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
               <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
             </svg>
@@ -2255,11 +2313,13 @@ function AddDeviceModal({ isOpen, onClose, onSave }: AddDeviceModalProps) {
         // Add office information to the existing outlet
         const officeRef = ref(realtimeDb, `devices/${formData.deviceType}/office_info`)
         console.log('Updating office info at path:', `devices/${formData.deviceType}/office_info`)
+        console.log('Add device: Scheduling settings:', { enableScheduling, enablePowerLimit })
         
         const officeUpdate = await update(officeRef, {
           office: formData.office,
           assigned_date: new Date().toISOString(),
-          appliance: formData.appliance
+          appliance: formData.appliance,
+          enable_power_scheduling: enableScheduling // ✅ Update scheduling setting
         })
         console.log('Office update result:', officeUpdate)
 
@@ -2628,6 +2688,7 @@ const getAutomaticStatus = (powerUsage: string, limit: string): 'Active' | 'Inac
 }
 
 // Helper function to check if device should be active based on schedule
+// Copied from ActiveDevice.tsx - working version
 const isDeviceActiveBySchedule = (schedule: any, controlState: string, deviceData?: any, skipIndividualLimitCheck?: boolean): boolean => {
   // If no schedule exists, use control state
   if (!schedule || (!schedule.timeRange && !schedule.startTime)) {
@@ -2642,13 +2703,6 @@ const isDeviceActiveBySchedule = (schedule: any, controlState: string, deviceDat
   const now = new Date()
   const currentTime = now.getHours() * 60 + now.getMinutes() // Convert to minutes
   const currentDay = now.getDay() // 0 = Sunday, 1 = Monday, etc.
-  
-  console.log(`SetUp: Schedule check at ${now.toLocaleTimeString()}:`, {
-    currentTime: `${Math.floor(currentTime / 60)}:${String(currentTime % 60).padStart(2, '0')}`,
-    currentTimeMinutes: currentTime,
-    currentDay: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][currentDay],
-    schedule: schedule
-  })
 
   // Parse schedule time range
   let startTime: number, endTime: number
@@ -2672,45 +2726,34 @@ const isDeviceActiveBySchedule = (schedule: any, controlState: string, deviceDat
       if (hours === 12) {
         hours = 0
       }
-      
       if (modifier === 'PM') {
         hours += 12
       }
       
       return hours * 60 + minutes
     }
-
+    
     startTime = convertTo24Hour(startTimeStr)
     endTime = convertTo24Hour(endTimeStr)
   } else {
     return controlState === 'on'
   }
 
-  // Check if current time is within schedule
-  // Handle case where schedule spans midnight (end time is before start time)
-  let isWithinTimeRange = false
-  if (endTime >= startTime) {
-    // Normal case: schedule within same day
-    isWithinTimeRange = currentTime >= startTime && currentTime <= endTime
-    console.log(`SetUp: Time check (normal): currentTime=${currentTime}, startTime=${startTime}, endTime=${endTime}, isWithinTimeRange=${isWithinTimeRange}`)
-  } else {
-    // Schedule spans midnight: check if current time is after start OR before end
-    isWithinTimeRange = currentTime >= startTime || currentTime <= endTime
-    console.log(`SetUp: Time check (midnight span): currentTime=${currentTime}, startTime=${startTime}, endTime=${endTime}, isWithinTimeRange=${isWithinTimeRange}`)
-  }
+  // Check if current time is within the scheduled time range
+  const isWithinTimeRange = currentTime >= startTime && currentTime <= endTime
 
-  // Check if current day is in schedule
-  const frequency = schedule.frequency?.toLowerCase() || ''
+  // Check if current day matches the schedule frequency
+  const frequency = schedule.frequency || ''
   let isCorrectDay = false
 
-  if (frequency === 'daily') {
+  if (frequency.toLowerCase() === 'daily') {
     isCorrectDay = true
-  } else if (frequency === 'weekdays') {
+  } else if (frequency.toLowerCase() === 'weekdays') {
     isCorrectDay = currentDay >= 1 && currentDay <= 5 // Monday to Friday
-  } else if (frequency === 'weekends') {
+  } else if (frequency.toLowerCase() === 'weekends') {
     isCorrectDay = currentDay === 0 || currentDay === 6 // Sunday or Saturday
   } else if (frequency.includes(',')) {
-    // Custom days (e.g., "MONDAY, WEDNESDAY, FRIDAY" or "monday, wednesday, friday")
+    // Handle comma-separated days (e.g., "M,T,W,TH,F,SAT" or "MONDAY, WEDNESDAY, FRIDAY")
     const dayMap: { [key: string]: number } = {
       'monday': 1, 'tuesday': 2, 'wednesday': 3, 'thursday': 4, 
       'friday': 5, 'saturday': 6, 'sunday': 0,
@@ -2719,26 +2762,15 @@ const isDeviceActiveBySchedule = (schedule: any, controlState: string, deviceDat
       'm': 1, 't': 2, 'w': 3, 'th': 4, 
       'f': 5, 's': 6
     }
+    
     const scheduledDays = frequency.split(',').map((day: string) => {
       const trimmedDay = day.trim().toLowerCase()
       return dayMap[trimmedDay]
     }).filter((day: number | undefined) => day !== undefined)
     
-    console.log(`SetUp: Custom days check:`, {
-      frequency,
-      scheduledDays,
-      currentDay,
-      isCorrectDay: scheduledDays.includes(currentDay)
-    })
-    
     isCorrectDay = scheduledDays.includes(currentDay)
   } else if (frequency) {
     // Handle single day or other formats
-    console.log(`SetUp: Single day or other format check:`, {
-      frequency,
-      currentDay: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][currentDay]
-    })
-    
     const dayMap: { [key: string]: number } = {
       'monday': 1, 'tuesday': 2, 'wednesday': 3, 'thursday': 4, 
       'friday': 5, 'saturday': 6, 'sunday': 0,
@@ -2751,35 +2783,33 @@ const isDeviceActiveBySchedule = (schedule: any, controlState: string, deviceDat
     const dayNumber = dayMap[frequency.toLowerCase()]
     if (dayNumber !== undefined) {
       isCorrectDay = dayNumber === currentDay
-      console.log(`SetUp: Single day match:`, { dayNumber, currentDay, isCorrectDay })
     }
   }
 
   // Check power limit validation if device data is provided and not skipping individual limit check
   if (deviceData && !skipIndividualLimitCheck) {
-    const powerLimit = deviceData.relay_control?.auto_cutoff?.power_limit || 0 // Power limit in Wh
+    const powerLimit = deviceData.relay_control?.auto_cutoff?.power_limit || 0 // Power limit in kW
     
-    if (powerLimit > 0) {
-      // Get today's total energy consumption from daily_logs
-      const today = new Date()
-      const todayDateKey = `day_${today.getFullYear()}_${String(today.getMonth() + 1).padStart(2, '0')}_${String(today.getDate()).padStart(2, '0')}`
-      const todayLogs = deviceData?.daily_logs?.[todayDateKey]
-      const todayTotalEnergy = todayLogs?.total_energy || 0 // This is in kW
-      
-      // If device has a power limit and today's energy exceeds it, don't activate
-      if (todayTotalEnergy >= powerLimit) {
-        console.log(`Schedule check: Device ${deviceData.outletName || 'Unknown'} power limit exceeded:`, {
-          todayTotalEnergy: `${(todayTotalEnergy * 1000).toFixed(3)}W`,
-          powerLimit: `${(powerLimit * 1000)}W`,
-          todayDateKey: todayDateKey,
-          scheduleResult: false,
-          reason: 'Today\'s energy consumption exceeded power limit'
-        })
-        return false
-      }
+    // Get today's total energy consumption from daily_logs
+    const today = new Date()
+    const todayDateKey = `day_${today.getFullYear()}_${String(today.getMonth() + 1).padStart(2, '0')}_${String(today.getDate()).padStart(2, '0')}`
+    const todayLogs = deviceData?.daily_logs?.[todayDateKey]
+    const todayTotalEnergy = todayLogs?.total_energy || 0 // This is in kW
+    
+    // If device has a power limit and today's energy exceeds it, don't activate
+    if (powerLimit > 0 && todayTotalEnergy >= powerLimit) {
+      console.log(`Schedule check: Device ${deviceData.outletName || 'Unknown'} power limit exceeded:`, {
+        todayTotalEnergy: `${(todayTotalEnergy * 1000).toFixed(3)}W`,
+        powerLimit: `${(powerLimit * 1000)}W`,
+        todayDateKey: todayDateKey,
+        scheduleResult: false,
+        reason: 'Today\'s energy consumption exceeded power limit'
+      })
+      return false
     }
   }
 
+  // Device is active if it's within time range and on correct day
   return isWithinTimeRange && isCorrectDay
 }
 
@@ -2929,7 +2959,7 @@ export default function SetUp() {
           if (outlet.sensor_data) {
             // Use lifetime_energy as current power usage (already in kW from database)
             const lifetimeEnergyKw = outlet.lifetime_energy || 0
-            const powerUsageDisplay = `${(lifetimeEnergyKw * 1000).toFixed(3)} Wh`
+            const powerUsageDisplay = `${formatNumber(lifetimeEnergyKw * 1000)} Wh`
             const powerUsage = lifetimeEnergyKw / 1000 // Keep in kW for calculations
             const powerLimitRaw = outlet.relay_control?.auto_cutoff?.power_limit || 0
             const powerLimit = powerLimitRaw === "No Limit" ? "No Limit" : powerLimitRaw
@@ -2937,7 +2967,7 @@ export default function SetUp() {
             const status = outlet.control?.device || 'off'
             const totalEnergyWatts = outlet.daily_logs?.[todayString]?.total_energy || 0
             // Use total_energy for today's energy (already in kW from database)
-            const todayEnergyDisplay = `${(totalEnergyWatts * 1000).toFixed(3)} Wh`
+            const todayEnergyDisplay = `${formatNumber(totalEnergyWatts * 1000)} Wh`
             const totalEnergy = totalEnergyWatts / 1000 // Keep in kW for calculations
             
             // Map office values to display names
@@ -4187,6 +4217,11 @@ export default function SetUp() {
       
       console.log('Combined limit, device control, and scheduling data saved successfully')
       
+      // Log the combined limit activity
+      const activity = combinedLimitInfo.enabled ? 'Edit combined limit' : 'Set combined limit'
+      const limitValue = data.combinedLimit === 0 ? 'No Limit' : data.combinedLimit
+      await logCombinedLimitActivity(activity, data.selectedOutlets, limitValue)
+      
       // Close modal
       setCombinedLimitModal({ isOpen: false })
       
@@ -4406,13 +4441,13 @@ export default function SetUp() {
           if (outlet.sensor_data) {
             // Use lifetime_energy as current power usage (already in kW from database)
             const lifetimeEnergyKw = outlet.lifetime_energy || 0
-            const powerUsageDisplay = `${(lifetimeEnergyKw * 1000).toFixed(3)} Wh`
+            const powerUsageDisplay = `${formatNumber(lifetimeEnergyKw * 1000)} Wh`
             const powerUsage = lifetimeEnergyKw / 1000 // Keep in kW for calculations
             const powerLimit = outlet.relay_control?.auto_cutoff?.power_limit || 0
             const status = outlet.control?.device || 'off'
             const totalEnergyWatts = outlet.daily_logs?.[todayString]?.total_energy || 0
             // Use total_energy for today's energy (already in kW from database)
-            const todayEnergyDisplay = `${(totalEnergyWatts * 1000).toFixed(3)} Wh`
+            const todayEnergyDisplay = `${formatNumber(totalEnergyWatts * 1000)} Wh`
             const totalEnergy = totalEnergyWatts / 1000 // Keep in kW for calculations
             
             // Map office values to display names
@@ -4672,7 +4707,8 @@ export default function SetUp() {
                             </div>
                         )
                       } else {
-                        return device.limit.replace(' W', ' Wh')
+                        // Ensure proper Wh unit formatting without creating Whh
+                        return device.limit.includes('Wh') ? device.limit : device.limit.replace(' W', ' Wh')
                       }
                     })()}
                   </td>

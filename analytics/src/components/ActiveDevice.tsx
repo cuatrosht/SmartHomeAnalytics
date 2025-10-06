@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { ref, onValue, off, update, get } from 'firebase/database'
 import { realtimeDb } from '../firebase/config'
+import { logDeviceControlActivity, logSystemActivity } from '../utils/deviceLogging'
 import './ActiveDevice.css'
 
 // Function to calculate total monthly energy for combined limit group
@@ -182,6 +183,14 @@ interface ActiveDeviceProps {
 }
 
 export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
+  // Helper function to format numbers with commas
+  const formatNumber = (num: number, decimals: number = 3): string => {
+    return num.toLocaleString('en-US', {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals
+    })
+  }
+
   const [searchQuery, setSearchQuery] = useState('')
   const [activeDevices, setActiveDevices] = useState<Device[]>([])
   const [loading, setLoading] = useState(true)
@@ -558,7 +567,7 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
           const todayDateKey = getTodayDateKey()
           const todayLogs = outlet.daily_logs?.[todayDateKey]
           const lifetimeEnergyWatts = outlet.lifetime_energy || 0
-          const powerUsageDisplay = `${(lifetimeEnergyWatts * 1000).toFixed(3)} Wh`
+          const powerUsageDisplay = `${formatNumber(lifetimeEnergyWatts * 1000)} Wh`
           const powerUsage = lifetimeEnergyWatts // Already in kW
           
           console.log(`Outlet ${outletKey}: Using lifetime_energy = ${lifetimeEnergyWatts}W (${powerUsage}kW)`)
@@ -574,7 +583,7 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
           const mainStatus = outlet.relay_control?.main_status || 'ON' // Default to ON if not set
           // Get today's energy consumption from total_energy (display in watts)
           const todayEnergyWatts = todayLogs?.total_energy || 0
-          const todayEnergyDisplay = `${(todayEnergyWatts * 1000).toFixed(3)} Wh`
+          const todayEnergyDisplay = `${formatNumber(todayEnergyWatts * 1000)} Wh`
           const totalEnergy = todayEnergyWatts // Already in kW
           
           console.log(`Outlet ${outletKey}: Using total_energy = ${todayEnergyWatts}W (${totalEnergy}kW)`)
@@ -849,6 +858,8 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
                   })
                   
                   console.log(`ActiveDevice: Device ${outletKey} turned OFF due to power limit exceeded`)
+                  
+                  // Note: Automatic power limit enforcement is not logged to avoid cluttering device logs
                 }
               }
             } else {
@@ -1051,12 +1062,21 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
       
       console.log(`Successfully toggled ${outletKey} to control:${newControlState}/main:${newMainStatus}`)
       
+      // Log the device control activity
+      const action = newControlState === 'on' ? 'Turn on outlet' : 'Turn off outlet'
+      await logDeviceControlActivity(
+        action,
+        device.outletName,
+        device.officeRoom || 'Unknown',
+        device.appliances || 'Unknown'
+      )
+      
       // Show success modal
-      const action = newControlState === 'on' ? 'turned ON' : 'turned OFF'
+      const actionText = newControlState === 'on' ? 'turned ON' : 'turned OFF'
       setSuccessModal({
         isOpen: true,
         deviceName: device.outletName,
-        action: action
+        action: actionText
       })
     } catch (error) {
       console.error('Error toggling device:', error)
@@ -1124,8 +1144,8 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
 
     return (
       <div className="modal-overlay success-overlay" onClick={() => setSuccessModal({ isOpen: false, deviceName: '', action: '' })}>
-        <div className="success-modal" onClick={(e) => e.stopPropagation()}>
-          <div className="success-icon">
+        <div className="active-device-success-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="active-device-success-icon">
             <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
               <circle cx="12" cy="12" r="10" fill="#10b981" stroke="#10b981" strokeWidth="2"/>
               <path d="M9 12l2 2 4-4" stroke="#ffffff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/>
@@ -1434,7 +1454,7 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
               <div className="power-limit-details">
                 <div className="limit-stat">
                   <span className="label">Today's Energy:</span>
-                  <span className="value">{((powerLimitModal.device as any)?.todayTotalEnergy * 1000)?.toFixed(3) || '0.000'} Wh</span>
+                  <span className="value">{formatNumber(((powerLimitModal.device as any)?.todayTotalEnergy * 1000) || 0)} Wh</span>
                 </div>
                 <div className="limit-stat">
                   <span className="label">Power Limit:</span>
@@ -1554,7 +1574,7 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
                   </div>
                   <div className="summary-content">
                     <div className="summary-label">Total Energy</div>
-                    <div className="summary-value">{(historyData.totalEnergy * 1000).toFixed(3)} Wh</div>
+                    <div className="summary-value">{formatNumber(historyData.totalEnergy * 1000)} Wh</div>
                   </div>
                 </div>
                 
@@ -1570,7 +1590,7 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
                   </div>
                   <div className="summary-content">
                     <div className="summary-label">Total Cost</div>
-                    <div className="summary-value">₱{historyData.totalCost.toFixed(2)}</div>
+                    <div className="summary-value">₱{formatNumber(historyData.totalCost, 2)}</div>
                   </div>
                 </div>
               </div>
@@ -1596,8 +1616,8 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
                               day: 'numeric'
                             })}
                           </td>
-                          <td className="energy-cell">{(day.energy * 1000).toFixed(3)}</td>
-                          <td className="cost-cell">₱{day.cost.toFixed(2)}</td>
+                          <td className="energy-cell">{formatNumber(day.energy * 1000)}</td>
+                          <td className="cost-cell">₱{formatNumber(day.cost, 2)}</td>
                         </tr>
                       ))
                     ) : (
@@ -1614,7 +1634,7 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
               {/* Rate Information */}
               <div className="rate-info">
                 <div className="rate-label">Electricity Rate:</div>
-                <div className="rate-value">₱{currentRate.toFixed(2)} per kWh</div>
+                <div className="rate-value">₱{formatNumber(currentRate, 2)} per kWh</div>
                 {lastRateUpdate && (
                   <div className="rate-update" style={{ fontSize: '10px', marginTop: '4px', opacity: 0.7 }}>
                     Last updated: {lastRateUpdate}

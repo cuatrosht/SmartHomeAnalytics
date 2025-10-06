@@ -24,14 +24,14 @@
 /* Layout */
 .signup-page {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
-  height: 100vh;
+  min-height: 100vh;
   background: linear-gradient(135deg, var(--bg-start), var(--bg-end));
   position: relative;
   padding: 16px;
   box-sizing: border-box;
-  overflow: hidden;
+  overflow-y: auto;
 }
 
 /* Decorative dotted grid */
@@ -53,9 +53,10 @@
   border-radius: 16px;
   box-shadow: var(--shadow-lg);
   padding: 20px;
-  margin: 0 auto;
+  margin: 20px auto;
   display: flex;
   flex-direction: column;
+  min-height: auto;
 }
 
 @media (min-width: 420px) {
@@ -611,30 +612,23 @@
 }
 
 /* Responsive Design */
-@media (max-width: 768px) {
+@media (max-width: 1024px) {
   .signup-page {
-    padding: 8px;
+    padding: 20px;
     align-items: center;
-    height: 100vh;
   }
   
   .signup-card {
-    padding: 16px;
-    margin: 0 auto;
-    max-width: 100%;
+    max-width: 420px;
+    padding: 28px;
   }
   
   .welcome {
-    font-size: 26px;
+    font-size: 28px;
   }
   
   .form {
-    gap: 8px;
-  }
-  
-  .name-row {
-    grid-template-columns: 1fr;
-    gap: 16px;
+    gap: 12px;
   }
   
   .input-wrapper input {
@@ -644,7 +638,7 @@
   
   .primary-btn,
   .oauth-btn {
-    padding: 14px 24px;
+    padding: 14px 20px;
     font-size: 14px;
   }
   
@@ -653,30 +647,98 @@
   }
   
   .role-modal-option {
-    padding: 18px;
+    padding: 20px;
+  }
+}
+
+@media (max-width: 768px) {
+  .signup-page {
+    padding: 12px;
+    align-items: flex-start;
+    min-height: 100vh;
+    padding-top: 20px;
+  }
+  
+  .signup-card {
+    padding: 20px;
+    margin: 0 auto;
+    max-width: 100%;
+    width: 100%;
+  }
+  
+  .welcome {
+    font-size: 24px;
+  }
+  
+  .subtitle {
+    font-size: 13px;
+  }
+  
+  .form {
+    gap: 10px;
+  }
+  
+  .name-row {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+  
+  .input-wrapper input {
+    padding: 14px 8px;
+    font-size: 14px;
+  }
+  
+  .primary-btn,
+  .oauth-btn {
+    padding: 14px 20px;
+    font-size: 14px;
+  }
+  
+  .role-label {
+    padding: 12px;
+  }
+  
+  .role-modal-option {
+    padding: 16px;
   }
   
   .role-modal-option .role-icon {
-    width: 44px;
-    height: 44px;
-    font-size: 26px;
+    width: 42px;
+    height: 42px;
+    font-size: 24px;
+  }
+  
+  .modal-card {
+    margin: 16px;
+    max-width: calc(100vw - 32px);
+    padding: 24px;
+  }
+  
+  .modal-title {
+    font-size: 19px;
+  }
+  
+  .modal-message {
+    font-size: 14px;
   }
 }
 
 @media (max-width: 480px) {
   .signup-page {
-    padding: 6px;
-    height: 100vh;
+    padding: 8px;
+    min-height: 100vh;
+    padding-top: 16px;
   }
   
   .signup-card {
-    padding: 12px;
+    padding: 16px;
     border-radius: 12px;
+    margin: 0 auto 20px auto;
   }
   
   .welcome {
     font-size: 22px;
-    margin: 8px 0 4px;
+    margin: 6px 0 4px;
     line-height: 1.1;
   }
   
@@ -686,8 +748,8 @@
   }
   
   .form {
-    gap: 8px;
-    margin-top: 8px;
+    gap: 10px;
+    margin-top: 6px;
   }
   
   .label {
@@ -699,7 +761,7 @@
   }
   
   .input-wrapper input {
-    padding: 12px 8px;
+    padding: 12px 6px;
     font-size: 13px;
     line-height: 1.4;
   }
@@ -711,113 +773,23 @@
   
   .primary-btn,
   .oauth-btn {
-    padding: 12px 20px;
+    padding: 12px 18px;
     font-size: 13px;
     border-radius: 8px;
   }
   
   .role-selection {
-    margin-top: 2px;
+    margin-top: 4px;
   }
   
   .role-options {
-    gap: 6px;
-    margin-top: 2px;
-  }
-  
-  .role-label {
-    padding: 8px;
-    border-radius: 8px;
-  }
-  
-  .role-icon {
-    width: 36px;
-    height: 36px;
-    font-size: 20px;
-  }
-  
-  .role-title {
-    font-size: 13px;
-  }
-  
-  .role-description {
-    font-size: 11px;
-  }
-  
-  .divider {
-    margin: 8px 0;
-    font-size: 10px;
-  }
-  
-  .signup-footer {
-    margin-top: 8px;
-    font-size: 12px;
-  }
-  
-  .role-modal-option {
-    padding: 16px;
-  }
-  
-  .role-modal-option .role-icon {
-    width: 40px;
-    height: 40px;
-    font-size: 24px;
-  }
-  
-  .role-modal-option .role-title {
-    font-size: 15px;
-  }
-  
-  .role-modal-option .role-description {
-    font-size: 12px;
-  }
-  
-  .modal-card {
-    padding: 24px;
-    border-radius: 12px;
-  }
-  
-  .modal-title {
-    font-size: 18px;
-  }
-  
-  .modal-message {
-    font-size: 13px;
-  }
-}
-
-@media (max-width: 360px) {
-  .signup-page {
-    padding: 4px;
-    height: 100vh;
-  }
-  
-  .signup-card {
-    padding: 12px;
-    max-height: 99vh;
-  }
-  
-  .welcome {
-    font-size: 20px;
-  }
-  
-  .form {
     gap: 8px;
-  }
-  
-  .input-wrapper input {
-    padding: 10px 6px;
-    font-size: 12px;
-  }
-  
-  .primary-btn,
-  .oauth-btn {
-    padding: 10px 16px;
-    font-size: 12px;
+    margin-top: 4px;
   }
   
   .role-label {
     padding: 10px;
+    border-radius: 8px;
   }
   
   .role-icon {
@@ -834,13 +806,14 @@
     font-size: 10px;
   }
   
-  .modal-overlay {
-    padding: 8px;
+  .divider {
+    margin: 10px 0;
+    font-size: 11px;
   }
   
-  .modal-card {
-    padding: 20px;
-    border-radius: 12px;
+  .signup-footer {
+    margin-top: 10px;
+    font-size: 12px;
   }
   
   .role-modal-option {
@@ -851,6 +824,123 @@
     width: 36px;
     height: 36px;
     font-size: 20px;
+  }
+  
+  .role-modal-option .role-title {
+    font-size: 14px;
+  }
+  
+  .role-modal-option .role-description {
+    font-size: 11px;
+  }
+  
+  .modal-card {
+    padding: 20px;
+    border-radius: 12px;
+    margin: 12px;
+    max-width: calc(100vw - 24px);
+  }
+  
+  .modal-title {
+    font-size: 17px;
+  }
+  
+  .modal-message {
+    font-size: 12px;
+  }
+}
+
+@media (max-width: 360px) {
+  .signup-page {
+    padding: 6px;
+    min-height: 100vh;
+    padding-top: 12px;
+  }
+  
+  .signup-card {
+    padding: 14px;
+    border-radius: 10px;
+    margin: 0 auto 16px auto;
+  }
+  
+  .welcome {
+    font-size: 20px;
+    margin: 4px 0 2px;
+  }
+  
+  .subtitle {
+    font-size: 12px;
+  }
+  
+  .form {
+    gap: 8px;
+    margin-top: 4px;
+  }
+  
+  .input-wrapper input {
+    padding: 10px 4px;
+    font-size: 12px;
+  }
+  
+  .primary-btn,
+  .oauth-btn {
+    padding: 10px 14px;
+    font-size: 12px;
+  }
+  
+  .role-label {
+    padding: 8px;
+  }
+  
+  .role-icon {
+    width: 28px;
+    height: 28px;
+    font-size: 16px;
+  }
+  
+  .role-title {
+    font-size: 11px;
+  }
+  
+  .role-description {
+    font-size: 9px;
+  }
+  
+  .modal-overlay {
+    padding: 8px;
+  }
+  
+  .modal-card {
+    padding: 16px;
+    border-radius: 10px;
+    margin: 8px;
+    max-width: calc(100vw - 16px);
+  }
+  
+  .modal-title {
+    font-size: 16px;
+  }
+  
+  .modal-message {
+    font-size: 11px;
+  }
+  
+  .role-modal-option {
+    padding: 12px;
+  }
+  
+  .role-modal-option .role-icon {
+    width: 32px;
+    height: 32px;
+    font-size: 18px;
+  }
+  
+  .role-modal-option .role-title {
+    font-size: 13px;
+  }
+  
+  .role-modal-option .role-description {
+    font-size: 10px;
   }
 }
 
@@ -868,110 +958,46 @@
 
 @media (max-width: 320px) {
   .signup-page {
-    padding: 2px;
-    height: 100vh;
+    padding: 4px;
+    min-height: 100vh;
+    padding-top: 8px;
   }
   
   .signup-card {
-    padding: 8px;
+    padding: 12px;
     border-radius: 8px;
-    max-height: 99vh;
+    margin: 0 auto 12px auto;
   }
   
   .welcome {
     font-size: 18px;
     line-height: 1.1;
+    margin: 2px 0 1px;
+  }
+  
+  .subtitle {
+    font-size: 11px;
   }
   
   .form {
     gap: 6px;
+    margin-top: 2px;
   }
   
   .input-wrapper input {
-    padding: 8px 4px;
+    padding: 8px 3px;
     font-size: 11px;
     line-height: 1.3;
   }
   
   .primary-btn,
   .oauth-btn {
-    padding: 8px 12px;
+    padding: 8px 10px;
     font-size: 11px;
   }
   
   .role-label {
-    padding: 8px;
-  }
-  
-  .role-icon {
-    width: 28px;
-    height: 28px;
-    font-size: 16px;
-  }
-}
-
-/* Enhanced Mobile Responsiveness */
-@media (max-width: 480px) {
-  .signup-page {
-    padding: 8px;
-    height: 100vh;
-    overflow-y: auto;
-  }
-  
-  .signup-card {
-    max-width: 100%;
-    margin: 0;
-    border-radius: 12px;
-    min-height: auto;
-  }
-  
-  .signup-header {
-    padding: 20px 16px 16px 16px;
-  }
-  
-  .signup-title {
-    font-size: 24px;
-  }
-  
-  .signup-subtitle {
-    font-size: 14px;
-  }
-  
-  .signup-form {
-    padding: 16px;
-  }
-  
-  .form-group {
-    margin-bottom: 16px;
-  }
-  
-  .form-label {
-    font-size: 14px;
-    margin-bottom: 6px;
-  }
-  
-  .form-input {
-    padding: 12px 14px;
-    font-size: 14px;
-  }
-  
-  .form-select {
-    padding: 12px 14px;
-    font-size: 14px;
-  }
-  
-  .role-options {
-    grid-template-columns: 1fr;
-    gap: 8px;
-  }
-  
-  .role-option {
-    padding: 12px;
-  }
-  
-  .role-label {
-    padding: 8px;
-    font-size: 14px;
+    padding: 6px;
   }
   
   .role-icon {
@@ -980,75 +1006,86 @@
     font-size: 14px;
   }
   
-  .signup-button {
-    padding: 12px 20px;
+  .role-title {
+    font-size: 10px;
+  }
+  
+  .role-description {
+    font-size: 8px;
+  }
+  
+  .modal-card {
+    padding: 12px;
+    margin: 6px;
+    max-width: calc(100vw - 12px);
+  }
+  
+  .modal-title {
     font-size: 14px;
   }
   
-  .signup-footer {
-    padding: 16px;
+  .modal-message {
+    font-size: 10px;
   }
   
-  .signup-footer p {
-    font-size: 13px;
-  }
-  
-  .signup-link {
-    font-size: 13px;
-  }
-}
-
-@media (max-width: 360px) {
-  .signup-page {
-    padding: 4px;
-  }
-  
-  .signup-card {
-    border-radius: 8px;
-  }
-  
-  .signup-header {
-    padding: 16px 12px 12px 12px;
-  }
-  
-  .signup-title {
-    font-size: 20px;
-  }
-  
-  .signup-subtitle {
-    font-size: 13px;
-  }
-  
-  .signup-form {
-    padding: 12px;
-  }
-  
-  .form-group {
-    margin-bottom: 12px;
-  }
-  
-  .form-label {
-    font-size: 13px;
-    margin-bottom: 4px;
-  }
-  
-  .form-input {
-    padding: 10px 12px;
-    font-size: 13px;
-  }
-  
-  .form-select {
-    padding: 10px 12px;
-    font-size: 13px;
-  }
-  
-  .role-option {
+  .role-modal-option {
     padding: 10px;
   }
   
+  .role-modal-option .role-icon {
+    width: 28px;
+    height: 28px;
+    font-size: 16px;
+  }
+  
+  .role-modal-option .role-title {
+    font-size: 12px;
+  }
+  
+  .role-modal-option .role-description {
+    font-size: 9px;
+  }
+}
+
+@media (max-width: 280px) {
+  .signup-page {
+    padding: 2px;
+    min-height: 100vh;
+    padding-top: 6px;
+  }
+  
+  .signup-card {
+    padding: 8px;
+    border-radius: 6px;
+    margin: 0 auto 8px auto;
+  }
+  
+  .welcome {
+    font-size: 16px;
+    line-height: 1.1;
+  }
+  
+  .subtitle {
+    font-size: 10px;
+  }
+  
+  .form {
+    gap: 4px;
+  }
+  
+  .input-wrapper input {
+    padding: 6px 2px;
+    font-size: 10px;
+  }
+  
+  .primary-btn,
+  .oauth-btn {
+    padding: 6px 8px;
+    font-size: 10px;
+  }
+  
   .role-label {
-    padding: 6px;
-    font-size: 13px;
+    padding: 4px;
   }
   
   .role-icon {
@@ -1057,76 +1094,25 @@
     font-size: 12px;
   }
   
-  .signup-button {
-    padding: 10px 16px;
-    font-size: 13px;
+  .role-title {
+    font-size: 9px;
   }
   
-  .signup-footer {
-    padding: 12px;
+  .role-description {
+    font-size: 7px;
   }
   
-  .signup-footer p {
+  .modal-card {
+    padding: 8px;
+    margin: 4px;
+    max-width: calc(100vw - 8px);
+  }
+  
+  .modal-title {
     font-size: 12px;
   }
   
-  .signup-link {
-    font-size: 12px;
-  }
-}
-
-/* Touch-friendly improvements */
-@media (hover: none) and (pointer: coarse) {
-  .form-input,
-  .form-select,
-  .role-option,
-  .signup-button {
-    min-height: 44px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-  
-  .role-option {
-    padding: 16px;
-  }
-  
-  .form-input,
-  .form-select {
-    padding: 12px 16px;
-  }
-  
-  .signup-button {
-    padding: 12px 20px;
-  }
-  
-  /* Disable hover effects on touch devices */
-  .role-option:hover {
-    background: #f8fafc;
-  }
-  
-  .signup-button:hover {
-    background: linear-gradient(135deg, var(--primary-start), var(--primary-end));
-  }
-}
-
-/* Landscape mobile orientation */
-@media (max-width: 768px) and (orientation: landscape) {
-  .signup-page {
-    height: auto;
-    min-height: 100vh;
-    padding: 16px;
-  }
-  
-  .signup-card {
-    max-height: 90vh;
-    overflow-y: auto;
-  }
-}
-
-/* High DPI displays */
-@media (-webkit-min-device-pixel-ratio: 2), (min-resolution: 192dpi) {
-  .signup-card {
-    border-width: 0.5px;
+  .modal-message {
+    font-size: 9px;
   }
 }

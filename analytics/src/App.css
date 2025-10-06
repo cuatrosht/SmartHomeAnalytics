@@ -2,40 +2,6 @@
 	min-height: 100vh;
 	margin: 0;
 	padding: 0;
-	overflow-x: hidden;
-	box-sizing: border-box;
-}
-
-/* Global responsive fixes */
-* {
-	box-sizing: border-box;
-}
-
-body {
-	margin: 0;
-	padding: 0;
-	overflow-x: hidden;
-}
-
-/* Ensure all containers respect viewport width */
-.container, .dash-wrap, .panel, .chart-card, .table-container {
-	max-width: 100%;
-	overflow-x: hidden;
-}
-
-/* Mobile-specific fixes */
-@media (max-width: 768px) {
-	#root {
-		width: 100vw;
-		max-width: 100vw;
-	}
-	
-	/* Prevent horizontal scrolling */
-	body {
-		width: 100vw;
-		max-width: 100vw;
-		overflow-x: hidden;
-	}
 }
 
 /* Pulse animation for real-time indicator */

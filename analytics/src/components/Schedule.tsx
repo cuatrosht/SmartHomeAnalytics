@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { ref, get, onValue, off, set, update } from 'firebase/database'
 import { realtimeDb } from '../firebase/config'
+import { logScheduleActivity, logDeviceControlActivity, logSystemActivity } from '../utils/deviceLogging'
 import './Schedule.css'
 
 // Function to calculate total monthly energy for combined limit group
@@ -100,7 +101,7 @@ const checkCombinedMonthlyLimit = async (devicesData: any, combinedLimitInfo: an
     const combinedLimitWatts = combinedLimitInfo.combinedLimit
     
     console.log('📊 Monthly limit check results:', {
-      totalMonthlyEnergy: `${totalMonthlyEnergy.toFixed(3)}W`,
+      totalMonthlyEnergy: `${formatNumber(totalMonthlyEnergy)}W`,
       combinedLimitWatts: combinedLimitWatts === "No Limit" ? "No Limit" : `${combinedLimitWatts === "No Limit" ? "No Limit" : `${combinedLimitWatts}W`}`,
       selectedOutlets: combinedLimitInfo.selectedOutlets,
       exceedsLimit: totalMonthlyEnergy >= combinedLimitWatts,
@@ -134,6 +135,9 @@ const checkCombinedMonthlyLimit = async (devicesData: any, combinedLimitInfo: an
           await update(mainStatusRef, { main_status: 'OFF' })
           
           console.log(`✅ TURNED OFF: ${outletKey} (${firebaseKey}) due to monthly limit`)
+          
+          // Note: Automatic monthly limit enforcement is not logged to avoid cluttering device logs
+          
           return { outletKey, success: true }
         } catch (error) {
           console.error(`❌ FAILED to turn off ${outletKey}:`, error)
@@ -314,10 +318,17 @@ const getTodayDateKey = (): string => {
   return `day_${year}_${month}_${day}`
 }
 
+// Helper function to format numbers with commas
+const formatNumber = (num: number, decimals: number = 3): string => {
+  return num.toLocaleString('en-US', {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals
+  })
+}
 
-// Helper function to check if device should be active based on schedule and power limits
-// Copied from ActiveDevice.tsx - simplified and working version
+
 // Helper function to check if device should be active based on schedule
+// Copied from ActiveDevice.tsx - working version
 const isDeviceActiveBySchedule = (schedule: any, controlState: string, deviceData?: any, skipIndividualLimitCheck?: boolean): boolean => {
   // If no schedule exists, use control state
   if (!schedule || (!schedule.timeRange && !schedule.startTime)) {
@@ -332,13 +343,6 @@ const isDeviceActiveBySchedule = (schedule: any, controlState: string, deviceDat
   const now = new Date()
   const currentTime = now.getHours() * 60 + now.getMinutes() // Convert to minutes
   const currentDay = now.getDay() // 0 = Sunday, 1 = Monday, etc.
-  
-  console.log(`Schedule: Schedule check at ${now.toLocaleTimeString()}:`, {
-    currentTime: `${Math.floor(currentTime / 60)}:${String(currentTime % 60).padStart(2, '0')}`,
-    currentTimeMinutes: currentTime,
-    currentDay: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][currentDay],
-    schedule: schedule
-  })
 
   // Parse schedule time range
   let startTime: number, endTime: number
@@ -362,7 +366,6 @@ const isDeviceActiveBySchedule = (schedule: any, controlState: string, deviceDat
       if (hours === 12) {
         hours = 0
       }
-      
       if (modifier === 'PM') {
         hours += 12
       }
@@ -376,31 +379,21 @@ const isDeviceActiveBySchedule = (schedule: any, controlState: string, deviceDat
     return controlState === 'on'
   }
 
-  // Check if current time is within schedule
-  // Handle case where schedule spans midnight (end time is before start time)
-  let isWithinTimeRange = false
-  if (endTime >= startTime) {
-    // Normal case: schedule within same day
-    isWithinTimeRange = currentTime >= startTime && currentTime <= endTime
-    console.log(`Schedule: Time check (normal): currentTime=${currentTime}, startTime=${startTime}, endTime=${endTime}, isWithinTimeRange=${isWithinTimeRange}`)
-  } else {
-    // Schedule spans midnight: check if current time is after start OR before end
-    isWithinTimeRange = currentTime >= startTime || currentTime <= endTime
-    console.log(`Schedule: Time check (midnight span): currentTime=${currentTime}, startTime=${startTime}, endTime=${endTime}, isWithinTimeRange=${isWithinTimeRange}`)
-  }
+  // Check if current time is within the scheduled time range
+  const isWithinTimeRange = currentTime >= startTime && currentTime <= endTime
 
-  // Check if current day is in schedule
-  const frequency = schedule.frequency?.toLowerCase() || ''
+  // Check if current day matches the schedule frequency
+  const frequency = schedule.frequency || ''
   let isCorrectDay = false
 
-  if (frequency === 'daily') {
+  if (frequency.toLowerCase() === 'daily') {
     isCorrectDay = true
-  } else if (frequency === 'weekdays') {
+  } else if (frequency.toLowerCase() === 'weekdays') {
     isCorrectDay = currentDay >= 1 && currentDay <= 5 // Monday to Friday
-  } else if (frequency === 'weekends') {
+  } else if (frequency.toLowerCase() === 'weekends') {
     isCorrectDay = currentDay === 0 || currentDay === 6 // Sunday or Saturday
   } else if (frequency.includes(',')) {
-    // Custom days (e.g., "MONDAY, WEDNESDAY, FRIDAY" or "monday, wednesday, friday")
+    // Handle comma-separated days (e.g., "M,T,W,TH,F,SAT" or "MONDAY, WEDNESDAY, FRIDAY")
     const dayMap: { [key: string]: number } = {
       'monday': 1, 'tuesday': 2, 'wednesday': 3, 'thursday': 4, 
       'friday': 5, 'saturday': 6, 'sunday': 0,
@@ -409,26 +402,15 @@ const isDeviceActiveBySchedule = (schedule: any, controlState: string, deviceDat
       'm': 1, 't': 2, 'w': 3, 'th': 4, 
       'f': 5, 's': 6
     }
+    
     const scheduledDays = frequency.split(',').map((day: string) => {
       const trimmedDay = day.trim().toLowerCase()
       return dayMap[trimmedDay]
     }).filter((day: number | undefined) => day !== undefined)
     
-    console.log(`Schedule: Custom days check:`, {
-      frequency,
-      scheduledDays,
-      currentDay,
-      isCorrectDay: scheduledDays.includes(currentDay)
-    })
-    
     isCorrectDay = scheduledDays.includes(currentDay)
   } else if (frequency) {
     // Handle single day or other formats
-    console.log(`Schedule: Single day or other format check:`, {
-      frequency,
-      currentDay: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][currentDay]
-    })
-    
     const dayMap: { [key: string]: number } = {
       'monday': 1, 'tuesday': 2, 'wednesday': 3, 'thursday': 4, 
       'friday': 5, 'saturday': 6, 'sunday': 0,
@@ -441,14 +423,12 @@ const isDeviceActiveBySchedule = (schedule: any, controlState: string, deviceDat
     const dayNumber = dayMap[frequency.toLowerCase()]
     if (dayNumber !== undefined) {
       isCorrectDay = dayNumber === currentDay
-      console.log(`Schedule: Single day match:`, { dayNumber, currentDay, isCorrectDay })
     }
   }
 
   // Check power limit validation if device data is provided and not skipping individual limit check
   if (deviceData && !skipIndividualLimitCheck) {
-    const powerLimitRaw = deviceData.relay_control?.auto_cutoff?.power_limit || 0 // Power limit in kW
-    const powerLimit = powerLimitRaw === "No Limit" ? "No Limit" : powerLimitRaw
+    const powerLimit = deviceData.relay_control?.auto_cutoff?.power_limit || 0 // Power limit in kW
     
     // Get today's total energy consumption from daily_logs
     const today = new Date()
@@ -457,10 +437,10 @@ const isDeviceActiveBySchedule = (schedule: any, controlState: string, deviceDat
     const todayTotalEnergy = todayLogs?.total_energy || 0 // This is in kW
     
     // If device has a power limit and today's energy exceeds it, don't activate
-    if (powerLimit !== "No Limit" && powerLimit >= 0 && todayTotalEnergy >= powerLimit) {
+    if (powerLimit > 0 && todayTotalEnergy >= powerLimit) {
       console.log(`Schedule check: Device ${deviceData.outletName || 'Unknown'} power limit exceeded:`, {
         todayTotalEnergy: `${(todayTotalEnergy * 1000).toFixed(3)}W`,
-        powerLimit: powerLimit === "No Limit" ? "No Limit" : `${(powerLimit * 1000)}W`,
+        powerLimit: `${(powerLimit * 1000)}W`,
         todayDateKey: todayDateKey,
         scheduleResult: false,
         reason: 'Today\'s energy consumption exceeded power limit'
@@ -469,6 +449,7 @@ const isDeviceActiveBySchedule = (schedule: any, controlState: string, deviceDat
     }
   }
 
+  // Device is active if it's within time range and on correct day
   return isWithinTimeRange && isCorrectDay
 }
 
@@ -1001,7 +982,7 @@ function CombinedScheduleWarningModal({
             <path d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" fill="#f59e0b"/>
           </svg>
         </div>
-        <h3>Combined Schedule Active</h3>
+        <h3>Multiple Schedule Active</h3>
         <p><strong>"{deviceName}"</strong> is currently part of a combined schedule and cannot have an individual schedule.</p>
         <div className="warning-details">
           <div className="warning-stat">
@@ -1045,8 +1026,8 @@ function SuccessModal({
 
   return (
     <div className="modal-overlay success-overlay" onClick={onClose}>
-      <div className="success-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="success-icon">
+      <div className="schedule-success-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="schedule-success-icon">
           <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
             <circle cx="12" cy="12" r="10" fill="#10b981" stroke="#10b981" strokeWidth="2"/>
             <path d="M9 12l2 2 4-4" stroke="#ffffff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/>
@@ -1231,7 +1212,18 @@ function OutletSelectionModal({
   const validateForm = () => {
     const newErrors: Record<string, string> = {}
     
-    if (selectedOutlets.length === 0) newErrors.outlets = 'Please select at least one outlet'
+    // If no outlets are selected, allow saving (this removes all outlets from schedule)
+    if (selectedOutlets.length === 0) {
+      // Clear time and day selections when no outlets are selected
+      setStartTime('')
+      setEndTime('')
+      setSelectedDays([])
+      // No validation errors when removing all outlets
+      setErrors({})
+      return true
+    }
+    
+    // Only validate time and days when outlets are selected
     if (!startTime) newErrors.start = 'Start time is required'
     if (!endTime) newErrors.end = 'End time is required'
     if (selectedDays.length === 0) newErrors.days = 'Please select at least one day'
@@ -1289,9 +1281,19 @@ function OutletSelectionModal({
         selectedDays
       }
       
+      // Allow saving even with no outlets selected
       onSave(selectedOutlets, scheduleData)
     }
   }
+
+  // Clear time and day selections when no outlets are selected
+  useEffect(() => {
+    if (selectedOutlets.length === 0) {
+      setStartTime('')
+      setEndTime('')
+      setSelectedDays([])
+    }
+  }, [selectedOutlets])
 
   const handleClose = () => {
     setSelectedOutlets([])
@@ -1321,7 +1323,7 @@ function OutletSelectionModal({
           </button>
         </div>
 
-        <form onSubmit={handleSubmit}>
+        <form onSubmit={handleSubmit} noValidate={selectedOutlets.length === 0}>
           <div className="modal-body">
             {/* Available Outlets Selection */}
             <div className={`outlet-selection ${errors.outlets ? 'error' : ''}`}>
@@ -1429,7 +1431,7 @@ function OutletSelectionModal({
             <button
               type="submit"
               className="btn-primary"
-              disabled={selectedOutlets.length === 0 || !startTime || !endTime || selectedDays.length === 0}
+              disabled={selectedOutlets.length > 0 && (!startTime || !endTime || selectedDays.length === 0)}
             >
               {isEditMode ? 'Update Multiple Schedule' : 'Create Combined Schedule'}
             </button>
@@ -1558,7 +1560,7 @@ export default function Schedule() {
           
           // Get current power usage from lifetime_energy (display in watts)
           const lifetimeEnergyWatts = outletData.lifetime_energy || 0
-          const powerUsageDisplay = `${(lifetimeEnergyWatts * 1000).toFixed(3)} Wh`
+          const powerUsageDisplay = `${formatNumber(lifetimeEnergyWatts * 1000)} Wh`
           
           // Get power limit and relay status
           const powerLimitRaw = relayControl?.auto_cutoff?.power_limit || 0
@@ -1571,7 +1573,7 @@ export default function Schedule() {
           // Get today's energy consumption from total_energy (display in watts)
           const todayLogs = outletData.daily_logs?.[todayDateKey]
           const todayEnergyWatts = todayLogs?.total_energy || 0
-          const todayEnergyDisplay = `${(todayEnergyWatts * 1000).toFixed(3)} Wh`
+          const todayEnergyDisplay = `${formatNumber(todayEnergyWatts * 1000)} Wh`
             
             // Helper function to convert 24-hour time to 12-hour for display
             const convertTo12Hour = (time24h: string) => {
@@ -1649,7 +1651,7 @@ export default function Schedule() {
           
           // Get current power usage from lifetime_energy (display in watts)
           const lifetimeEnergyWatts = outletData.lifetime_energy || 0
-          const powerUsageDisplay = `${(lifetimeEnergyWatts * 1000).toFixed(3)} Wh`
+          const powerUsageDisplay = `${formatNumber(lifetimeEnergyWatts * 1000)} Wh`
           
           // Get power limit and relay status
           const powerLimitRaw = relayControl?.auto_cutoff?.power_limit || 0
@@ -1661,7 +1663,7 @@ export default function Schedule() {
           // Get today's energy consumption from total_energy (display in watts)
           const todayLogs = outletData.daily_logs?.[todayDateKey]
           const todayEnergyWatts = todayLogs?.total_energy || 0
-          const todayEnergyDisplay = `${(todayEnergyWatts * 1000).toFixed(3)} Wh`
+          const todayEnergyDisplay = `${formatNumber(todayEnergyWatts * 1000)} Wh`
           
           // Helper function to convert 24-hour time to 12-hour for display
           const convertTo12Hour = (time24h: string) => {
@@ -1927,6 +1929,8 @@ export default function Schedule() {
                 })
                 
                 console.log(`✅ Schedule: AUTOMATIC UPDATE COMPLETE - ${outletKey} updated to ${newControlState}/${newMainStatus}`)
+                
+                // Note: Automatic system activities are not logged to avoid cluttering device logs
               } else {
                 console.log(`Schedule: No update needed for ${outletKey} - control state already ${currentControlState}`)
               }
@@ -2068,6 +2072,17 @@ export default function Schedule() {
       
       console.log(`✅ Reset main_status to 'ON' for ${outletKey} to allow new schedule to take effect`)
       
+      // Log the schedule activity
+      const scheduleDetails = `${updatedSchedule.timeRange} (${updatedSchedule.frequency})`
+      await logScheduleActivity(
+        'Edit schedule',
+        device.outletName,
+        scheduleDetails,
+        device.officeRoom || 'Unknown',
+        device.appliances || 'Unknown',
+        undefined // Let the logging function get the current user from Firebase Auth
+      )
+      
       const deviceName = device.outletName
       setEditModal({ isOpen: false, device: null })
       setSuccessModal({ isOpen: true, deviceName })
@@ -2109,6 +2124,16 @@ export default function Schedule() {
         status: 'OFF',
         main_status: 'OFF'
       })
+      
+      // Log the schedule deletion activity
+      await logScheduleActivity(
+        'Remove schedule',
+        device.outletName,
+        'Schedule deleted',
+        device.officeRoom || 'Unknown',
+        device.appliances || 'Unknown',
+        undefined // Let the logging function get the current user from Firebase Auth
+      )
       
       // Close confirmation modal
       setDeleteConfirmModal({ isOpen: false, deviceId: '', deviceName: '' })
@@ -2167,6 +2192,32 @@ export default function Schedule() {
         
         console.log(`Saved combined schedule to ${outletKey} and reset main_status to 'ON'`)
       }
+      
+      // Log the combined schedule activity
+      const activity = isEditMode ? 'Edit schedule' : 'Set schedule'
+      const scheduleDetails = `${scheduleData.timeRange} (${scheduleData.frequency})`
+      // Create proper outlet list
+      let outletList = '';
+      if (selectedOutlets.length === 1) {
+        outletList = selectedOutlets[0].replace('Outlet ', 'Outlet');
+      } else if (selectedOutlets.length > 1) {
+        // Extract numbers and create range
+        const numbers = selectedOutlets.map(outlet => {
+          // Handle different outlet name formats
+          const match = outlet.match(/Outlet[_\s]*(\d+)/);
+          return match ? match[1] : outlet.replace(/Outlet[_\s]*/, '');
+        }).sort((a, b) => parseInt(a) - parseInt(b));
+        outletList = `Outlet${numbers[0]} to ${numbers[numbers.length - 1]}`;
+      }
+      
+      await logScheduleActivity(
+        activity === 'Edit schedule' ? 'Edit schedule' : 'Set schedule',
+        outletList,
+        scheduleDetails,
+        'Multiple Outlets',
+        'Combined Group',
+        undefined // Let the logging function get the current user from Firebase Auth
+      )
       
       // Close the modal
       setOutletSelectionModal({ isOpen: false, isEditMode: false, existingCombinedSchedule: null })
@@ -2340,7 +2391,8 @@ export default function Schedule() {
                             </div>
                         )
                       } else {
-                        return device.limit.replace(' W', ' Wh')
+                        // Ensure proper Wh unit formatting without creating Whh
+                        return device.limit.includes('Wh') ? device.limit : device.limit.replace(' W', ' Wh')
                       }
                     })()}
                   </td>
@@ -2842,7 +2894,7 @@ export default function Schedule() {
     const combinedLimitWatts = combinedLimitInfo.combinedLimit
     
     console.log('📊 SCHEDULE - Monthly energy calculation:', {
-      totalMonthlyEnergy: `${totalMonthlyEnergy.toFixed(3)}W`,
+      totalMonthlyEnergy: `${formatNumber(totalMonthlyEnergy)}W`,
       combinedLimitWatts: `${combinedLimitWatts === "No Limit" ? "No Limit" : `${combinedLimitWatts}W`}`,
       exceedsLimit: totalMonthlyEnergy >= combinedLimitWatts,
       percentage: (combinedLimitWatts !== "No Limit" && combinedLimitWatts > 0) ? `${((totalMonthlyEnergy / combinedLimitWatts) * 100).toFixed(1)}%` : 'N/A'
@@ -3003,7 +3055,7 @@ export default function Schedule() {
     const monthlyLimitExceeded = totalMonthlyEnergy >= combinedLimitInfo.combinedLimit
     
     console.log(`📊 SCHEDULE - Monthly limit status:`, {
-      totalMonthlyEnergy: `${totalMonthlyEnergy.toFixed(3)}W`,
+      totalMonthlyEnergy: `${formatNumber(totalMonthlyEnergy)}W`,
       combinedLimit: `${combinedLimitInfo.combinedLimit}W`,
       exceeded: monthlyLimitExceeded
     })
@@ -3103,7 +3155,7 @@ export default function Schedule() {
     const monthlyLimitExceeded = totalMonthlyEnergy >= combinedLimitInfo.combinedLimit
     
     console.log(`📊 SCHEDULE - Monthly limit status:`, {
-      totalMonthlyEnergy: `${totalMonthlyEnergy.toFixed(3)}W`,
+      totalMonthlyEnergy: `${formatNumber(totalMonthlyEnergy)}W`,
       combinedLimit: `${combinedLimitInfo.combinedLimit}W`,
       exceeded: monthlyLimitExceeded
     })

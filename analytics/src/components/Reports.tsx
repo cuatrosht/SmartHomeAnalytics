@@ -16,113 +16,6 @@ import { realtimeDb } from '../firebase/config'
 import jsPDF from 'jspdf'
 import './Reports.css'
 
-// Function to calculate total monthly energy for combined limit group
-const calculateCombinedMonthlyEnergy = (devicesData: any, selectedOutlets: string[]): number => {
-  try {
-    // Get current month and year
-    const now = new Date()
-    const currentYear = now.getFullYear()
-    const currentMonth = now.getMonth() + 1 // getMonth() returns 0-11, so add 1
-    const daysInMonth = new Date(currentYear, currentMonth, 0).getDate()
-    
-    console.log('📊 Monthly energy calculation:', {
-      currentYear,
-      currentMonth,
-      daysInMonth,
-      selectedOutlets: [...new Set(selectedOutlets)], // Remove duplicates
-      totalOutlets: selectedOutlets.length,
-      uniqueOutlets: [...new Set(selectedOutlets)].length
-    })
-    
-    // Process each outlet in the combined limit group
-    const processedOutlets = new Set()
-    let totalMonthlyEnergy = 0
-    
-    selectedOutlets.forEach((outletKey, index) => {
-      // Skip if already processed (avoid duplicates)
-      if (processedOutlets.has(outletKey)) {
-        console.log(`⚠️ DUPLICATE SKIPPED: ${outletKey} (already processed)`)
-        return
-      }
-      
-      // Mark as processed
-      processedOutlets.add(outletKey)
-      
-      // Convert display format to Firebase format
-      const firebaseKey = outletKey.replace(' ', '_')
-      const outlet = devicesData[firebaseKey]
-      
-      console.log(`🔍 Processing outlet ${index + 1}/${selectedOutlets.length}: ${outletKey} -> ${firebaseKey}`)
-      
-      if (outlet && outlet.daily_logs) {
-        let outletMonthlyEnergy = 0
-        
-        // Sum up all daily energy for the current month
-        for (let day = 1; day <= daysInMonth; day++) {
-          const dayKey = `day_${currentYear}_${String(currentMonth).padStart(2, '0')}_${String(day).padStart(2, '0')}`
-          const dayData = outlet.daily_logs[dayKey]
-          
-          if (dayData && dayData.total_energy) {
-            outletMonthlyEnergy += dayData.total_energy // This is in kW
-          }
-        }
-        
-        console.log(`📊 ${outletKey}: ${outletMonthlyEnergy.toFixed(3)}kW for month ${currentMonth}/${currentYear}`)
-        totalMonthlyEnergy += outletMonthlyEnergy
-      } else {
-        console.log(`⚠️ ${outletKey}: No data found or no daily_logs`)
-      }
-    })
-    
-    console.log(`📊 TOTAL MONTHLY ENERGY: ${totalMonthlyEnergy.toFixed(3)}kW (${(totalMonthlyEnergy * 1000).toFixed(3)}Wh)`)
-    return totalMonthlyEnergy * 1000 // Convert to watts for consistency
-  } catch (error) {
-    console.error('❌ Error calculating combined monthly energy:', error)
-    return 0
-  }
-}
-
-// Function to remove a device from combined group when monthly limit is exceeded
-const removeDeviceFromCombinedGroup = async (outletKey: string): Promise<{
-  success: boolean;
-  reason?: string;
-}> => {
-  try {
-    console.log(`🔧 Attempting to remove ${outletKey} from combined group due to monthly limit exceeded`)
-    
-    // Get current combined limit settings
-    const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
-    const combinedLimitSnapshot = await get(combinedLimitRef)
-    
-    if (!combinedLimitSnapshot.exists()) {
-      return { success: false, reason: 'No combined limit settings found' }
-    }
-    
-    const combinedLimitData = combinedLimitSnapshot.val()
-    const currentSelectedOutlets = combinedLimitData.selected_outlets || []
-    
-    // Check if device is actually in the combined group
-    if (!currentSelectedOutlets.includes(outletKey)) {
-      return { success: false, reason: 'Device is not in combined group' }
-    }
-    
-    // Remove the device from the combined group
-    const updatedSelectedOutlets = currentSelectedOutlets.filter((outlet: string) => outlet !== outletKey)
-    
-    // Update the combined limit settings
-    await update(combinedLimitRef, {
-      ...combinedLimitData,
-      selected_outlets: updatedSelectedOutlets
-    })
-    
-    console.log(`✅ Successfully removed ${outletKey} from combined group. Remaining outlets: ${updatedSelectedOutlets.length}`)
-    
-    return { success: true, reason: `Device removed from combined group. Remaining outlets: ${updatedSelectedOutlets.length}` }
-  } catch (error) {
-    console.error('❌ Error removing device from combined group:', error)
-    return { success: false, reason: 'Failed to remove device from combined group' }
-  }
-}
 
 ChartJS.register(
   CategoryScale,
@@ -195,6 +88,14 @@ interface DeviceData {
   lifetime_energy: number
   officeRoom: string
   appliances: string
+  relay_control?: {
+    auto_cutoff?: {
+      enabled: boolean
+      power_limit: number
+    }
+    status: string
+    main_status?: string
+  }
 }
 
 export default function Reports() {
@@ -205,6 +106,14 @@ export default function Reports() {
     const month = String(today.getMonth() + 1).padStart(2, '0')
     const day = String(today.getDate()).padStart(2, '0')
     return `day_${year}_${month}_${day}`
+  }
+
+  // Helper function to format numbers with commas
+  const formatNumber = (num: number, decimals: number = 3): string => {
+    return num.toLocaleString('en-US', {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals
+    })
   }
 
 
@@ -228,7 +137,6 @@ export default function Reports() {
       
       if (snapshot.exists()) {
         const devicesData = snapshot.val()
-        const monthPattern = `day_${currentYear}_${String(currentMonth).padStart(2, '0')}_`
         
         // Calculate total energy for each day in the current month
         for (let day = 1; day <= daysInMonth; day++) {
@@ -297,13 +205,13 @@ export default function Reports() {
     return estimatedMonthlyBill
   }
 
-  // Calculate current bill based on filtered devices' current month energy with runtime verification
+  // Calculate current bill using EXACT same method as PDF (no runtime verification)
   const calculateCurrentBill = async (devices: DeviceData[]) => {
-    let actualMonthlyEnergy = 0
+    let totalMonthlyEnergy = 0
     const now = new Date()
     const currentYear = now.getFullYear()
     const currentMonth = now.getMonth() + 1
-    const monthPattern = `day_${currentYear}_${String(currentMonth).padStart(2, '0')}_`
+    const daysInMonth = new Date(currentYear, currentMonth, 0).getDate()
     
     try {
       // Fetch all devices data to get daily_logs for the current month
@@ -313,61 +221,46 @@ export default function Reports() {
       if (snapshot.exists()) {
         const devicesData = snapshot.val()
         
-        // Only process filtered devices (not all devices)
-        devices.forEach((device) => {
+        console.log(`🔍 Current bill calculation: Processing ${currentYear}-${String(currentMonth).padStart(2, '0')} with ${daysInMonth} days`)
+        
+        // Process each device individually (same as PDF calculation)
+        for (const device of devices) {
           const outletKey = device.outletId
           const outlet = devicesData[outletKey]
           
-          if (!outlet) return
-          
-          const dailyLogs = outlet.daily_logs || {}
-          
-          Object.keys(dailyLogs).forEach((dateKey) => {
-            // Check if this date is in the current month
-            if (dateKey.startsWith(monthPattern)) {
-              const dayData = dailyLogs[dateKey]
-              const measuredEnergy = dayData.total_energy || 0 // Energy in kWh from database
-              const avgPower = dayData.avg_power || 0 // Average power in Wh
-              const usageTimeHours = dayData.usage_time_hours || 0 // Usage time in hours
+          if (outlet && outlet.daily_logs) {
+            let monthlyEnergy = 0
+            
+            // Sum up all daily energy for the current month (EXACT same as PDF)
+            for (let day = 1; day <= daysInMonth; day++) {
+              const dayKey = `day_${currentYear}_${String(currentMonth).padStart(2, '0')}_${String(day).padStart(2, '0')}`
+              const dayData = outlet.daily_logs[dayKey]
               
-              // Calculate expected energy from runtime
-              const expectedEnergy = (avgPower * usageTimeHours) / 1000 // Convert Wh*h to kWh
-              
-              // Use runtime verification to determine which energy value to use
-              let finalEnergy = measuredEnergy
-              
-              if (usageTimeHours > 0 && avgPower > 0) {
-                const energyDifference = Math.abs(measuredEnergy - expectedEnergy)
-                const accuracy = Math.min(measuredEnergy, expectedEnergy) / Math.max(measuredEnergy, expectedEnergy)
-                
-                // If accuracy is below 95%, use calculated energy (sensor might have errors)
-                if (accuracy < 0.95 && energyDifference > 0.1) {
-                  console.log(`Runtime verification: Using calculated energy for ${outletKey} on ${dateKey}. Measured: ${measuredEnergy}kWh, Calculated: ${expectedEnergy}kWh, Accuracy: ${(accuracy * 100).toFixed(1)}%`)
-                  finalEnergy = expectedEnergy
-                } else {
-                  console.log(`Runtime verification: Using measured energy for ${outletKey} on ${dateKey}. Measured: ${measuredEnergy}kWh, Calculated: ${expectedEnergy}kWh, Accuracy: ${(accuracy * 100).toFixed(1)}%`)
-                }
+              if (dayData) {
+                monthlyEnergy += dayData.total_energy || 0 // Already in kW (same as PDF)
               }
-              
-              actualMonthlyEnergy += finalEnergy
             }
-          })
-        })
+            
+            totalMonthlyEnergy += monthlyEnergy
+            console.log(`📊 Device ${outletKey}: Monthly energy = ${monthlyEnergy.toFixed(6)} kWh`)
+          }
+        }
       }
     } catch (error) {
-      console.error('Error fetching monthly data:', error)
-      // Fallback: use current day's data and estimate
-      const currentDayEnergy = devices.reduce((sum, device) => {
+      console.error('❌ Error calculating current bill:', error)
+      // Fallback: use current day's data
+      totalMonthlyEnergy = devices.reduce((sum, device) => {
         return sum + (device.total_energy || 0)
       }, 0)
-      const daysInMonth = new Date(currentYear, currentMonth, 0).getDate()
-      actualMonthlyEnergy = currentDayEnergy * daysInMonth
     }
     
-    console.log(`Current bill calculation with runtime verification: Actual monthly energy = ${actualMonthlyEnergy} kWh, Filtered devices count = ${devices.length}`)
+    console.log(`📊 Current bill calculation results:`)
+    console.log(`   Total monthly energy: ${totalMonthlyEnergy.toFixed(6)} kWh`)
+    console.log(`   Rate: ₱${currentRate} per kWh`)
+    console.log(`   Current bill: ₱${(totalMonthlyEnergy * currentRate).toFixed(2)}`)
     
-    // Energy is already in kWh, multiply by current rate
-    return actualMonthlyEnergy * currentRate
+    // Energy is already in kWh, multiply by current rate (EXACT same as PDF calculation)
+    return totalMonthlyEnergy * currentRate
   }
 
   // Calculate trend percentage
@@ -549,95 +442,196 @@ export default function Reports() {
     return isWithinTimeRange && isCorrectDay
   }
 
-  // Generate and download PDF report
-  const generatePDFReport = async () => {
-    const doc = new jsPDF()
-    const pageWidth = doc.internal.pageSize.getWidth()
-    const pageHeight = doc.internal.pageSize.getHeight()
-    let yPosition = 20
+  // Show office selection dialog for PDF generation
+  const showPdfOfficeSelection = () => {
+    setIsPdfOfficeModalOpen(true)
+  }
 
-    // Helper function to add text with proper formatting
-    const addText = (text: string, x: number, y: number, options: any = {}) => {
-      doc.setFontSize(options.fontSize || 12)
-      doc.setTextColor(options.color || '#000000')
-      if (options.bold) {
-        doc.setFont('arial', 'bold')
+  // Generate and download PDF report with selected office data
+  const generatePDFReport = async (targetOffice: string = '') => {
+    try {
+      // Get current date
+      const now = new Date()
+      const currentDate = now.toLocaleDateString('en-US', { 
+        year: 'numeric', 
+        month: 'long', 
+        day: 'numeric' 
+      })
+
+      // Filter devices based on selected office
+      let reportDevices = devices
+      let officeDisplayName = 'All Offices'
+      
+      if (targetOffice && targetOffice !== 'All Offices') {
+        reportDevices = devices.filter(device => device.officeRoom === targetOffice)
+        officeDisplayName = targetOffice
+      }
+
+      // Calculate real data
+      const totalDevices = reportDevices.length
+      
+      // Use combined limit if available, otherwise calculate from individual limits
+      let totalPowerLimit = 0
+      if (combinedLimitInfo?.enabled && combinedLimitInfo?.combinedLimit > 0) {
+        // Use the existing combined power limit
+        totalPowerLimit = combinedLimitInfo.combinedLimit
       } else {
-        doc.setFont('arial', 'normal')
+        // Fallback to individual device limits
+        totalPowerLimit = reportDevices.reduce((sum, device) => {
+          const powerLimit = device.relay_control?.auto_cutoff?.power_limit || 0
+          return sum + (powerLimit * 1000) // Convert to watts
+        }, 0)
       }
-      doc.text(text, x, y)
-    }
 
-    // Helper function to add line
-    const addLine = (x1: number, y1: number, x2: number, y2: number) => {
-      doc.setDrawColor(200, 200, 200)
-      doc.line(x1, y1, x2, y2)
-    }
+      // Get current month data for calculations
+      const currentYear = now.getFullYear()
+      const currentMonth = now.getMonth() + 1
+      const daysInMonth = new Date(currentYear, currentMonth, 0).getDate()
 
-    // Helper function to add rectangle with background color
-    const addRect = (x: number, y: number, width: number, height: number, fillColor?: [number, number, number]) => {
-      if (fillColor) {
-        doc.setFillColor(fillColor[0], fillColor[1], fillColor[2])
-        doc.rect(x, y, width, height, 'F')
+      // Calculate monthly energy consumption for each device
+      const deviceMonthlyData = await Promise.all(reportDevices.map(async (device) => {
+        try {
+          const devicesRef = ref(realtimeDb, 'devices')
+          const snapshot = await get(devicesRef)
+          
+          if (snapshot.exists()) {
+            const devicesData = snapshot.val()
+            const outlet = devicesData[device.outletId]
+            
+            if (outlet && outlet.daily_logs) {
+              let monthlyEnergy = 0
+              let totalHours = 0
+              
+              // Sum up all daily energy and usage hours for the current month
+              for (let day = 1; day <= daysInMonth; day++) {
+                const dayKey = `day_${currentYear}_${String(currentMonth).padStart(2, '0')}_${String(day).padStart(2, '0')}`
+                const dayData = outlet.daily_logs[dayKey]
+                
+                if (dayData) {
+                  monthlyEnergy += dayData.total_energy || 0 // Already in kW
+                  totalHours += dayData.usage_time_hours || 0 // Usage time in hours
+                }
+              }
+              
+              return {
+                outletId: device.outletId,
+                appliance: device.appliances || 'Unassigned',
+                powerLimit: (device.relay_control?.auto_cutoff?.power_limit || 0) * 1000, // Convert to watts
+                monthlyEnergy: monthlyEnergy * 1000, // Convert to watts
+                totalHours: totalHours,
+                monthlyCost: monthlyEnergy * currentRate
+              }
+            }
+          }
+          
+          return {
+            outletId: device.outletId,
+            appliance: device.appliances || 'Unassigned',
+            powerLimit: (device.relay_control?.auto_cutoff?.power_limit || 0) * 1000,
+            monthlyEnergy: 0,
+            totalHours: 0,
+            monthlyCost: 0
+          }
+        } catch (error) {
+          console.error(`Error calculating data for ${device.outletId}:`, error)
+          return {
+            outletId: device.outletId,
+            appliance: device.appliances || 'Unassigned',
+            powerLimit: (device.relay_control?.auto_cutoff?.power_limit || 0) * 1000,
+            monthlyEnergy: 0,
+            totalHours: 0,
+            monthlyCost: 0
+          }
+        }
+      }))
+
+      const doc = new jsPDF()
+      const pageWidth = doc.internal.pageSize.getWidth()
+      const pageHeight = doc.internal.pageSize.getHeight()
+      let yPosition = 20
+
+      // Helper function to add text with proper formatting
+      const addText = (text: string, x: number, y: number, options: any = {}) => {
+        doc.setFontSize(options.fontSize || 12)
+        doc.setTextColor(options.color || '#000000')
+        if (options.bold) {
+          doc.setFont('arial', 'bold')
+        } else {
+          doc.setFont('arial', 'normal')
+        }
+        doc.text(text, x, y)
       }
-      doc.setDrawColor(0, 0, 0) // Black border
-      doc.rect(x, y, width, height, 'S')
-    }
 
-    // Helper function to check if we need a new page
-    const checkNewPage = (requiredSpace: number = 20) => {
-      if (yPosition + requiredSpace > pageHeight - 20) {
-        doc.addPage()
-        yPosition = 20
-        return true
+      // Helper function to add line
+      const addLine = (x1: number, y1: number, x2: number, y2: number) => {
+        doc.setDrawColor(200, 200, 200)
+        doc.line(x1, y1, x2, y2)
       }
-      return false
-    }
 
-    // Institutional Header
-    doc.setFontSize(12)
-    doc.setFont('arial', 'normal')
-    doc.text('College of Computing and Multimedia Studies', pageWidth / 2, yPosition, { align: 'center' })
-    yPosition += 8
-    
-    doc.setFontSize(12)
-    doc.setFont('arial', 'normal')
-    doc.text('Camarines Norte State College', pageWidth / 2, yPosition, { align: 'center' })
-    yPosition += 8
-    
-    doc.setFontSize(12)
-    doc.setFont('arial', 'normal')
-    doc.text('Daet, Camarines Norte', pageWidth / 2, yPosition, { align: 'center' })
-    yPosition += 15
-    
-    // Report Title
-    doc.setFontSize(16)
-    doc.setFont('arial', 'bold')
-    doc.text('EcoPlug Performance Summary Report', pageWidth / 2, yPosition, { align: 'center' })
-    yPosition += 20
+      // Helper function to add rectangle with background color
+      const addRect = (x: number, y: number, width: number, height: number, fillColor?: [number, number, number]) => {
+        if (fillColor) {
+          doc.setFillColor(fillColor[0], fillColor[1], fillColor[2])
+          doc.rect(x, y, width, height, 'F')
+        }
+        doc.setDrawColor(0, 0, 0) // Black border
+        doc.rect(x, y, width, height, 'S')
+      }
 
-    // Add a separator line
-    addLine(20, yPosition, pageWidth - 20, yPosition)
-    yPosition += 15
+      // Helper function to check if we need a new page
+      const checkNewPage = (requiredSpace: number = 20) => {
+        if (yPosition + requiredSpace > pageHeight - 20) {
+          doc.addPage()
+          yPosition = 20
+          return true
+        }
+        return false
+      }
 
-    // Add report details from image
-    addText('Date: January 01, 2025', 20, yPosition, { fontSize: 12 })
-    yPosition += 7
+      // Institutional Header
+      doc.setFontSize(12)
+      doc.setFont('arial', 'normal')
+      doc.text('College of Computing and Multimedia Studies', pageWidth / 2, yPosition, { align: 'center' })
+      yPosition += 8
+      
+      doc.setFontSize(12)
+      doc.setFont('arial', 'normal')
+      doc.text('Camarines Norte State College', pageWidth / 2, yPosition, { align: 'center' })
+      yPosition += 8
+      
+      doc.setFontSize(12)
+      doc.setFont('arial', 'normal')
+      doc.text('Daet, Camarines Norte', pageWidth / 2, yPosition, { align: 'center' })
+      yPosition += 15
+      
+      // Report Title
+      doc.setFontSize(16)
+      doc.setFont('arial', 'bold')
+      doc.text('EcoPlug Performance Summary Report', pageWidth / 2, yPosition, { align: 'center' })
+      yPosition += 20
 
-    addText('Department: College of Computing and Multimedia Studies', 20, yPosition, { fontSize: 12 })
-    yPosition += 7
+      // Add a separator line
+      addLine(20, yPosition, pageWidth - 20, yPosition)
+      yPosition += 15
 
-    addText('Offices: Dean\'s Office', 20, yPosition, { fontSize: 12 })
-    yPosition += 7
+      // Add report details with real data
+      addText(`Date: ${currentDate}`, 20, yPosition, { fontSize: 12 })
+      yPosition += 7
 
-    addText('No. of EcoPlug: 5', 20, yPosition, { fontSize: 12 })
-    yPosition += 7
+      addText('Department: College of Computing and Multimedia Studies', 20, yPosition, { fontSize: 12 })
+      yPosition += 7
 
-    addText('Electricity Rate: 11 kWh', 20, yPosition, { fontSize: 12 })
-    yPosition += 7
+      addText(`Offices: ${officeDisplayName}`, 20, yPosition, { fontSize: 12 })
+      yPosition += 7
 
-    addText('Overall Power Limit: 3000 kilowatts', 20, yPosition, { fontSize: 12 })
-    yPosition += 15
+      addText(`No. of EcoPlug: ${totalDevices}`, 20, yPosition, { fontSize: 12 })
+      yPosition += 7
+
+      addText(`Electricity Rate: PHP ${currentRate.toFixed(4)} per kWh`, 20, yPosition, { fontSize: 12 })
+      yPosition += 7
+
+      addText(`Overall Power Limit: ${(totalPowerLimit / 1000).toFixed(0)} kilowatts`, 20, yPosition, { fontSize: 12 })
+      yPosition += 15
 
     // I. Outlet Performance Breakdown table
     checkNewPage(50)
@@ -687,9 +681,9 @@ export default function Reports() {
     addText('(hrs)', xPosition + 2, yPosition + 10, { fontSize: 10, bold: true })
     xPosition += colWidths[4]
     
-    // Monthly Cost (₱) - split into two lines with peso sign
+    // Monthly Cost (PHP) - split into two lines
     addText('Monthly Cost', xPosition + 2, yPosition + 4, { fontSize: 10, bold: true })
-    addText('(₱)', xPosition + 2, yPosition + 8, { fontSize: 10, bold: true })
+    addText('(PHP)', xPosition + 2, yPosition + 8, { fontSize: 10, bold: true })
     xPosition += colWidths[5]
     
     // Share of Total (%) - split into three lines
@@ -699,14 +693,47 @@ export default function Reports() {
     
     yPosition += headerHeight + 2
 
-    // Table data with hours column added back
-    const tableData = [
-      ['Outlet 1', 'Aircon', '500', '450', '150', '', ''],
-      ['Outlet 2', 'Television', '500', '300', '140', '', ''],
-      ['Outlet 3', 'Refrigerator', '500', '400', '130', '', ''],
-      ['Outlet 4', 'Electric fan', '500', '350', '160', '', ''],
-      ['Outlet 5', 'Water Dispenser', '500', '380', '155', '', '']
-    ]
+    // Table data with real device data - using 3 decimal places format
+    const tableData = deviceMonthlyData.map((device, index) => {
+      const outletNumber = device.outletId.split('_')[1] || (index + 1).toString()
+      
+      // Show combined limit only for outlets that are part of the combined group
+      let powerLimitDisplay = ''
+      if (combinedLimitInfo?.enabled && combinedLimitInfo?.selectedOutlets?.includes(device.outletId)) {
+        // This outlet is part of the combined limit group
+        if (String(combinedLimitInfo.combinedLimit) === "No Limit") {
+          powerLimitDisplay = 'No Limit'
+        } else {
+          // Show the actual combined limit value for outlets in the combined group (including 0.000)
+          const limitValue = combinedLimitInfo.combinedLimit
+          powerLimitDisplay = (limitValue !== null && limitValue !== undefined && !isNaN(limitValue)) 
+            ? limitValue.toFixed(3) 
+            : 'No Limit'
+        }
+      } else {
+        // This outlet is not part of the combined group, show individual limit (including 0.000)
+        const limitValue = device.powerLimit
+        powerLimitDisplay = (limitValue !== null && limitValue !== undefined && !isNaN(limitValue)) 
+          ? limitValue.toFixed(3) 
+          : 'No Limit'
+      }
+      const monthlyEnergyDisplay = device.monthlyEnergy.toFixed(3)
+      const totalHoursDisplay = device.totalHours.toFixed(3)
+      const monthlyCostDisplay = device.monthlyCost.toFixed(2)
+      const sharePercentage = deviceMonthlyData.reduce((sum, d) => sum + d.monthlyEnergy, 0) > 0 
+        ? ((device.monthlyEnergy / deviceMonthlyData.reduce((sum, d) => sum + d.monthlyEnergy, 0)) * 100).toFixed(3)
+        : '0.000'
+      
+      return [
+        `Outlet ${outletNumber}`,
+        device.appliance,
+        powerLimitDisplay,
+        monthlyEnergyDisplay,
+        totalHoursDisplay,
+        monthlyCostDisplay,
+        sharePercentage
+      ]
+    })
 
     // Draw table rows with grid structure
     const rowHeight = 10
@@ -731,20 +758,25 @@ export default function Reports() {
       yPosition += rowHeight
     })
 
-    // Add summary rows as part of the table structure
+    // Add summary rows with real calculated data
     checkNewPage(20)
+    
+    // Calculate totals
+    const totalMonthlyEnergy = deviceMonthlyData.reduce((sum, device) => sum + device.monthlyEnergy, 0)
+    const totalMonthlyCost = deviceMonthlyData.reduce((sum, device) => sum + device.monthlyCost, 0)
+    const totalHours = deviceMonthlyData.reduce((sum, device) => sum + device.totalHours, 0)
     
     // Calculate total table width
     const totalTableWidth = colWidths.reduce((sum, width) => sum + width, 0)
     
     // Total Usage row - single cell spanning all columns
     addRect(20, yPosition - 2, totalTableWidth, rowHeight)
-    addText('Total Usage:', 22, yPosition + 4, { fontSize: 10, bold: true })
+    addText(`Total Usage: ${totalMonthlyEnergy.toFixed(3)} Wh (${totalHours.toFixed(3)} hours)`, 22, yPosition + 4, { fontSize: 10, bold: true })
     yPosition += rowHeight
     
     // Estimated Cost row - single cell spanning all columns
     addRect(20, yPosition - 2, totalTableWidth, rowHeight)
-    addText('Estimated Cost:', 22, yPosition + 4, { fontSize: 10, bold: true })
+    addText(`Estimated Cost: PHP ${totalMonthlyCost.toFixed(2)}`, 22, yPosition + 4, { fontSize: 10, bold: true })
     yPosition += rowHeight
 
     // Add power usage summary text at the bottom of the chart
@@ -756,7 +788,13 @@ export default function Reports() {
     doc.setFontSize(12)
     doc.setTextColor('#000000')
     
-    const powerUsageText = "The outlet performance data shows a total power usage of 1,880 Wh across all monitored appliances, operating for a combined 735 hours, which resulted in an estimated monthly cost of P3,040.50. The air conditioner, running for 150 hours, recorded the highest consumption but remained under the suggested power limit at 450 Wh. In contrast, the television, operating for 140 hours, registered the lowest consumption and also stayed under the suggested limit at 300 Wh."
+    // Create power usage summary text based on whether combined limit is used
+    let powerUsageText = ''
+    if (combinedLimitInfo?.enabled && combinedLimitInfo?.combinedLimit > 0) {
+      powerUsageText = `The outlet performance data shows a total power usage of ${totalMonthlyEnergy.toFixed(3)} Wh across all monitored appliances, operating for a combined ${totalHours.toFixed(3)} hours, which resulted in an estimated monthly cost of PHP ${totalMonthlyCost.toFixed(2)}. The analysis covers ${totalDevices} EcoPlug devices in ${officeDisplayName}, with a combined power limit of ${(combinedLimitInfo.combinedLimit / 1000).toFixed(0)} kilowatts.`
+    } else {
+      powerUsageText = `The outlet performance data shows a total power usage of ${totalMonthlyEnergy.toFixed(3)} Wh across all monitored appliances, operating for a combined ${totalHours.toFixed(3)} hours, which resulted in an estimated monthly cost of PHP ${totalMonthlyCost.toFixed(2)}. The analysis covers ${totalDevices} EcoPlug devices in ${officeDisplayName}, with individual power limits ranging from ${Math.min(...deviceMonthlyData.map(d => d.powerLimit).filter(p => p > 0)).toFixed(3)} Wh to ${Math.max(...deviceMonthlyData.map(d => d.powerLimit).filter(p => p > 0)).toFixed(3)} Wh.`
+    }
     
     // Split text into lines to fit page width
     const powerUsageMaxWidth = pageWidth - 40 // 20px margin on each side
@@ -822,14 +860,68 @@ export default function Reports() {
     
     yPosition += powerSavingHeaderHeight + 2
 
-    // Table data for Power Saving Recommendation
-    const powerSavingTableData = [
-      ['Outlet 1', 'Aircon', '10', '500', '450', '450'],
-      ['Outlet 2', 'Television', '5', '500', '300', ''],
-      ['Outlet 3', 'Refrigerator', '15', '500', '400', ''],
-      ['Outlet 4', 'Electric fan', '5', '500', '350', ''],
-      ['Outlet 5', 'Water Dispenser', '6', '500', '380', '']
-    ]
+    // Table data for Power Saving Recommendation with real data - using 3 decimal places format
+    const powerSavingTableData = deviceMonthlyData.map((device, index) => {
+      const outletNumber = device.outletId.split('_')[1] || (index + 1).toString()
+      // Calculate average daily power usage based on actual usage hours
+      const avgDailyPower = device.totalHours > 0 ? (device.monthlyEnergy / daysInMonth).toFixed(3) : '0.000'
+      
+      // Show combined limit only for outlets that are part of the combined group
+      let powerLimitDisplay = ''
+      if (combinedLimitInfo?.enabled && combinedLimitInfo?.selectedOutlets?.includes(device.outletId)) {
+        // This outlet is part of the combined limit group
+        if (String(combinedLimitInfo.combinedLimit) === "No Limit") {
+          powerLimitDisplay = 'No Limit'
+        } else {
+          // Show the actual combined limit value for outlets in the combined group (including 0.000)
+          const limitValue = combinedLimitInfo.combinedLimit
+          powerLimitDisplay = (limitValue !== null && limitValue !== undefined && !isNaN(limitValue)) 
+            ? limitValue.toFixed(3) 
+            : 'No Limit'
+        }
+      } else {
+        // This outlet is not part of the combined group, show individual limit (including 0.000)
+        const limitValue = device.powerLimit
+        powerLimitDisplay = (limitValue !== null && limitValue !== undefined && !isNaN(limitValue)) 
+          ? limitValue.toFixed(3) 
+          : 'No Limit'
+      }
+      const monthlyEnergyDisplay = device.monthlyEnergy.toFixed(3)
+      
+      // Calculate recommended power limit (10% reduction from current limit)
+      let recommendedLimit = ''
+      if (combinedLimitInfo?.enabled && combinedLimitInfo?.selectedOutlets?.includes(device.outletId)) {
+        // This outlet is part of the combined limit group
+        if (String(combinedLimitInfo.combinedLimit) === "No Limit") {
+          recommendedLimit = 'No Limit'
+        } else {
+          // For outlets in combined group, show recommended combined limit (including 0.000)
+          const limitValue = combinedLimitInfo.combinedLimit
+          if (limitValue !== null && limitValue !== undefined && !isNaN(limitValue)) {
+            recommendedLimit = (limitValue * 0.9 / 1000).toFixed(3) // Convert to kW
+          } else {
+            recommendedLimit = 'No Limit'
+          }
+        }
+      } else {
+        // This outlet is not part of the combined group, show individual recommendations (including 0.000)
+        const limitValue = device.powerLimit
+        if (limitValue !== null && limitValue !== undefined && !isNaN(limitValue)) {
+          recommendedLimit = (limitValue * 0.9).toFixed(3)
+        } else {
+          recommendedLimit = 'No Limit'
+        }
+      }
+      
+      return [
+        `Outlet ${outletNumber}`,
+        device.appliance,
+        avgDailyPower,
+        powerLimitDisplay,
+        monthlyEnergyDisplay,
+        recommendedLimit
+      ]
+    })
 
     // Draw table rows with grid structure - same style as Outlet Performance Breakdown
     const powerSavingRowHeight = 10
@@ -863,7 +955,11 @@ export default function Reports() {
     doc.setFontSize(12)
     doc.setTextColor('#000000')
     
-    const powerSavingAnalysisText = "The power-saving analysis shows that all appliances operated under the set power limit of 500 Wh, but further optimization is still possible. The air conditioner, with an actual usage of 450 Wh, stayed below the set limit, and a new recommended limit of 350 Wh could yield about 22% savings through reduced operating hours and optimized temperature settings. The television consumed 300 Wh, also under the limit, and with a new recommended limit of 250 Wh, it can achieve around 17% savings by minimizing standby use. The refrigerator, which recorded 400 Wh, remained under the set limit, and a new recommended limit of 380 Wh allows for modest savings of about 5%, as it requires continuous operation. The electric fan used 350 Wh, under the limit as well, and reducing it to a recommended 300 Wh could provide 14% savings if aligned with actual room occupancy. Finally, the water dispenser consumed 380 Wh, also under the limit, and with a new recommended limit of 320 Wh, it can achieve approximately 16% savings by reducing standby usage during off-hours. Collectively, these adjustments highlight that even appliances operating within limits can still be optimized, with potential overall monthly savings of 15–20%."
+    const totalCurrentLimits = deviceMonthlyData.reduce((sum, device) => sum + device.powerLimit, 0)
+    const totalRecommendedLimits = deviceMonthlyData.reduce((sum, device) => sum + (device.powerLimit * 0.9), 0)
+    const potentialSavings = totalCurrentLimits > 0 ? ((totalCurrentLimits - totalRecommendedLimits) / totalCurrentLimits * 100).toFixed(1) : '0'
+    
+    const powerSavingAnalysisText = `The power-saving analysis shows that all appliances in ${officeDisplayName} operated under their respective power limits, but further optimization is still possible. The analysis covers ${totalDevices} devices with a total current power limit of ${totalCurrentLimits.toFixed(3)} Wh. By implementing the recommended power limits totaling ${totalRecommendedLimits.toFixed(3)} Wh, potential savings of approximately ${potentialSavings}% could be achieved through optimized operating schedules and reduced standby consumption. This optimization strategy focuses on maintaining functionality while reducing energy waste, particularly during off-hours and low-usage periods.`
     
     // Split text into lines to fit page width
     const analysisMaxWidth = pageWidth - 40 // 20px margin on each side
@@ -900,11 +996,19 @@ export default function Reports() {
 
     // Generate filename
     const timestamp = new Date().toISOString().split('T')[0]
-    const departmentName = department === 'College of Computer and Multimedia Studies' ? 'CCMS' : department.replace(/\s+/g, '_')
-    const filename = `CNSC_CCMS_Power_Report_${departmentName}_${timestamp}.pdf`
+    const officeName = officeDisplayName === 'All Offices' ? 'All_Offices' : officeDisplayName.replace(/\s+/g, '_')
+    const filename = `CNSC_CCMS_Power_Report_${officeName}_${timestamp}.pdf`
 
     // Save the PDF
     doc.save(filename)
+    
+    // Close the office selection modal if it was open
+    setIsPdfOfficeModalOpen(false)
+    
+    } catch (error) {
+      console.error('Error generating PDF report:', error)
+      alert('Error generating PDF report. Please try again.')
+    }
   }
 
   const [deptOpen, setDeptOpen] = useState(false)
@@ -929,6 +1033,7 @@ export default function Reports() {
     energyUsage: []
   })
   const [isModalOpen, setIsModalOpen] = useState(false)
+  const [isPdfOfficeModalOpen, setIsPdfOfficeModalOpen] = useState(false)
   const [combinedLimitInfo, setCombinedLimitInfo] = useState<{
     enabled: boolean;
     selectedOutlets: string[];
@@ -1286,7 +1391,8 @@ export default function Reports() {
               total_energy: todayLogs?.total_energy || 0, // This is in kW from daily logs
               lifetime_energy: lifetimeEnergyKw, // This is in kW from root level
               officeRoom: officeInfo,
-              appliances: outlet.office_info?.appliance || 'Unassigned'
+              appliances: outlet.office_info?.appliance || 'Unassigned',
+              relay_control: outlet.relay_control // Add relay_control data
             }
             devicesArray.push(deviceData)
           }
@@ -1409,7 +1515,7 @@ export default function Reports() {
           setCombinedLimitInfo({
             enabled: data.enabled || false,
             selectedOutlets: data.selected_outlets || [],
-            combinedLimit: data.combined_limit_watts || 0
+            combinedLimit: data.combined_limit_watts !== undefined ? data.combined_limit_watts : 0 // Preserve "No Limit" string or use 0 as default
           })
         } else {
           setCombinedLimitInfo({
@@ -1645,7 +1751,7 @@ export default function Reports() {
           <button 
             className="print-report-btn" 
             type="button" 
-            onClick={() => generatePDFReport()}
+            onClick={() => showPdfOfficeSelection()}
             title="Generate PDF Report"
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -1692,7 +1798,7 @@ export default function Reports() {
             <div className="metric-content">
               <div className="metric-title">Total Consumption</div>
               <div className="metric-value">
-                {(totalEnergy * 1000).toFixed(3)} Wh
+                {formatNumber(totalEnergy * 1000)} Wh
               </div>
               <div className="metric-trend positive">
                 Live data from database
@@ -1713,7 +1819,7 @@ export default function Reports() {
             <div className="metric-content">
               <div className="metric-title">Current Power Usage</div>
               <div className="metric-value">
-                {(totalPower * 1000).toFixed(3)} Wh
+                {formatNumber(totalPower * 1000)} Wh
               </div>
               <div className="metric-trend positive">
                 Live power consumption
@@ -1734,7 +1840,7 @@ export default function Reports() {
             </div>
             <div className="metric-content">
               <div className="metric-title">Current Bill</div>
-              <div className="metric-value">₱{currentBill.toFixed(2)}</div>
+              <div className="metric-value">PHP {formatNumber(currentBill, 2)}</div>
               <div className="metric-trend positive">
                 Based on current consumption
               </div>
@@ -1820,7 +1926,7 @@ export default function Reports() {
                             label: function(context) {
                               const value = context.parsed.y
                                 // Data is already in watts
-                                return `Energy Usage: ${value.toFixed(3)} Wh`
+                                return `Energy Usage: ${formatNumber(value)} Wh`
                             }
                           }
                         }
@@ -1953,7 +2059,7 @@ export default function Reports() {
                           label: function(context) {
                             const value = context.parsed.y
                             const label = context.dataset.label || ''
-                            return `${label}: ${value.toFixed(3)} Wh`
+                            return `${label}: ${formatNumber(value)} Wh`
                           }
                         }
                         }
@@ -2068,7 +2174,7 @@ export default function Reports() {
                 {getFilteredDevicesBySearch(filteredDevices, searchQuery).map((device, index) => {
                   // Use lifetime_energy for device consumption display (convert to watts)
                   const lifetimeEnergyKw = device.lifetime_energy || 0
-                  const usageDisplay = `${(lifetimeEnergyKw * 1000).toFixed(3)} Wh`
+                  const usageDisplay = `${formatNumber(lifetimeEnergyKw * 1000)} Wh`
                   
                   const currentEnergy = lifetimeEnergyKw // Already in kW from database
                   const percentage = currentTotalEnergy > 0 ? (currentEnergy / currentTotalEnergy) * 100 : 0
@@ -2078,7 +2184,7 @@ export default function Reports() {
                       <div className="device-info">
                         <span className="device-name">Outlet {device.outletId.split('_')[1]}</span>
                         <span className="device-usage">
-                          {usageDisplay} ({percentage.toFixed(1)}%)
+                          {usageDisplay} ({formatNumber(percentage, 1)}%)
                         </span>
                       </div>
                       <div className="device-progress">
@@ -2307,7 +2413,7 @@ export default function Reports() {
                           label: function(context) {
                             const value = context.parsed.y
                             const label = context.dataset.label || ''
-                            return `${label}: ${value.toFixed(3)} Wh`
+                            return `${label}: ${formatNumber(value)} Wh`
                           }
                         }
                         }
@@ -2387,6 +2493,65 @@ export default function Reports() {
                   <p className="chart-no-data-subtitle">Try selecting a different time period or check if devices have recent data</p>
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Office Selection Modal for PDF */}
+      {isPdfOfficeModalOpen && (
+        <div className="chart-modal-overlay" onClick={() => setIsPdfOfficeModalOpen(false)}>
+          <div className="chart-modal-content office-selection-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="chart-modal-header">
+              <h3>Select Office for PDF Report</h3>
+              <button 
+                className="chart-modal-close" 
+                onClick={() => setIsPdfOfficeModalOpen(false)}
+                aria-label="Close modal"
+              >
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </button>
+            </div>
+            <div className="chart-modal-body">
+              <div className="office-selection-grid">
+                <button 
+                  className="office-option"
+                  onClick={() => {
+                    generatePDFReport('All Offices')
+                  }}
+                >
+                  <div className="office-option-content">
+                    <h4>All Offices</h4>
+                    <p>Generate report for all devices across all offices</p>
+                    <div className="office-stats">
+                      <span>{devices.length} devices</span>
+                    </div>
+                  </div>
+                </button>
+                
+                {departments.filter(dept => dept !== 'College of Computer and Multimedia Studies').map((office) => {
+                  const officeDevices = devices.filter(device => device.officeRoom === office)
+                  return (
+                    <button 
+                      key={office}
+                      className="office-option"
+                      onClick={() => {
+                        generatePDFReport(office)
+                      }}
+                    >
+                      <div className="office-option-content">
+                        <h4>{office}</h4>
+                        <p>Generate report for devices in this office</p>
+                        <div className="office-stats">
+                          <span>{officeDevices.length} devices</span>
+                        </div>
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
             </div>
           </div>
         </div>
