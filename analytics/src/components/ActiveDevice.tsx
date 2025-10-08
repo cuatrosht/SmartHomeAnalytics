@@ -70,6 +70,28 @@ const calculateCombinedMonthlyEnergy = (devicesData: any, selectedOutlets: strin
   }
 }
 
+// Auto-turnoff functions disabled to prevent interference with data uploads
+// const startAutoTurnoffTimer = (outletKey: string, setAutoTurnoffTimers: React.Dispatch<React.SetStateAction<Record<string, NodeJS.Timeout | null>>>) => {
+//   // Function disabled to prevent auto-turnoff spam
+// }
+
+const clearAutoTurnoffTimer = (outletKey: string, setAutoTurnoffTimers: React.Dispatch<React.SetStateAction<Record<string, NodeJS.Timeout | null>>>) => {
+  setAutoTurnoffTimers(prev => {
+    if (prev[outletKey]) {
+      clearTimeout(prev[outletKey]!)
+      console.log(`🔄 Auto-turnoff: Cleared timer for ${outletKey} - device is now idle or turned off`)
+    }
+    return {
+      ...prev,
+      [outletKey]: null
+    }
+  })
+}
+
+// const resetAutoTurnoffFunction = (outletKey: string, setAutoTurnoffTimers: React.Dispatch<React.SetStateAction<Record<string, NodeJS.Timeout | null>>>) => {
+//   // Function disabled to prevent auto-turnoff spam
+// }
+
 // Function to remove a device from combined group when monthly limit is exceeded
 const removeDeviceFromCombinedGroup = async (outletKey: string): Promise<{
   success: boolean;
@@ -119,7 +141,7 @@ interface Device {
   appliances: string
   officeRoom: string
   powerUsage: string
-  status: 'Active' | 'Inactive'
+  status: 'Active' | 'Inactive' | 'Idle'
   todayUsage: string
   schedule: {
     time: string
@@ -134,6 +156,7 @@ interface Device {
 }
 
 interface FirebaseDeviceData {
+  status?: string // Add status property
   lifetime_energy?: number // Add lifetime_energy at the root level
   daily_logs?: {
     [date: string]: {
@@ -189,6 +212,65 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
       minimumFractionDigits: decimals,
       maximumFractionDigits: decimals
     })
+  }
+
+  // Helper function to safely show modals with debouncing
+  const showModalSafely = (modalType: 'scheduleConflict' | 'powerLimit' | 'noPowerLimit' | 'success' | 'error', data: any) => {
+    const currentTime = Date.now()
+    
+    // Check if enough time has passed since last modal trigger
+    if (currentTime - lastModalTrigger < MODAL_DEBOUNCE_MS) {
+      console.log(`Modal ${modalType} blocked - too soon since last modal (${currentTime - lastModalTrigger}ms ago)`)
+      return false
+    }
+    
+    // Check if any modal is already open
+    if (modalOpen) {
+      console.log(`Modal ${modalType} blocked - another modal is already open`)
+      return false
+    }
+    
+    // Set modal open flag and update last trigger time
+    setModalOpen(true)
+    setLastModalTrigger(currentTime)
+    
+    // Show the appropriate modal
+    switch (modalType) {
+      case 'scheduleConflict':
+        setScheduleConflictModal({
+          isOpen: true,
+          device: data.device,
+          reason: data.reason
+        })
+        break
+      case 'powerLimit':
+        setPowerLimitModal({
+          isOpen: true,
+          device: data.device
+        })
+        break
+      case 'noPowerLimit':
+        setNoPowerLimitModal({
+          isOpen: true,
+          device: data.device
+        })
+        break
+      case 'success':
+        setSuccessModal({
+          isOpen: true,
+          deviceName: data.deviceName,
+          action: data.action
+        })
+        break
+      case 'error':
+        setErrorModal({
+          isOpen: true,
+          message: data.message
+        })
+        break
+    }
+    
+    return true
   }
 
   const [searchQuery, setSearchQuery] = useState('')
@@ -257,6 +339,11 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
     reason: ''
   })
   const [updatingDevices, setUpdatingDevices] = useState<Set<string>>(new Set())
+  const [modalOpen, setModalOpen] = useState(false) // Prevent multiple modals from opening
+  const [lastModalTrigger, setLastModalTrigger] = useState<number>(0) // Debounce modal triggers
+  const [lastToggleTrigger, setLastToggleTrigger] = useState<number>(0) // Debounce toggle triggers
+  const MODAL_DEBOUNCE_MS = 2000 // 2 seconds debounce to prevent rapid modal appearances
+  const TOGGLE_DEBOUNCE_MS = 1000 // 1 second debounce to prevent rapid toggle calls
   const [combinedLimitInfo, setCombinedLimitInfo] = useState<{
     enabled: boolean;
     selectedOutlets: string[];
@@ -266,6 +353,29 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
     selectedOutlets: [],
     combinedLimit: 0
   })
+
+  // Idle detection state
+  const [deviceActivity, setDeviceActivity] = useState<Record<string, {
+    lastEnergyUpdate: number;
+    lastControlUpdate: number;
+    lastTotalEnergy: number;
+    lastControlState: string;
+    lastStateHash: string;
+  }>>({})
+
+  // Auto-turnoff timer state for non-idle devices (disabled to prevent spam)
+  const [autoTurnoffTimers, setAutoTurnoffTimers] = useState<Record<string, NodeJS.Timeout | null>>({})
+  
+  // Clear all existing auto-turnoff timers on component mount to prevent spam
+  useEffect(() => {
+    // Clear any existing timers that might be running from previous sessions
+    Object.values(autoTurnoffTimers).forEach(timer => {
+      if (timer) {
+        clearTimeout(timer)
+      }
+    })
+    setAutoTurnoffTimers({})
+  }, [])
 
   // Helper function to get today's date in the format used in your database
   const getTodayDateKey = (): string => {
@@ -600,14 +710,120 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
           const officeValue = outlet.office_info?.office || ''
           const officeInfo = officeValue ? (officeNames[officeValue] || formatOfficeName(officeValue)) : '—'
           
-          // Use Dashboard.tsx approach: simple status from control.device
-          const deviceStatus = controlState === 'on' ? 'Active' : 'Inactive'
-          console.log(`ActiveDevice: ${outletKey} Status calculation:`, {
-            controlDevice: outlet.control?.device,
-            controlState,
-            deviceStatus,
-            timestamp: new Date().toLocaleTimeString()
-          })
+          // Check for idle status from root level
+          const sensorStatus = outlet.status
+          const isIdleFromSensor = sensorStatus === 'idle'
+          
+          // Idle detection logic
+          const currentTime = Date.now()
+          const currentTotalEnergy = todayLogs?.total_energy || 0
+          
+          // Get current values for state hash
+          const currentAvgPower = todayLogs?.avg_power || 0
+          const currentPeakPower = todayLogs?.peak_power || 0
+          const currentUsageTime = (todayLogs as any)?.usage_time_millis || 0
+          const currentStateHash = `${currentTotalEnergy}_${currentAvgPower}_${currentPeakPower}_${currentUsageTime}`
+          
+          // Get or initialize device activity tracking
+          const activity = deviceActivity[outletKey] || {
+            lastEnergyUpdate: currentTime, // Initialize with current time
+            lastControlUpdate: currentTime,
+            lastTotalEnergy: currentTotalEnergy,
+            lastControlState: controlState,
+            lastStateHash: currentStateHash
+          }
+          
+          // If this is the first time we're seeing this device with energy data, initialize the timestamp
+          if (!deviceActivity[outletKey] && currentTotalEnergy > 0) {
+            setDeviceActivity(prev => ({
+              ...prev,
+              [outletKey]: {
+                lastEnergyUpdate: currentTime,
+                lastControlUpdate: currentTime,
+                lastTotalEnergy: currentTotalEnergy,
+                lastControlState: controlState,
+                lastStateHash: currentStateHash
+              }
+            }))
+          }
+          
+          // Check if any of the daily_logs values have changed
+          const lastStateHash = activity.lastStateHash || ''
+          const energyChanged = currentStateHash !== lastStateHash
+          
+          if (energyChanged) {
+            setDeviceActivity(prev => ({
+              ...prev,
+              [outletKey]: {
+                ...activity,
+                lastEnergyUpdate: currentTime,
+                lastTotalEnergy: currentTotalEnergy,
+                lastStateHash: currentStateHash
+              }
+            }))
+          } else {
+            // Always ensure deviceActivity is properly initialized, even if energy hasn't changed
+            setDeviceActivity(prev => ({
+              ...prev,
+              [outletKey]: {
+                ...activity,
+                lastTotalEnergy: currentTotalEnergy,
+                lastStateHash: currentStateHash
+              }
+            }))
+          }
+          
+          // Check for control state changes
+          const controlChanged = controlState !== activity.lastControlState
+          if (controlChanged) {
+            setDeviceActivity(prev => ({
+              ...prev,
+              [outletKey]: {
+                ...activity,
+                lastControlUpdate: currentTime,
+                lastControlState: controlState
+              }
+            }))
+          }
+          
+          // Determine if device is idle (15 seconds of no updates)
+          const timeSinceEnergyUpdate = currentTime - activity.lastEnergyUpdate
+          const timeSinceControlUpdate = currentTime - activity.lastControlUpdate
+          const isIdleFromLogic = timeSinceEnergyUpdate > 15000 && timeSinceControlUpdate > 15000
+          
+          // Determine final status
+          let deviceStatus: 'Active' | 'Inactive' | 'Idle'
+          if ((isIdleFromSensor || isIdleFromLogic) && controlState === 'on') {
+            // Show Idle if sensor reports idle OR if device is supposed to be ON but not responding
+            deviceStatus = 'Idle'
+          } else {
+            deviceStatus = controlState === 'on' ? 'Active' : 'Inactive'
+          }
+
+          // Auto-turnoff logic - only for devices that are truly idle for extended periods
+          // Disabled auto-turnoff to prevent interference with data uploads and normal device operation
+          // if (controlState === 'on') {
+          //   if (deviceStatus !== 'Idle') {
+          //     // Device is not idle and control is on - start auto-turnoff timer
+          //     startAutoTurnoffTimer(outletKey, setAutoTurnoffTimers)
+          //   } else {
+          //     // Device is idle - clear any existing auto-turnoff timer
+          //     clearAutoTurnoffTimer(outletKey, setAutoTurnoffTimers)
+          //   }
+          // } else {
+          //   // Device control is off - clear any existing auto-turnoff timer and reset function
+          //   clearAutoTurnoffTimer(outletKey, setAutoTurnoffTimers)
+          // }
+          
+          // Clear any existing auto-turnoff timers to prevent interference
+          clearAutoTurnoffTimer(outletKey, setAutoTurnoffTimers)
+
+          // Auto-turnoff functionality disabled to prevent interference with data uploads
+          // Reset auto-turnoff function when outlet turns on again
+          // const controlChangedForAutoTurnoff = controlState !== activity.lastControlState
+          // if (controlChangedForAutoTurnoff && controlState === 'on') {
+          //   resetAutoTurnoffFunction(outletKey, setAutoTurnoffTimers)
+          // }
           
           // Debug: Check if schedule should be active
           if (outlet.schedule && (outlet.schedule.timeRange || outlet.schedule.startTime)) {
@@ -778,6 +994,21 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
               
               // Only update if status needs to change
               if (currentControlState !== newControlState) {
+                // Check for recent database activity before turning off devices
+                if (newControlState === 'off') {
+                  const currentTime = Date.now()
+                  const lastEnergyUpdate = deviceActivity[outletKey]?.lastEnergyUpdate || 0
+                  const timeSinceLastUpdate = currentTime - lastEnergyUpdate
+                  
+                  // If there's been database activity in the last 2 minutes, don't turn off automatically
+                  const hasRecentActivity = timeSinceLastUpdate < 120000 // 2 minutes
+                  
+                  if (hasRecentActivity) {
+                    console.log(`ActiveDevice: Keeping ${outletKey} ON - recent database activity detected (${Math.round(timeSinceLastUpdate / 1000)}s ago) during schedule check`)
+                    continue // Skip this device update
+                  }
+                }
+                
                 console.log(`ActiveDevice: Real-time update: ${outletKey} control state from ${currentControlState} to ${newControlState}`)
                 
                 await update(ref(realtimeDb, `devices/${outletKey}/control`), {
@@ -794,6 +1025,7 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
       }
     }
     
+
     // Universal Power Limit Monitor - works for ALL devices regardless of schedule
     const checkPowerLimitsAndTurnOffDevices = async () => {
       try {
@@ -844,20 +1076,41 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
                   isInCombinedGroup: isInCombinedGroup
                 })
                 
-                // If today's energy exceeds power limit, turn off the device
+                // If today's energy exceeds power limit, check for recent database activity before turning off
                 if (todayTotalEnergy >= powerLimit) {
-                  console.log(`ActiveDevice: POWER LIMIT EXCEEDED - Turning OFF ${outletKey} (${(todayTotalEnergy * 1000).toFixed(3)}W >= ${(powerLimit * 1000)}W)`)
+                  // Check for recent database activity to prevent turning off during data uploads
+                  const currentTime = Date.now()
+                  const lastEnergyUpdate = deviceActivity[outletKey]?.lastEnergyUpdate || 0
+                  const timeSinceLastUpdate = currentTime - lastEnergyUpdate
                   
-                  await update(ref(realtimeDb, `devices/${outletKey}/control`), {
-                    device: 'off'
+                  // If there's been database activity in the last 2 minutes, don't turn off automatically
+                  const hasRecentActivity = timeSinceLastUpdate < 120000 // 2 minutes
+                  
+                  console.log(`ActiveDevice: POWER LIMIT EXCEEDED for ${outletKey}:`, {
+                    todayTotalEnergy: `${(todayTotalEnergy * 1000).toFixed(3)}W`,
+                    powerLimit: `${(powerLimit * 1000)}W`,
+                    timeSinceLastUpdate: `${Math.round(timeSinceLastUpdate / 1000)}s`,
+                    hasRecentActivity: hasRecentActivity,
+                    willTurnOff: !hasRecentActivity
                   })
                   
-                  // Also turn off main status to prevent immediate re-activation
-                  await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
-                    main_status: 'OFF'
-                  })
-                  
-                  console.log(`ActiveDevice: Device ${outletKey} turned OFF due to power limit exceeded`)
+                  if (!hasRecentActivity) {
+                    // Only turn off if there's no recent database activity
+                    console.log(`ActiveDevice: Turning OFF ${outletKey} - no recent database activity`)
+                    
+                    await update(ref(realtimeDb, `devices/${outletKey}/control`), {
+                      device: 'off'
+                    })
+                    
+                    // Also turn off main status to prevent immediate re-activation
+                    await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
+                      main_status: 'OFF'
+                    })
+                    
+                    console.log(`ActiveDevice: Device ${outletKey} turned OFF due to power limit exceeded`)
+                  } else {
+                    console.log(`ActiveDevice: Keeping ${outletKey} ON - recent database activity detected (${Math.round(timeSinceLastUpdate / 1000)}s ago)`)
+                  }
                   
                   // Note: Automatic power limit enforcement is not logged to avoid cluttering device logs
                 }
@@ -872,7 +1125,7 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
       }
     }
     
-    // Run both functions immediately
+    // Run functions immediately
     checkScheduleAndUpdateDevices()
     checkPowerLimitsAndTurnOffDevices()
     
@@ -899,6 +1152,13 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
     return () => {
       clearInterval(scheduleInterval)
       clearInterval(powerLimitInterval)
+      
+      // Cleanup auto-turnoff timers
+      Object.values(autoTurnoffTimers).forEach(timer => {
+        if (timer) {
+          clearTimeout(timer)
+        }
+      })
     }
   }, [])
 
@@ -938,11 +1198,26 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
   // Now respects power limits before allowing devices to turn ON
   const toggleDeviceStatus = async (deviceId: string) => {
     try {
+      const currentTime = Date.now()
+      
+      // Check if enough time has passed since last toggle
+      if (currentTime - lastToggleTrigger < TOGGLE_DEBOUNCE_MS) {
+        console.log(`Toggle blocked - too soon since last toggle (${currentTime - lastToggleTrigger}ms ago)`)
+        return
+      }
+      
+      // Check if device is already being updated
+      if (updatingDevices.has(deviceId)) {
+        console.log(`Toggle blocked - device ${deviceId} is already being updated`)
+        return
+      }
+      
       const device = activeDevices.find(d => d.id === deviceId)
       if (!device) return
 
-      // Set loading state
+      // Set loading state and update last toggle trigger
       setUpdatingDevices(prev => new Set(prev).add(deviceId))
+      setLastToggleTrigger(currentTime)
 
       const outletKey = device.outletName.replace(' ', '_')
       const currentControlState = device.controlState
@@ -976,9 +1251,12 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
           
           // Check if device has no power limit set
           if (powerLimit <= 0) {
-            setNoPowerLimitModal({
-              isOpen: true,
-              device: device
+            showModalSafely('noPowerLimit', { device })
+            // Clear loading state before returning
+            setUpdatingDevices(prev => {
+              const newSet = new Set(prev)
+              newSet.delete(deviceId)
+              return newSet
             })
             return
           }
@@ -1002,8 +1280,7 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
             const currentTime = new Date().toLocaleTimeString()
             const currentDate = new Date().toLocaleDateString()
             
-            setPowerLimitModal({
-              isOpen: true,
+            showModalSafely('powerLimit', {
               device: {
                 ...device,
                 // Add additional info for the modal
@@ -1012,6 +1289,12 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
                 currentDate: currentDate,
                 currentTime: currentTime
               }
+            })
+            // Clear loading state before returning
+            setUpdatingDevices(prev => {
+              const newSet = new Set(prev)
+              newSet.delete(deviceId)
+              return newSet
             })
             return
           }
@@ -1035,10 +1318,15 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
               reason = `Device is outside its scheduled time (${schedule.startTime} - ${schedule.endTime}). Current time: ${now.toLocaleTimeString()}.`
             }
             
-            setScheduleConflictModal({
-              isOpen: true,
+            showModalSafely('scheduleConflict', {
               device: device,
               reason: reason
+            })
+            // Clear loading state before returning
+            setUpdatingDevices(prev => {
+              const newSet = new Set(prev)
+              newSet.delete(deviceId)
+              return newSet
             })
             return
           }
@@ -1073,16 +1361,14 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
       
       // Show success modal
       const actionText = newControlState === 'on' ? 'turned ON' : 'turned OFF'
-      setSuccessModal({
-        isOpen: true,
+      showModalSafely('success', {
         deviceName: device.outletName,
         action: actionText
       })
     } catch (error) {
       console.error('Error toggling device:', error)
       const deviceName = activeDevices.find(d => d.id === deviceId)?.outletName || 'Unknown Device'
-      setErrorModal({
-        isOpen: true,
+      showModalSafely('error', {
         message: `Failed to update device "${deviceName}". Please try again.`
       })
     } finally {
@@ -1097,20 +1383,14 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
 
   // Get status badge styling (updated to match Dashboard.tsx)
   const getStatusBadge = (status: string) => {
-    console.log('ActiveDevice: getStatusBadge called with status:', status, 'type:', typeof status)
-    
     const statusClasses: { [key: string]: string } = {
       'Active': 'status-active',
       'Inactive': 'status-inactive',
-      'Warning': 'status-warning'
+      'Warning': 'status-warning',
+      'Idle': 'status-idle'
     }
     
     const statusClass = statusClasses[status] || 'status-inactive'
-    console.log('ActiveDevice: Status badge calculation:', {
-      status,
-      statusClass,
-      displayText: status
-    })
     
     return (
       <span className={`status-badge ${statusClass}`}>
@@ -1143,7 +1423,10 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
     if (!successModal.isOpen) return null
 
     return (
-      <div className="modal-overlay success-overlay" onClick={() => setSuccessModal({ isOpen: false, deviceName: '', action: '' })}>
+      <div className="modal-overlay success-overlay" onClick={() => {
+        setModalOpen(false)
+        setSuccessModal({ isOpen: false, deviceName: '', action: '' })
+      }}>
         <div className="active-device-success-modal" onClick={(e) => e.stopPropagation()}>
           <div className="active-device-success-icon">
             <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -1157,7 +1440,10 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
           </p>
           <button 
             className="btn-primary" 
-            onClick={() => setSuccessModal({ isOpen: false, deviceName: '', action: '' })}
+            onClick={() => {
+              setModalOpen(false)
+              setSuccessModal({ isOpen: false, deviceName: '', action: '' })
+            }}
           >
             Continue
           </button>
@@ -1171,7 +1457,10 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
     if (!errorModal.isOpen) return null
 
     return (
-      <div className="modal-overlay" onClick={() => setErrorModal({ isOpen: false, message: '' })}>
+      <div className="modal-overlay" onClick={() => {
+        setModalOpen(false)
+        setErrorModal({ isOpen: false, message: '' })
+      }}>
         <div className="error-modal" onClick={(e) => e.stopPropagation()}>
           <div className="error-icon">
             <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -1183,7 +1472,10 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
           <p>{errorModal.message}</p>
           <button 
             className="btn-primary" 
-            onClick={() => setErrorModal({ isOpen: false, message: '' })}
+            onClick={() => {
+              setModalOpen(false)
+              setErrorModal({ isOpen: false, message: '' })
+            }}
           >
             Try Again
           </button>
@@ -1199,7 +1491,10 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
     const device = noPowerLimitModal.device
 
     return (
-      <div className="modal-overlay warning-overlay" onClick={() => setNoPowerLimitModal({ isOpen: false, device: null })}>
+      <div className="modal-overlay warning-overlay" onClick={() => {
+        setModalOpen(false)
+        setNoPowerLimitModal({ isOpen: false, device: null })
+      }}>
         <div className="warning-modal" onClick={(e) => e.stopPropagation()}>
           <div className="warning-icon">
             <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -1230,7 +1525,10 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
             <button
               type="button"
               className="btn-primary"
-              onClick={() => setNoPowerLimitModal({ isOpen: false, device: null })}
+              onClick={() => {
+                setModalOpen(false)
+                setNoPowerLimitModal({ isOpen: false, device: null })
+              }}
             >
               Understood
             </button>
@@ -1247,7 +1545,10 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
     const device = scheduleConflictModal.device
 
     return (
-      <div className="modal-overlay warning-overlay" onClick={() => setScheduleConflictModal({ isOpen: false, device: null, reason: '' })}>
+      <div className="modal-overlay warning-overlay" onClick={() => {
+        setModalOpen(false)
+        setScheduleConflictModal({ isOpen: false, device: null, reason: '' })
+      }}>
         <div className="warning-modal" onClick={(e) => e.stopPropagation()}>
           <div className="warning-icon">
             <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -1278,7 +1579,10 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
             <button
               type="button"
               className="btn-primary"
-              onClick={() => setScheduleConflictModal({ isOpen: false, device: null, reason: '' })}
+              onClick={() => {
+                setModalOpen(false)
+                setScheduleConflictModal({ isOpen: false, device: null, reason: '' })
+              }}
             >
               Understood
             </button>
@@ -1357,9 +1661,13 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
                     <button 
                       className="outlet-name-btn"
                       onClick={() => {
-                        setHistoryModal({ isOpen: true, device })
-                        fetchHistoryData(device)
+                        if (!modalOpen) {
+                          setModalOpen(true)
+                          setHistoryModal({ isOpen: true, device })
+                          fetchHistoryData(device)
+                        }
                       }}
+                      disabled={modalOpen}
                       title="View outlet history"
                     >
                       {device.outletName}
@@ -1387,7 +1695,7 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
                         checked={device.status === 'Active'}
                         onChange={() => toggleDeviceStatus(device.id)}
                         className="toggle-input"
-                        disabled={updatingDevices.has(device.id)}
+                        disabled={updatingDevices.has(device.id) || modalOpen}
                       />
                       <span className="toggle-slider" />
                     </label>
@@ -1426,7 +1734,10 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
 
       {/* Power Limit Warning Modal */}
       {powerLimitModal.isOpen && (
-        <div className="modal-overlay" onClick={() => setPowerLimitModal({ isOpen: false, device: null })}>
+        <div className="modal-overlay" onClick={() => {
+          setModalOpen(false)
+          setPowerLimitModal({ isOpen: false, device: null })
+        }}>
           <div className="modal-content power-limit-modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <div className="modal-icon warning">
@@ -1439,7 +1750,10 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
               <button
                 type="button"
                 className="modal-close"
-                onClick={() => setPowerLimitModal({ isOpen: false, device: null })}
+                onClick={() => {
+                  setModalOpen(false)
+                  setPowerLimitModal({ isOpen: false, device: null })
+                }}
                 aria-label="Close modal"
               >
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -1477,7 +1791,10 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
               <button
                 type="button"
                 className="btn-primary"
-                onClick={() => setPowerLimitModal({ isOpen: false, device: null })}
+                onClick={() => {
+                  setModalOpen(false)
+                  setPowerLimitModal({ isOpen: false, device: null })
+                }}
               >
                 Understood
               </button>
@@ -1488,7 +1805,10 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
 
       {/* Outlet History Modal */}
       {historyModal.isOpen && historyModal.device && (
-        <div className="modal-overlay" onClick={() => setHistoryModal({ isOpen: false, device: null })}>
+        <div className="modal-overlay" onClick={() => {
+          setModalOpen(false)
+          setHistoryModal({ isOpen: false, device: null })
+        }}>
           <div className="modal-content history-modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <div className="modal-icon history">
@@ -1501,7 +1821,10 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
               <button
                 type="button"
                 className="modal-close"
-                onClick={() => setHistoryModal({ isOpen: false, device: null })}
+                onClick={() => {
+                  setModalOpen(false)
+                  setHistoryModal({ isOpen: false, device: null })
+                }}
                 aria-label="Close modal"
               >
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -1647,7 +1970,10 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
               <button
                 type="button"
                 className="btn-secondary"
-                onClick={() => setHistoryModal({ isOpen: false, device: null })}
+                onClick={() => {
+                  setModalOpen(false)
+                  setHistoryModal({ isOpen: false, device: null })
+                }}
               >
                 Close
               </button>
@@ -1658,3 +1984,4 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
     </div>
   )
 }
+

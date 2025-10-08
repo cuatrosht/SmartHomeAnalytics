@@ -81,6 +81,59 @@ const calculateCombinedMonthlyEnergy = (devicesData: any, selectedOutlets: strin
   }
 }
 
+// Auto-turnoff functions for non-idle devices
+const startAutoTurnoffTimer = (outletKey: string, setAutoTurnoffTimers: React.Dispatch<React.SetStateAction<Record<string, NodeJS.Timeout | null>>>) => {
+  // Clear existing timer if any
+  setAutoTurnoffTimers(prev => {
+    if (prev[outletKey]) {
+      clearTimeout(prev[outletKey]!)
+    }
+    return prev
+  })
+
+  // Start new 15-second timer
+  const timer = setTimeout(async () => {
+    try {
+      console.log(`🔄 Auto-turnoff: Turning off ${outletKey} after 15 seconds of non-idle status`)
+      
+      // Turn off the device control
+      const controlRef = ref(realtimeDb, `devices/${outletKey}/control`)
+      await update(controlRef, {
+        device: 'off'
+      })
+      
+      console.log(`✅ Auto-turnoff: Successfully turned off ${outletKey}`)
+    } catch (error) {
+      console.error(`❌ Auto-turnoff: Error turning off ${outletKey}:`, error)
+    }
+  }, 15000) // 15 seconds
+
+  // Store the timer
+  setAutoTurnoffTimers(prev => ({
+    ...prev,
+    [outletKey]: timer
+  }))
+}
+
+const clearAutoTurnoffTimer = (outletKey: string, setAutoTurnoffTimers: React.Dispatch<React.SetStateAction<Record<string, NodeJS.Timeout | null>>>) => {
+  setAutoTurnoffTimers(prev => {
+    if (prev[outletKey]) {
+      clearTimeout(prev[outletKey]!)
+      console.log(`🔄 Auto-turnoff: Cleared timer for ${outletKey} - device is now idle or turned off`)
+    }
+    return {
+      ...prev,
+      [outletKey]: null
+    }
+  })
+}
+
+const resetAutoTurnoffFunction = (outletKey: string, setAutoTurnoffTimers: React.Dispatch<React.SetStateAction<Record<string, NodeJS.Timeout | null>>>) => {
+  // Clear any existing timer
+  clearAutoTurnoffTimer(outletKey, setAutoTurnoffTimers)
+  console.log(`🔄 Auto-turnoff: Reset function for ${outletKey} - outlet turned on again`)
+}
+
 // Function to check and enforce combined monthly limits
 const checkCombinedMonthlyLimit = async (devicesData: any, combinedLimitInfo: any) => {
   try {
@@ -231,7 +284,7 @@ interface DeviceData {
   appliances: string
   officeRoom: string
   powerUsage: string
-  status: 'Active' | 'Inactive' | 'Blocked'
+  status: 'Active' | 'Inactive' | 'Blocked' | 'Idle'
   todaysUsage: string
   limit: string
   schedule: {
@@ -249,6 +302,7 @@ interface DeviceData {
 }
 
 interface FirebaseDeviceData {
+  status?: string // Add status property
   lifetime_energy?: number // Add lifetime_energy at the root level
   daily_logs?: {
     [date: string]: {
@@ -1487,6 +1541,17 @@ export default function Schedule() {
     selectedOutlets: [],
     combinedLimit: 0
   })
+
+  // Idle detection state
+  const [deviceActivity, setDeviceActivity] = useState<Record<string, {
+    lastEnergyUpdate: number;
+    lastControlUpdate: number;
+    lastTotalEnergy: number;
+    lastControlState: string;
+  }>>({})
+
+  // Auto-turnoff timer state for non-idle devices
+  const [autoTurnoffTimers, setAutoTurnoffTimers] = useState<Record<string, NodeJS.Timeout | null>>({})
   
   const [combinedScheduleWarningModal, setCombinedScheduleWarningModal] = useState<{
     isOpen: boolean;
@@ -1590,8 +1655,81 @@ export default function Schedule() {
             if (!timeRange && outletData.schedule?.startTime && outletData.schedule?.endTime) {
               const startTime12 = convertTo12Hour(outletData.schedule.startTime)
               const endTime12 = convertTo12Hour(outletData.schedule.endTime)
-              timeRange = `${startTime12} - ${endTime12}`
+              
+              // Only set timeRange if both times are valid and not default values
+              if (startTime12 && endTime12 && 
+                  !(outletData.schedule.startTime === '00:00' && outletData.schedule.endTime === '00:00') &&
+                  !(outletData.schedule.startTime === '00:00' && outletData.schedule.endTime === '23:59')) {
+                timeRange = `${startTime12} - ${endTime12}`
+              }
             }
+
+            // Check for idle status from root level
+            const sensorStatus = outletData.status
+            const isIdleFromSensor = sensorStatus === 'idle' || sensorStatus === 'Idle'
+            
+            // Idle detection logic
+            const currentTime = Date.now()
+            const currentTotalEnergy = todayLogs?.total_energy || 0
+            
+            // Get or initialize device activity tracking
+            const activity = deviceActivity[outletKey] || {
+              lastEnergyUpdate: currentTime,
+              lastControlUpdate: currentTime,
+              lastTotalEnergy: currentTotalEnergy,
+              lastControlState: controlState
+            }
+            
+            // Check for energy updates (total_energy changed)
+            const energyChanged = Math.abs(currentTotalEnergy - activity.lastTotalEnergy) > 0.0001
+            if (energyChanged) {
+              setDeviceActivity(prev => ({
+                ...prev,
+                [outletKey]: {
+                  ...activity,
+                  lastEnergyUpdate: currentTime,
+                  lastTotalEnergy: currentTotalEnergy
+                }
+              }))
+            }
+            
+            // Check for control state changes
+            const controlChanged = controlState !== activity.lastControlState
+            if (controlChanged) {
+              setDeviceActivity(prev => ({
+                ...prev,
+                [outletKey]: {
+                  ...activity,
+                  lastControlUpdate: currentTime,
+                  lastControlState: controlState
+                }
+              }))
+            }
+            
+            // Determine if device is idle (15 seconds of no updates)
+            const timeSinceEnergyUpdate = currentTime - activity.lastEnergyUpdate
+            const timeSinceControlUpdate = currentTime - activity.lastControlUpdate
+            const isIdleFromLogic = timeSinceEnergyUpdate > 15000 && timeSinceControlUpdate > 15000
+            
+            // Determine final status
+            let deviceStatus: 'Active' | 'Inactive' | 'Blocked' | 'Idle'
+            if ((isIdleFromSensor || isIdleFromLogic) && controlState === 'on') {
+              // Show Idle if sensor reports idle OR if device is supposed to be ON but not responding
+              deviceStatus = 'Idle'
+            } else {
+              deviceStatus = controlState === 'on' ? 'Active' : 'Inactive'
+            }
+
+            // Auto-turnoff logic disabled to prevent interference with data uploads
+            // Clear any existing auto-turnoff timers to prevent interference
+            clearAutoTurnoffTimer(outletKey, setAutoTurnoffTimers)
+
+            // Auto-turnoff functionality disabled to prevent interference with data uploads
+            // Reset auto-turnoff function when outlet turns on again
+            // const controlChangedForAutoTurnoff = controlState !== activity.lastControlState
+            // if (controlChangedForAutoTurnoff && controlState === 'on') {
+            //   resetAutoTurnoffFunction(outletKey, setAutoTurnoffTimers)
+            // }
 
             // Create device object
             const device: DeviceData = {
@@ -1601,7 +1739,7 @@ export default function Schedule() {
               officeRoom: formatOfficeName(officeInfo?.office || 'Unassigned'),
               powerUsage: powerUsageDisplay,
               limit: powerLimitDisplay,
-              status: controlState === 'on' ? 'Active' : 'Inactive',
+              status: deviceStatus,
               todaysUsage: todayEnergyDisplay,
               schedule: {
                 timeRange: timeRange,
@@ -1680,8 +1818,80 @@ export default function Schedule() {
           if (!timeRange && outletData.schedule?.startTime && outletData.schedule?.endTime) {
             const startTime12 = convertTo12Hour(outletData.schedule.startTime)
             const endTime12 = convertTo12Hour(outletData.schedule.endTime)
-            timeRange = `${startTime12} - ${endTime12}`
+            
+            // Only set timeRange if both times are valid and not default values
+            if (startTime12 && endTime12 && 
+                !(outletData.schedule.startTime === '00:00' && outletData.schedule.endTime === '00:00') &&
+                !(outletData.schedule.startTime === '00:00' && outletData.schedule.endTime === '23:59')) {
+              timeRange = `${startTime12} - ${endTime12}`
+            }
           }
+
+          // Check for idle status from root level
+          const sensorStatus = outletData.status
+          const isIdleFromSensor = sensorStatus === 'idle' || sensorStatus === 'Idle'
+          
+          // Idle detection logic
+          const currentTime = Date.now()
+          const currentTotalEnergy = todayLogs?.total_energy || 0
+          
+          // Get or initialize device activity tracking
+          const activity = deviceActivity[outletKey] || {
+            lastEnergyUpdate: currentTime,
+            lastControlUpdate: currentTime,
+            lastTotalEnergy: currentTotalEnergy,
+            lastControlState: controlState
+          }
+          
+          // Check for energy updates (total_energy changed)
+          const energyChanged = Math.abs(currentTotalEnergy - activity.lastTotalEnergy) > 0.0001
+          if (energyChanged) {
+            setDeviceActivity(prev => ({
+              ...prev,
+              [outletKey]: {
+                ...activity,
+                lastEnergyUpdate: currentTime,
+                lastTotalEnergy: currentTotalEnergy
+              }
+            }))
+          }
+          
+          // Check for control state changes
+          const controlChanged = controlState !== activity.lastControlState
+          if (controlChanged) {
+            setDeviceActivity(prev => ({
+              ...prev,
+              [outletKey]: {
+                ...activity,
+                lastControlUpdate: currentTime,
+                lastControlState: controlState
+              }
+            }))
+          }
+          
+          // Determine if device is idle (15 seconds of no updates)
+          const timeSinceEnergyUpdate = currentTime - activity.lastEnergyUpdate
+          const timeSinceControlUpdate = currentTime - activity.lastControlUpdate
+          const isIdleFromLogic = timeSinceEnergyUpdate > 15000 && timeSinceControlUpdate > 15000
+          
+          // Determine final status
+          let deviceStatus: 'Active' | 'Inactive' | 'Blocked' | 'Idle'
+          if ((isIdleFromSensor || isIdleFromLogic) && controlState === 'on') {
+            // Show Idle if sensor reports idle OR if device is supposed to be ON but not responding
+            deviceStatus = 'Idle'
+          } else {
+            deviceStatus = controlState === 'on' ? 'Active' : 'Inactive'
+          }
+
+          // Auto-turnoff logic disabled to prevent interference with data uploads
+          // Clear any existing auto-turnoff timers to prevent interference
+          clearAutoTurnoffTimer(outletKey, setAutoTurnoffTimers)
+
+          // Auto-turnoff functionality disabled to prevent interference with data uploads
+          // Reset auto-turnoff function when outlet turns on again
+          // if (controlChanged && controlState === 'on') {
+          //   resetAutoTurnoffFunction(outletKey, setAutoTurnoffTimers)
+          // }
 
           // Create device object
           const device: DeviceData = {
@@ -1691,7 +1901,7 @@ export default function Schedule() {
             officeRoom: formatOfficeName(officeInfo?.office || 'Unassigned'),
             powerUsage: powerUsageDisplay,
             limit: powerLimitDisplay,
-            status: controlState === 'on' ? 'Active' : 'Inactive',
+            status: deviceStatus,
             todaysUsage: todayEnergyDisplay,
             schedule: {
               timeRange: timeRange,
@@ -1717,6 +1927,13 @@ export default function Schedule() {
     // Cleanup listener on unmount
     return () => {
       off(devicesRef, 'value')
+      
+      // Cleanup auto-turnoff timers
+      Object.values(autoTurnoffTimers).forEach(timer => {
+        if (timer) {
+          clearTimeout(timer)
+        }
+      })
     }
   }, [])
 
@@ -1783,6 +2000,13 @@ export default function Schedule() {
     // Cleanup interval on unmount
     return () => {
       clearInterval(monthlyLimitInterval)
+      
+      // Cleanup auto-turnoff timers
+      Object.values(autoTurnoffTimers).forEach(timer => {
+        if (timer) {
+          clearTimeout(timer)
+        }
+      })
     }
   }, [combinedLimitInfo])
 
@@ -1951,6 +2175,13 @@ export default function Schedule() {
     // Cleanup interval on unmount
     return () => {
       clearInterval(scheduleInterval)
+      
+      // Cleanup auto-turnoff timers
+      Object.values(autoTurnoffTimers).forEach(timer => {
+        if (timer) {
+          clearTimeout(timer)
+        }
+      })
     }
   }, [combinedLimitInfo])
 
@@ -2238,7 +2469,8 @@ export default function Schedule() {
     const statusClasses: { [key: string]: string } = {
       'Active': 'status-active',
       'Inactive': 'status-inactive',
-      'Blocked': 'status-blocked'
+      'Blocked': 'status-blocked',
+      'Idle': 'status-idle'
     }
     
     return (

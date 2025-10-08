@@ -628,9 +628,6 @@ export default function Reports() {
       yPosition += 7
 
       addText(`Electricity Rate: PHP ${currentRate.toFixed(4)} per kWh`, 20, yPosition, { fontSize: 12 })
-      yPosition += 7
-
-      addText(`Overall Power Limit: ${(totalPowerLimit / 1000).toFixed(0)} kilowatts`, 20, yPosition, { fontSize: 12 })
       yPosition += 15
 
     // I. Outlet Performance Breakdown table
@@ -699,7 +696,9 @@ export default function Reports() {
       
       // Show combined limit only for outlets that are part of the combined group
       let powerLimitDisplay = ''
-      if (combinedLimitInfo?.enabled && combinedLimitInfo?.selectedOutlets?.includes(device.outletId)) {
+      // Convert outletId to display format for comparison (Outlet_1 -> Outlet 1)
+      const outletDisplayName = device.outletId.replace('_', ' ')
+      if (combinedLimitInfo?.enabled && combinedLimitInfo?.selectedOutlets?.includes(outletDisplayName)) {
         // This outlet is part of the combined limit group
         if (String(combinedLimitInfo.combinedLimit) === "No Limit") {
           powerLimitDisplay = 'No Limit'
@@ -779,8 +778,8 @@ export default function Reports() {
     addText(`Estimated Cost: PHP ${totalMonthlyCost.toFixed(2)}`, 22, yPosition + 4, { fontSize: 10, bold: true })
     yPosition += rowHeight
 
-    // Add power usage summary text at the bottom of the chart
-    yPosition += 20
+    // Add power usage summary text right after the estimated cost row
+    yPosition += 10
     checkNewPage(60)
     
     // Power usage summary text with Aptos font
@@ -868,7 +867,9 @@ export default function Reports() {
       
       // Show combined limit only for outlets that are part of the combined group
       let powerLimitDisplay = ''
-      if (combinedLimitInfo?.enabled && combinedLimitInfo?.selectedOutlets?.includes(device.outletId)) {
+      // Convert outletId to display format for comparison (Outlet_1 -> Outlet 1)
+      const outletDisplayName = device.outletId.replace('_', ' ')
+      if (combinedLimitInfo?.enabled && combinedLimitInfo?.selectedOutlets?.includes(outletDisplayName)) {
         // This outlet is part of the combined limit group
         if (String(combinedLimitInfo.combinedLimit) === "No Limit") {
           powerLimitDisplay = 'No Limit'
@@ -888,26 +889,26 @@ export default function Reports() {
       }
       const monthlyEnergyDisplay = device.monthlyEnergy.toFixed(3)
       
-      // Calculate recommended power limit (10% reduction from current limit)
+      // Calculate recommended power limit based on total power usage (monthly energy)
       let recommendedLimit = ''
-      if (combinedLimitInfo?.enabled && combinedLimitInfo?.selectedOutlets?.includes(device.outletId)) {
+      if (combinedLimitInfo?.enabled && combinedLimitInfo?.selectedOutlets?.includes(outletDisplayName)) {
         // This outlet is part of the combined limit group
         if (String(combinedLimitInfo.combinedLimit) === "No Limit") {
           recommendedLimit = 'No Limit'
         } else {
-          // For outlets in combined group, show recommended combined limit (including 0.000)
-          const limitValue = combinedLimitInfo.combinedLimit
-          if (limitValue !== null && limitValue !== undefined && !isNaN(limitValue)) {
-            recommendedLimit = (limitValue * 0.9 / 1000).toFixed(3) // Convert to kW
+          // For outlets in combined group, use total power usage as recommended limit
+          const totalUsageValue = device.monthlyEnergy
+          if (totalUsageValue !== null && totalUsageValue !== undefined && !isNaN(totalUsageValue)) {
+            recommendedLimit = totalUsageValue.toFixed(3)
           } else {
             recommendedLimit = 'No Limit'
           }
         }
       } else {
-        // This outlet is not part of the combined group, show individual recommendations (including 0.000)
-        const limitValue = device.powerLimit
-        if (limitValue !== null && limitValue !== undefined && !isNaN(limitValue)) {
-          recommendedLimit = (limitValue * 0.9).toFixed(3)
+        // This outlet is not part of the combined group, use total power usage as recommended limit
+        const totalUsageValue = device.monthlyEnergy
+        if (totalUsageValue !== null && totalUsageValue !== undefined && !isNaN(totalUsageValue)) {
+          recommendedLimit = totalUsageValue.toFixed(3)
         } else {
           recommendedLimit = 'No Limit'
         }
@@ -1120,22 +1121,6 @@ export default function Reports() {
         
         console.log('Week data generated:', { labels: weekLabels, energyUsage: weekEnergyData })
         
-        // Check if we have any non-zero data, if not, generate sample data
-        const hasWeekData = weekEnergyData.some(dayData => dayData.some(energy => energy > 0))
-        if (!hasWeekData) {
-          console.log('No real data found for week, generating sample data')
-          // Generate sample data for demonstration
-          const sampleData = weekLabels.map(() => 
-            filteredDevices.map((_, deviceIndex) => 
-              Math.random() * 0.5 + 0.1 + (deviceIndex * 0.2) // Random values between 0.1-0.6 kW
-            )
-          )
-          return {
-            labels: weekLabels,
-            energyUsage: sampleData
-          }
-        }
-        
         return {
           labels: weekLabels,
           energyUsage: weekEnergyData
@@ -1160,22 +1145,6 @@ export default function Reports() {
         }
         
         console.log('Month data generated:', { labels: monthLabels, energyUsage: monthEnergyData })
-        
-        // Check if we have any non-zero data, if not, generate sample data
-        const hasMonthData = monthEnergyData.some(dayData => dayData.some(energy => energy > 0))
-        if (!hasMonthData) {
-          console.log('No real data found for month, generating sample data')
-          // Generate sample data for demonstration
-          const sampleData = monthLabels.map(() => 
-            filteredDevices.map((_, deviceIndex) => 
-              Math.random() * 0.5 + 0.1 + (deviceIndex * 0.2) // Random values between 0.1-0.6 kW
-            )
-          )
-          return {
-            labels: monthLabels,
-            energyUsage: sampleData
-          }
-        }
         
         return {
           labels: monthLabels,
@@ -1226,22 +1195,6 @@ export default function Reports() {
         
         console.log('Year data generated:', { labels: yearLabels, energyUsage: yearEnergyData })
         
-        // Check if we have any non-zero data, if not, generate sample data
-        const hasYearData = yearEnergyData.some(monthData => monthData.some(energy => energy > 0))
-        if (!hasYearData) {
-          console.log('No real data found for year, generating sample data')
-          // Generate sample data for demonstration
-          const sampleData = yearLabels.map(() => 
-            filteredDevices.map((_, deviceIndex) => 
-              Math.random() * 2.0 + 0.5 + (deviceIndex * 0.5) // Random values between 0.5-2.5 kW
-            )
-          )
-          return {
-            labels: yearLabels,
-            energyUsage: sampleData
-          }
-        }
-        
         return {
           labels: yearLabels,
           energyUsage: yearEnergyData
@@ -1266,22 +1219,6 @@ export default function Reports() {
         }
         
         console.log('Default week data generated:', { labels: defaultWeekLabels, energyUsage: defaultWeekEnergyData })
-        
-        // Check if we have any non-zero data, if not, generate sample data
-        const hasDefaultWeekData = defaultWeekEnergyData.some((dayData: number[]) => dayData.some((energy: number) => energy > 0))
-        if (!hasDefaultWeekData) {
-          console.log('No real data found for default week, generating sample data')
-          // Generate sample data for demonstration
-          const sampleData = defaultWeekLabels.map(() => 
-            filteredDevices.map((_, deviceIndex) => 
-              Math.random() * 0.5 + 0.1 + (deviceIndex * 0.2) // Random values between 0.1-0.6 kW
-            )
-          )
-          return {
-            labels: defaultWeekLabels,
-            energyUsage: sampleData
-          }
-        }
         
         return {
           labels: defaultWeekLabels,
@@ -1449,27 +1386,70 @@ export default function Reports() {
 
   // Calculate current stats for metrics cards (not time-filtered)
   useEffect(() => {
-    if (filteredDevices.length > 0) {
-      // Current Power Usage: Sum of total_energy from today's daily_logs (already in kW)
-      const currentTotalPowerSum = filteredDevices.reduce((sum, device) => {
-        return sum + (device.total_energy || 0)
-      }, 0) // Already in kW from database
-      
-      // Total Consumption: Sum of lifetime_energy from root level (already in kW)
-      const currentTotalEnergySum = filteredDevices.reduce((sum, device) => {
-        return sum + (device.lifetime_energy || 0)
-      }, 0) // Already in kW from database
-      
-      // Store previous values for trend calculation
-      setPreviousTotalPower(totalPower)
-      setPreviousTotalEnergy(totalEnergy)
-      
-      setTotalPower(currentTotalPowerSum)
-      setTotalEnergy(currentTotalEnergySum)
-    } else {
-      setTotalPower(0)
-      setTotalEnergy(0)
+    const calculateMonthlyStats = async () => {
+      if (filteredDevices.length > 0) {
+        try {
+          // Get current month data
+          const now = new Date()
+          const currentYear = now.getFullYear()
+          const currentMonth = now.getMonth() + 1
+          const daysInMonth = new Date(currentYear, currentMonth, 0).getDate()
+          
+          // Calculate monthly energy consumption for all devices
+          let currentTotalPowerSum = 0
+          
+          for (const device of filteredDevices) {
+            try {
+              const deviceRef = ref(realtimeDb, `devices/${device.outletId}`)
+              const snapshot = await get(deviceRef)
+              
+              if (snapshot.exists()) {
+                const outlet = snapshot.val()
+                
+                if (outlet && outlet.daily_logs) {
+                  let monthlyEnergy = 0
+                  
+                  // Sum up all daily energy for the current month
+                  for (let day = 1; day <= daysInMonth; day++) {
+                    const dayKey = `day_${currentYear}_${String(currentMonth).padStart(2, '0')}_${String(day).padStart(2, '0')}`
+                    const dayData = outlet.daily_logs[dayKey]
+                    
+                    if (dayData) {
+                      monthlyEnergy += dayData.total_energy || 0 // Already in kW
+                    }
+                  }
+                  
+                  currentTotalPowerSum += monthlyEnergy
+                }
+              }
+            } catch (error) {
+              console.error(`Error calculating monthly data for ${device.outletId}:`, error)
+            }
+          }
+          
+          // Total Consumption: Sum of lifetime_energy from root level (already in kW)
+          const currentTotalEnergySum = filteredDevices.reduce((sum, device) => {
+            return sum + (device.lifetime_energy || 0)
+          }, 0) // Already in kW from database
+          
+          // Store previous values for trend calculation
+          setPreviousTotalPower(totalPower)
+          setPreviousTotalEnergy(totalEnergy)
+          
+          setTotalPower(currentTotalPowerSum)
+          setTotalEnergy(currentTotalEnergySum)
+        } catch (error) {
+          console.error('Error calculating monthly stats:', error)
+          setTotalPower(0)
+          setTotalEnergy(0)
+        }
+      } else {
+        setTotalPower(0)
+        setTotalEnergy(0)
+      }
     }
+    
+    calculateMonthlyStats()
   }, [filteredDevices]) // Removed timeSegment dependency
 
   // Calculate monthly bill and current bill when devices or rate changes
@@ -1817,12 +1797,12 @@ export default function Reports() {
               </svg>
             </div>
             <div className="metric-content">
-              <div className="metric-title">Current Power Usage</div>
+              <div className="metric-title">Current Power Usage This Month</div>
               <div className="metric-value">
                 {formatNumber(totalPower * 1000)} Wh
               </div>
               <div className="metric-trend positive">
-                Live power consumption
+                Monthly power consumption
                 {getTrendIndicator(totalPower, previousTotalPower)}
               </div>
             </div>

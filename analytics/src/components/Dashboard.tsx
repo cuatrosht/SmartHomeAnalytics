@@ -123,6 +123,59 @@ const removeDeviceFromCombinedGroup = async (outletKey: string): Promise<{
   }
 }
 
+// Auto-turnoff functions for non-idle devices
+const startAutoTurnoffTimer = (outletKey: string, setAutoTurnoffTimers: React.Dispatch<React.SetStateAction<Record<string, NodeJS.Timeout | null>>>) => {
+  // Clear existing timer if any
+  setAutoTurnoffTimers(prev => {
+    if (prev[outletKey]) {
+      clearTimeout(prev[outletKey]!)
+    }
+    return prev
+  })
+
+  // Start new 15-second timer
+  const timer = setTimeout(async () => {
+    try {
+      console.log(`🔄 Auto-turnoff: Turning off ${outletKey} after 15 seconds of non-idle status`)
+      
+      // Turn off the device control
+      const controlRef = ref(realtimeDb, `devices/${outletKey}/control`)
+      await update(controlRef, {
+        device: 'off'
+      })
+      
+      console.log(`✅ Auto-turnoff: Successfully turned off ${outletKey}`)
+    } catch (error) {
+      console.error(`❌ Auto-turnoff: Error turning off ${outletKey}:`, error)
+    }
+  }, 15000) // 15 seconds
+
+  // Store the timer
+  setAutoTurnoffTimers(prev => ({
+    ...prev,
+    [outletKey]: timer
+  }))
+}
+
+const clearAutoTurnoffTimer = (outletKey: string, setAutoTurnoffTimers: React.Dispatch<React.SetStateAction<Record<string, NodeJS.Timeout | null>>>) => {
+  setAutoTurnoffTimers(prev => {
+    if (prev[outletKey]) {
+      clearTimeout(prev[outletKey]!)
+      console.log(`🔄 Auto-turnoff: Cleared timer for ${outletKey} - device is now idle or turned off`)
+    }
+    return {
+      ...prev,
+      [outletKey]: null
+    }
+  })
+}
+
+const resetAutoTurnoffFunction = (outletKey: string, setAutoTurnoffTimers: React.Dispatch<React.SetStateAction<Record<string, NodeJS.Timeout | null>>>) => {
+  // Clear any existing timer
+  clearAutoTurnoffTimer(outletKey, setAutoTurnoffTimers)
+  console.log(`🔄 Auto-turnoff: Reset function for ${outletKey} - outlet turned on again`)
+}
+
 ChartJS.register(
   CategoryScale,
   LinearScale,
@@ -139,6 +192,7 @@ interface DashboardProps {
 }
 
 interface FirebaseDeviceData {
+  status?: string // Add status property
   lifetime_energy?: number // Add lifetime_energy at the root level
   daily_logs?: {
     [date: string]: {
@@ -355,6 +409,17 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
   const [totalPower, setTotalPower] = useState(0)
   const [totalEnergy, setTotalEnergy] = useState(0)
   const [monthlyEnergy, setMonthlyEnergy] = useState(0)
+
+  // Idle detection state
+  const [deviceActivity, setDeviceActivity] = useState<Record<string, {
+    lastEnergyUpdate: number;
+    lastControlUpdate: number;
+    lastTotalEnergy: number;
+    lastControlState: string;
+  }>>({})
+
+  // Auto-turnoff timer state for non-idle devices
+  const [autoTurnoffTimers, setAutoTurnoffTimers] = useState<Record<string, NodeJS.Timeout | null>>({})
   const [totalLifetimeEnergy, setTotalLifetimeEnergy] = useState(0)
   const [dailyAverage, setDailyAverage] = useState(0)
   const [todayTotalEnergy, setTodayTotalEnergy] = useState(0)
@@ -1002,9 +1067,77 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
             // Get lifetime_energy from root level (already in kW from database)
             const lifetimeEnergyKw = outlet.lifetime_energy || 0
             
+            // Check for idle status from root level
+            const sensorStatus = outlet.status
+            const isIdleFromSensor = sensorStatus === 'idle'
+            
+            // Idle detection logic
+            const currentTime = Date.now()
+            const currentTotalEnergy = todayLogs?.total_energy || 0
+            const controlState = outlet.control?.device || 'off'
+            
+            // Get or initialize device activity tracking
+            const activity = deviceActivity[outletKey] || {
+              lastEnergyUpdate: currentTime,
+              lastControlUpdate: currentTime,
+              lastTotalEnergy: currentTotalEnergy,
+              lastControlState: controlState
+            }
+            
+            // Check for energy updates (total_energy changed)
+            const energyChanged = Math.abs(currentTotalEnergy - activity.lastTotalEnergy) > 0.0001
+            if (energyChanged) {
+              setDeviceActivity(prev => ({
+                ...prev,
+                [outletKey]: {
+                  ...activity,
+                  lastEnergyUpdate: currentTime,
+                  lastTotalEnergy: currentTotalEnergy
+                }
+              }))
+            }
+            
+            // Check for control state changes
+            const controlChanged = controlState !== activity.lastControlState
+            if (controlChanged) {
+              setDeviceActivity(prev => ({
+                ...prev,
+                [outletKey]: {
+                  ...activity,
+                  lastControlUpdate: currentTime,
+                  lastControlState: controlState
+                }
+              }))
+            }
+            
+            // Determine if device is idle (15 seconds of no updates)
+            const timeSinceEnergyUpdate = currentTime - activity.lastEnergyUpdate
+            const timeSinceControlUpdate = currentTime - activity.lastControlUpdate
+            const isIdleFromLogic = timeSinceEnergyUpdate > 15000 && timeSinceControlUpdate > 15000
+            
+            // Determine final status
+            let deviceStatus: string
+            if ((isIdleFromSensor || isIdleFromLogic) && controlState === 'on') {
+              // Show Idle if sensor reports idle OR if device is supposed to be ON but not responding
+              deviceStatus = 'Idle'
+            } else {
+              deviceStatus = controlState
+            }
+
+            // Auto-turnoff logic disabled to prevent interference with data uploads
+            // Clear any existing auto-turnoff timers to prevent interference
+            clearAutoTurnoffTimer(outletKey, setAutoTurnoffTimers)
+
+            // Auto-turnoff functionality disabled to prevent interference with data uploads
+            // Reset auto-turnoff function when outlet turns on again
+            // const controlChangedForAutoTurnoff = controlState !== activity.lastControlState
+            // if (controlChangedForAutoTurnoff && controlState === 'on') {
+            //   resetAutoTurnoffFunction(outletKey, setAutoTurnoffTimers)
+            // }
+
             const deviceData: DeviceData = {
               outletId: outletKey,
-              status: outlet.control?.device || 'off',
+              status: deviceStatus,
               power: outlet.sensor_data.power || 0,
               energy: outlet.sensor_data.energy || 0,
               current: outlet.sensor_data.current || 0,
@@ -1233,6 +1366,13 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     return () => {
       clearInterval(scheduleInterval)
       clearInterval(powerLimitInterval)
+      
+      // Cleanup auto-turnoff timers
+      Object.values(autoTurnoffTimers).forEach(timer => {
+        if (timer) {
+          clearTimeout(timer)
+        }
+      })
     }
   }, [])
 
@@ -1590,13 +1730,14 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
   const getStatusBadge = (status: string) => {
     const statusClasses: { [key: string]: string } = {
       'on': 'status-active',
-      'off': 'status-inactive'
+      'off': 'status-inactive',
+      'Idle': 'status-idle'
     }
     
     return (
       <span className={`status-badge ${statusClasses[status] || 'status-inactive'}`}>
         <span className={`status-dot ${statusClasses[status] || 'status-inactive'}`}></span>
-        {status === 'on' ? 'Active' : 'Inactive'}
+        {status === 'on' ? 'Active' : status === 'off' ? 'Inactive' : 'Idle'}
       </span>
     )
   }
@@ -2548,3 +2689,4 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     </div>
   )
 }
+

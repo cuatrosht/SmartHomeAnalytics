@@ -299,6 +299,59 @@ const checkMonthlyLimitBeforeTurnOn = async (outletKey: string, combinedLimitInf
   }
 }
 
+// Auto-turnoff functions for non-idle devices
+const startAutoTurnoffTimer = (outletKey: string, setAutoTurnoffTimers: React.Dispatch<React.SetStateAction<Record<string, NodeJS.Timeout | null>>>) => {
+  // Clear existing timer if any
+  setAutoTurnoffTimers(prev => {
+    if (prev[outletKey]) {
+      clearTimeout(prev[outletKey]!)
+    }
+    return prev
+  })
+
+  // Start new 15-second timer
+  const timer = setTimeout(async () => {
+    try {
+      console.log(`🔄 Auto-turnoff: Turning off ${outletKey} after 15 seconds of non-idle status`)
+      
+      // Turn off the device control
+      const controlRef = ref(realtimeDb, `devices/${outletKey}/control`)
+      await update(controlRef, {
+        device: 'off'
+      })
+      
+      console.log(`✅ Auto-turnoff: Successfully turned off ${outletKey}`)
+    } catch (error) {
+      console.error(`❌ Auto-turnoff: Error turning off ${outletKey}:`, error)
+    }
+  }, 15000) // 15 seconds
+
+  // Store the timer
+  setAutoTurnoffTimers(prev => ({
+    ...prev,
+    [outletKey]: timer
+  }))
+}
+
+const clearAutoTurnoffTimer = (outletKey: string, setAutoTurnoffTimers: React.Dispatch<React.SetStateAction<Record<string, NodeJS.Timeout | null>>>) => {
+  setAutoTurnoffTimers(prev => {
+    if (prev[outletKey]) {
+      clearTimeout(prev[outletKey]!)
+      console.log(`🔄 Auto-turnoff: Cleared timer for ${outletKey} - device is now idle or turned off`)
+    }
+    return {
+      ...prev,
+      [outletKey]: null
+    }
+  })
+}
+
+const resetAutoTurnoffFunction = (outletKey: string, setAutoTurnoffTimers: React.Dispatch<React.SetStateAction<Record<string, NodeJS.Timeout | null>>>) => {
+  // Clear any existing timer
+  clearAutoTurnoffTimer(outletKey, setAutoTurnoffTimers)
+  console.log(`🔄 Auto-turnoff: Reset function for ${outletKey} - outlet turned on again`)
+}
+
 // Device interface for type safety
 interface Device {
   id: string
@@ -310,7 +363,7 @@ interface Device {
   powerUsage: string
   todayUsage: string
   monthUsage?: string
-  status: 'Active' | 'Inactive' | 'Warning'
+  status: 'Active' | 'Inactive' | 'Warning' | 'Idle'
   schedule?: {
     timeRange: string
     frequency: string
@@ -947,15 +1000,17 @@ function EditDeviceModal({
       const isNoLimit = Boolean(powerLimitValue === 'No Limit' || powerLimitValue === '0' || powerLimitValue === '')
       
       setEnablePowerLimit(hasPowerLimit)
-      setEnableScheduling(isNoLimit)
+      // Use the actual enablePowerScheduling value from the device data, not just based on power limit
+      setEnableScheduling(device.enablePowerScheduling || isNoLimit)
       
       console.log('EditDeviceModal: Device data mapping:', {
         device: device.outletName,
         powerLimitValue,
         hasPowerLimit,
         isNoLimit,
+        deviceEnablePowerScheduling: device.enablePowerScheduling,
         enablePowerLimit: hasPowerLimit,
-        enableScheduling: isNoLimit
+        enableScheduling: device.enablePowerScheduling || isNoLimit
       })
       
       setErrors({})
@@ -1222,6 +1277,33 @@ function EditDeviceModal({
           console.log('Edit modal: Office update result:', officeUpdate)
         }
 
+        // Handle schedule data based on enableScheduling flag
+        const scheduleRef = ref(realtimeDb, `devices/${outletKey}/schedule`)
+        if (enableScheduling) {
+          console.log('Edit modal: Scheduling is enabled - keeping existing schedule data')
+          // Schedule data remains unchanged when scheduling is enabled
+        } else {
+          console.log('Edit modal: Scheduling is disabled - deleting existing schedule data')
+          // Delete all schedule data when scheduling is disabled
+          try {
+            await update(scheduleRef, {
+              timeRange: null,
+              startTime: null,
+              endTime: null,
+              days: null,
+              frequency: null,
+              selectedDays: null,
+              combinedScheduleId: null,
+              isCombinedSchedule: false,
+              selectedOutlets: null,
+              enabled: false
+            })
+            console.log(`Edit modal: Successfully deleted schedule data for ${outletKey}`)
+          } catch (error) {
+            console.error(`Edit modal: Error deleting schedule data for ${outletKey}:`, error)
+          }
+        }
+
         
         console.log('Edit modal: Database updates completed successfully!')
         
@@ -1479,9 +1561,9 @@ function EditDeviceModal({
                     const isChecked = e.target.checked
                     setEnableScheduling(isChecked)
                     
-                    // If enabling scheduling, disable power limit and set power limit to "No Limit"
-                    if (isChecked) {
-                      setEnablePowerLimit(false)
+                    // Allow both scheduling and power limit to be enabled simultaneously
+                    // Only set power limit to "No Limit" if power limit is disabled
+                    if (isChecked && !enablePowerLimit) {
                       setFormData(prev => ({ 
                         ...prev, 
                         powerLimit: 'No Limit',
@@ -1512,20 +1594,20 @@ function EditDeviceModal({
                     setEnablePowerLimit(isChecked)
                     
                     if (isChecked) {
-                      // If enabling power limit, disable scheduling
-                      setEnableScheduling(false)
+                      // Allow both scheduling and power limit to be enabled simultaneously
                       // Clear the power limit field to allow user to enter new value
                       if (formData.powerLimit === 'No Limit') {
                         setFormData(prev => ({ ...prev, powerLimit: '' }))
                       }
                     } else {
-                      // If disabling power limit, enable scheduling and set to "No Limit"
-                      setEnableScheduling(true)
-                      setFormData(prev => ({ 
-                        ...prev, 
-                        powerLimit: 'No Limit',
-                        enabled: false // Auto-set to OFF when power limit is disabled
-                      }))
+                      // If disabling power limit and scheduling is enabled, set to "No Limit"
+                      if (enableScheduling) {
+                        setFormData(prev => ({ 
+                          ...prev, 
+                          powerLimit: 'No Limit',
+                          enabled: false // Auto-set to OFF when power limit is disabled
+                        }))
+                      }
                     }
                     
                     console.log('Enable Power Limit changed:', isChecked)
@@ -1749,7 +1831,7 @@ function CombinedLimitModal({
     }
   }
 
-  const validateForm = () => {
+  const validateForm = async () => {
     const newErrors: Record<string, string> = {}
     
     // Only require outlets when creating a new combined limit, not when editing (allowing disable)
@@ -1761,14 +1843,36 @@ function CombinedLimitModal({
       newErrors.combinedLimit = 'Combined limit must be greater than 0 Wh'
     }
     
+    // Check if the proposed limit is less than current month's energy consumption
+    if (enablePowerLimit && combinedLimit && combinedLimit !== 'No Limit' && selectedOutlets.length > 0) {
+      try {
+        const devicesRef = ref(realtimeDb, 'devices')
+        const devicesSnapshot = await get(devicesRef)
+        
+        if (devicesSnapshot.exists()) {
+          const devicesData = devicesSnapshot.val()
+          const proposedLimit = parseFloat(combinedLimit)
+          const currentMonthlyEnergy = calculateCombinedMonthlyEnergy(devicesData, selectedOutlets)
+          
+          if (proposedLimit < currentMonthlyEnergy) {
+            newErrors.combinedLimit = `Combined limit (${proposedLimit.toFixed(0)} Wh) cannot be less than current month's energy consumption (${currentMonthlyEnergy.toFixed(0)} Wh)`
+          }
+        }
+      } catch (error) {
+        console.error('Error validating against current monthly energy:', error)
+        // Don't block the form if we can't fetch the data, but log the error
+      }
+    }
+    
     setErrors(newErrors)
     return Object.keys(newErrors).length === 0
   }
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     
-    if (validateForm()) {
+    const isValid = await validateForm()
+    if (isValid) {
       onSave({
         selectedOutlets,
         combinedLimit: combinedLimit === 'No Limit' ? 0 : parseFloat(combinedLimit),
@@ -2234,18 +2338,18 @@ function AddDeviceModal({ isOpen, onClose, onSave }: AddDeviceModalProps) {
         powerLimit: existingPowerLimit || prev.powerLimit
       }))
       
-      // Set checkbox states based on existing power limit
+      // Set checkbox states - allow both to be enabled simultaneously
       if (existingPowerLimit === "No Limit") {
         setEnableScheduling(true)
-        setEnablePowerLimit(false)
+        setEnablePowerLimit(false) // No power limit set, so disable power limit checkbox
         setDeviceControl('off')
       } else if (existingPowerLimit && existingPowerLimit !== '') {
-        setEnableScheduling(false)
-        setEnablePowerLimit(true)
+        setEnableScheduling(true) // Allow scheduling to be enabled even with power limit
+        setEnablePowerLimit(true) // Power limit is set, so enable power limit checkbox
         setDeviceControl('on')
       } else {
-        // Default state for new devices
-        setEnableScheduling(false)
+        // Default state for new devices - allow both to be enabled
+        setEnableScheduling(true)
         setEnablePowerLimit(true)
         setDeviceControl('on')
       }
@@ -2340,6 +2444,33 @@ function AddDeviceModal({ isOpen, onClose, onSave }: AddDeviceModalProps) {
           main_status: deviceControl === 'on' ? 'ON' : 'OFF'
         })
         console.log('Relay control update result:', relayControlUpdate)
+
+        // Handle schedule data based on enableScheduling flag
+        const scheduleRef = ref(realtimeDb, `devices/${formData.deviceType}/schedule`)
+        if (enableScheduling) {
+          console.log('Add device: Scheduling is enabled - keeping existing schedule data')
+          // Schedule data remains unchanged when scheduling is enabled
+        } else {
+          console.log('Add device: Scheduling is disabled - clearing any existing schedule data')
+          // Clear all schedule data when scheduling is disabled
+          try {
+            await update(scheduleRef, {
+              timeRange: null,
+              startTime: null,
+              endTime: null,
+              days: null,
+              frequency: null,
+              selectedDays: null,
+              combinedScheduleId: null,
+              isCombinedSchedule: false,
+              selectedOutlets: null,
+              enabled: false
+            })
+            console.log(`Add device: Successfully cleared schedule data for ${formData.deviceType}`)
+          } catch (error) {
+            console.error(`Add device: Error clearing schedule data for ${formData.deviceType}:`, error)
+          }
+        }
         
         console.log('Database updates completed successfully!')
         
@@ -2382,7 +2513,7 @@ function AddDeviceModal({ isOpen, onClose, onSave }: AddDeviceModalProps) {
       powerLimit: '',
       appliance: ''
     })
-    setEnableScheduling(false)
+    setEnableScheduling(true)
     setEnablePowerLimit(true)
     setDeviceControl('on')
     setControlDropdownOpen(false)
@@ -2936,6 +3067,16 @@ export default function SetUp() {
   })
   const [devices, setDevices] = useState<Device[]>([])
 
+  // Idle detection state
+  const [deviceActivity, setDeviceActivity] = useState<Record<string, {
+    lastEnergyUpdate: number;
+    lastControlUpdate: number;
+    lastTotalEnergy: number;
+    lastControlState: string;
+  }>>({})
+
+  // Auto-turnoff timer state for non-idle devices
+  const [autoTurnoffTimers, setAutoTurnoffTimers] = useState<Record<string, NodeJS.Timeout | null>>({})
 
   // Fetch devices data from Firebase
   useEffect(() => {
@@ -3075,9 +3216,73 @@ export default function SetUp() {
             const controlState = outlet.control?.device || 'off'
             console.log(`SetUp: Outlet ${outletKey} control.device: "${controlState}"`)
             
-            // Simple status determination like Dashboard.tsx
-            const deviceStatus = controlState === 'on' ? 'Active' : 'Inactive'
-            console.log(`SetUp: ${outletKey} - Final status: ${deviceStatus} (based on control.device: ${controlState})`)
+            // Check for idle status from root level
+            const sensorStatus = outlet.status
+            const isIdleFromSensor = sensorStatus === 'idle'
+            
+            // Idle detection logic
+            const currentTime = Date.now()
+            const currentTotalEnergy = outlet.daily_logs?.[todayString]?.total_energy || 0
+            
+            // Get or initialize device activity tracking
+            const activity = deviceActivity[outletKey] || {
+              lastEnergyUpdate: currentTime,
+              lastControlUpdate: currentTime,
+              lastTotalEnergy: currentTotalEnergy,
+              lastControlState: controlState
+            }
+            
+            // Check for energy updates (total_energy changed)
+            const energyChanged = Math.abs(currentTotalEnergy - activity.lastTotalEnergy) > 0.0001
+            if (energyChanged) {
+              setDeviceActivity(prev => ({
+                ...prev,
+                [outletKey]: {
+                  ...activity,
+                  lastEnergyUpdate: currentTime,
+                  lastTotalEnergy: currentTotalEnergy
+                }
+              }))
+            }
+            
+            // Check for control state changes
+            const controlChanged = controlState !== activity.lastControlState
+            if (controlChanged) {
+              setDeviceActivity(prev => ({
+                ...prev,
+                [outletKey]: {
+                  ...activity,
+                  lastControlUpdate: currentTime,
+                  lastControlState: controlState
+                }
+              }))
+            }
+            
+            // Determine if device is idle (15 seconds of no updates)
+            const timeSinceEnergyUpdate = currentTime - activity.lastEnergyUpdate
+            const timeSinceControlUpdate = currentTime - activity.lastControlUpdate
+            const isIdleFromLogic = timeSinceEnergyUpdate > 15000 && timeSinceControlUpdate > 15000
+            
+            // Determine final status
+            let deviceStatus: 'Active' | 'Inactive' | 'Warning' | 'Idle'
+            if ((isIdleFromSensor || isIdleFromLogic) && controlState === 'on') {
+              // Show Idle if sensor reports idle OR if device is supposed to be ON but not responding
+              deviceStatus = 'Idle'
+            } else {
+              deviceStatus = controlState === 'on' ? 'Active' : 'Inactive'
+            }
+            
+            console.log(`SetUp: ${outletKey} - Final status: ${deviceStatus} (control: ${controlState}, sensorIdle: ${isIdleFromSensor}, logicIdle: ${isIdleFromLogic}, energy: ${currentTotalEnergy})`)
+
+            // Auto-turnoff logic disabled to prevent interference with data uploads
+            // Clear any existing auto-turnoff timers to prevent interference
+            clearAutoTurnoffTimer(outletKey, setAutoTurnoffTimers)
+
+            // Auto-turnoff functionality disabled to prevent interference with data uploads
+            // Reset auto-turnoff function when outlet turns on again
+            // if (controlChanged && controlState === 'on') {
+            //   resetAutoTurnoffFunction(outletKey, setAutoTurnoffTimers)
+            // }
 
             // Debug: Log schedule data for troubleshooting
             if (outlet.schedule) {
@@ -3516,6 +3721,266 @@ export default function SetUp() {
         console.error('❌ Error setting combined limit settings:', error)
       }
     }
+
+    // Add function to clean up orphaned outlets from combined limit settings
+    ;(window as any).cleanupOrphanedOutlets = async () => {
+      console.log('🧹 Cleaning up orphaned outlets from combined limit settings...')
+      try {
+        // Get current devices
+        const devicesRef = ref(realtimeDb, 'devices')
+        const devicesSnapshot = await get(devicesRef)
+        const currentDevices = devicesSnapshot.exists() ? Object.keys(devicesSnapshot.val()) : []
+        
+        console.log('📱 Current devices:', currentDevices)
+        
+        // Get combined limit settings
+        const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
+        const combinedLimitSnapshot = await get(combinedLimitRef)
+        
+        if (!combinedLimitSnapshot.exists()) {
+          console.log('❌ No combined limit settings found!')
+          return
+        }
+        
+        const combinedLimitData = combinedLimitSnapshot.val()
+        const currentSelectedOutlets = combinedLimitData.selected_outlets || []
+        
+        console.log('🔍 Current selected outlets:', currentSelectedOutlets)
+        
+        // Find orphaned outlets (outlets in selected_outlets but not in current devices)
+        const orphanedOutlets = currentSelectedOutlets.filter((outlet: string) => 
+          !currentDevices.includes(outlet)
+        )
+        
+        if (orphanedOutlets.length === 0) {
+          console.log('✅ No orphaned outlets found!')
+          return
+        }
+        
+        console.log('🗑️ Found orphaned outlets:', orphanedOutlets)
+        
+        // Remove orphaned outlets from selected_outlets
+        const cleanedSelectedOutlets = currentSelectedOutlets.filter((outlet: string) => 
+          currentDevices.includes(outlet)
+        )
+        
+        // Update combined limit settings
+        await update(combinedLimitRef, {
+          ...combinedLimitData,
+          selected_outlets: cleanedSelectedOutlets
+        })
+        
+        console.log('✅ Successfully cleaned up orphaned outlets!')
+        console.log('📊 Before cleanup:', currentSelectedOutlets)
+        console.log('📊 After cleanup:', cleanedSelectedOutlets)
+        console.log('🗑️ Removed outlets:', orphanedOutlets)
+        
+      } catch (error) {
+        console.error('❌ Error cleaning up orphaned outlets:', error)
+      }
+    }
+
+    // Add function to test outlet deletion from combined limit settings
+    ;(window as any).testOutletDeletionFromCombinedLimit = async (outletName: string) => {
+      console.log(`🧪 TESTING: Simulating deletion of ${outletName} from combined limit settings...`)
+      try {
+        // Get current combined limit settings
+        const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
+        const combinedLimitSnapshot = await get(combinedLimitRef)
+        
+        if (!combinedLimitSnapshot.exists()) {
+          console.log('❌ No combined limit settings found!')
+          return
+        }
+        
+        const combinedLimitData = combinedLimitSnapshot.val()
+        const currentSelectedOutlets = combinedLimitData.selected_outlets || []
+        
+        console.log('🔍 Current selected outlets:', currentSelectedOutlets)
+        console.log('🔍 Outlet to test:', outletName)
+        console.log('🔍 Outlet name type:', typeof outletName)
+        console.log('🔍 Selected outlets types:', currentSelectedOutlets.map((outlet: string) => typeof outlet))
+        
+        // Check if outlet exists in selected_outlets (case-insensitive)
+        const outletFound = currentSelectedOutlets.some((outlet: string) => 
+          outlet.toLowerCase() === outletName.toLowerCase()
+        )
+        
+        if (outletFound) {
+          console.log(`✅ Found ${outletName} in selected_outlets - would be removed during deletion`)
+          
+          // Simulate the removal (case-insensitive)
+          const updatedSelectedOutlets = currentSelectedOutlets.filter(
+            (outlet: string) => outlet.toLowerCase() !== outletName.toLowerCase()
+          )
+          
+          console.log('📊 Before removal:', currentSelectedOutlets)
+          console.log('📊 After removal:', updatedSelectedOutlets)
+          console.log(`🗑️ Would remove: ${outletName}`)
+        } else {
+          console.log(`❌ ${outletName} not found in selected_outlets - no removal needed`)
+          console.log('🔍 Available outlets:', currentSelectedOutlets)
+        }
+        
+      } catch (error) {
+        console.error('❌ Error testing outlet deletion:', error)
+      }
+    }
+
+    // Add function to debug current device names vs combined limit settings
+    ;(window as any).debugOutletNames = async () => {
+      console.log('🔍 DEBUGGING: Comparing device names with combined limit settings...')
+      try {
+        // Get current devices
+        const devicesRef = ref(realtimeDb, 'devices')
+        const devicesSnapshot = await get(devicesRef)
+        const currentDevices = devicesSnapshot.exists() ? Object.keys(devicesSnapshot.val()) : []
+        
+        // Get combined limit settings
+        const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
+        const combinedLimitSnapshot = await get(combinedLimitRef)
+        
+        if (combinedLimitSnapshot.exists()) {
+          const combinedLimitData = combinedLimitSnapshot.val()
+          const selectedOutlets = combinedLimitData.selected_outlets || []
+          
+          console.log('📱 Current devices:', currentDevices)
+          console.log('📊 Selected outlets in combined limit:', selectedOutlets)
+          
+          // Check for mismatches
+          const orphanedOutlets = selectedOutlets.filter((outlet: string) => 
+            !currentDevices.includes(outlet)
+          )
+          
+          const missingOutlets = currentDevices.filter(device => 
+            !selectedOutlets.includes(device)
+          )
+          
+          console.log('🗑️ Orphaned outlets (in combined limit but not in devices):', orphanedOutlets)
+          console.log('❓ Missing outlets (in devices but not in combined limit):', missingOutlets)
+          
+        } else {
+          console.log('❌ No combined limit settings found!')
+        }
+        
+      } catch (error) {
+        console.error('❌ Error debugging outlet names:', error)
+      }
+    }
+
+    // Add function to inspect all data for a specific outlet
+    ;(window as any).inspectOutletData = async (outletName: string) => {
+      console.log(`🔍 INSPECTING: All data for outlet "${outletName}"...`)
+      try {
+        const outletRef = ref(realtimeDb, `devices/${outletName}`)
+        const outletSnapshot = await get(outletRef)
+        
+        if (outletSnapshot.exists()) {
+          const outletData = outletSnapshot.val()
+          console.log(`📊 Complete data for ${outletName}:`, outletData)
+          console.log(`📊 Data keys for ${outletName}:`, Object.keys(outletData))
+          
+          // Inspect each data section
+          if (outletData.sensor_data) {
+            console.log(`📊 Sensor data:`, outletData.sensor_data)
+          }
+          if (outletData.daily_logs) {
+            console.log(`📊 Daily logs (${Object.keys(outletData.daily_logs).length} entries):`, Object.keys(outletData.daily_logs))
+          }
+          if (outletData.office_info) {
+            console.log(`📊 Office info:`, outletData.office_info)
+          }
+          if (outletData.schedule) {
+            console.log(`📊 Schedule:`, outletData.schedule)
+          }
+          if (outletData.relay_control) {
+            console.log(`📊 Relay control:`, outletData.relay_control)
+          }
+          if (outletData.control) {
+            console.log(`📊 Control settings:`, outletData.control)
+          }
+          if (outletData.lifetime_energy !== undefined) {
+            console.log(`📊 Lifetime energy:`, outletData.lifetime_energy)
+          }
+          if (outletData.lifetime_hours !== undefined) {
+            console.log(`📊 Lifetime hours:`, outletData.lifetime_hours)
+          }
+          if (outletData.lifetime_usage_millis !== undefined) {
+            console.log(`📊 Lifetime usage millis:`, outletData.lifetime_usage_millis)
+          }
+          
+          console.log(`✅ Found complete data for ${outletName} - this will ALL be deleted when outlet is removed`)
+        } else {
+          console.log(`❌ No data found for outlet "${outletName}"`)
+        }
+        
+      } catch (error) {
+        console.error('❌ Error inspecting outlet data:', error)
+      }
+    }
+
+    // Add function to manually remove outlet from combined limit settings
+    ;(window as any).removeOutletFromCombinedLimit = async (outletName: string) => {
+      console.log(`🔧 MANUALLY REMOVING: ${outletName} from combined limit settings...`)
+      try {
+        // Convert outlet name to different formats for matching
+        const deviceFormatName = outletName // "Outlet_1"
+        const combinedFormatName = outletName.replace(/_/g, ' ') // "Outlet 1"
+        
+        console.log('🔍 Outlet name formats:', {
+          deviceFormat: deviceFormatName,
+          combinedFormat: combinedFormatName
+        })
+        
+        const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
+        const combinedLimitSnapshot = await get(combinedLimitRef)
+        
+        if (combinedLimitSnapshot.exists()) {
+          const combinedLimitData = combinedLimitSnapshot.val()
+          const currentSelectedOutlets = combinedLimitData.selected_outlets || []
+          
+          console.log('🔍 Current selected outlets:', currentSelectedOutlets)
+          console.log('🔍 Outlet to remove (device format):', deviceFormatName)
+          console.log('🔍 Outlet to remove (combined format):', combinedFormatName)
+          
+          // Check if outlet exists in selected_outlets (try both formats)
+          const outletFound = currentSelectedOutlets.some((outlet: string) => 
+            outlet.toLowerCase() === deviceFormatName.toLowerCase() || 
+            outlet.toLowerCase() === combinedFormatName.toLowerCase()
+          )
+          
+          if (outletFound) {
+            console.log(`✅ Found ${outletName} in selected_outlets - removing it...`)
+            
+            // Remove the outlet from the selected_outlets array (try both formats)
+            const updatedSelectedOutlets = currentSelectedOutlets.filter(
+              (outlet: string) => 
+                outlet.toLowerCase() !== deviceFormatName.toLowerCase() && 
+                outlet.toLowerCase() !== combinedFormatName.toLowerCase()
+            )
+            
+            console.log('📊 Before removal:', currentSelectedOutlets)
+            console.log('📊 After removal:', updatedSelectedOutlets)
+            
+            // Update the combined limit settings
+            await update(combinedLimitRef, {
+              ...combinedLimitData,
+              selected_outlets: updatedSelectedOutlets
+            })
+            
+            console.log(`✅ Successfully removed ${outletName} from combined limit settings!`)
+          } else {
+            console.log(`❌ ${outletName} not found in selected_outlets - no removal needed`)
+            console.log('🔍 Available outlets:', currentSelectedOutlets)
+          }
+        } else {
+          console.log('❌ No combined limit settings found!')
+        }
+        
+      } catch (error) {
+        console.error('❌ Error removing outlet from combined limit settings:', error)
+      }
+    }
     
     // Add function to test hierarchy enforcement
     ;(window as any).testHierarchy = async () => {
@@ -3748,6 +4213,13 @@ export default function SetUp() {
       clearInterval(scheduleInterval)
       clearInterval(powerLimitInterval)
       clearInterval(monthlyLimitInterval)
+      
+      // Cleanup auto-turnoff timers
+      Object.values(autoTurnoffTimers).forEach(timer => {
+        if (timer) {
+          clearTimeout(timer)
+        }
+      })
     }
   }, [combinedLimitInfo])
 
@@ -3996,6 +4468,17 @@ export default function SetUp() {
     }
   }
 
+  // Helper function to convert outlet name formats
+  const convertOutletNameFormat = (outletName: string, targetFormat: 'device' | 'combined') => {
+    if (targetFormat === 'device') {
+      // Convert "Outlet 1" to "Outlet_1"
+      return outletName.replace(/\s+/g, '_')
+    } else {
+      // Convert "Outlet_1" to "Outlet 1"
+      return outletName.replace(/_/g, ' ')
+    }
+  }
+
   // Handle actual deletion from Firebase database
   const handleConfirmDelete = async () => {
     const deviceToDelete = devices.find(d => d.id === deleteModal.deviceId)
@@ -4005,16 +4488,280 @@ export default function SetUp() {
     }
 
     try {
-      console.log('SetUp: Starting deletion of device:', deviceToDelete.outletName)
+      console.log('SetUp: Starting COMPLETE deletion of device:', deviceToDelete.outletName)
       
-      // Remove the entire outlet from Firebase database
+      // Convert outlet name to different formats for matching
+      const deviceFormatName = deviceToDelete.outletName // "Outlet_1"
+      const combinedFormatName = convertOutletNameFormat(deviceToDelete.outletName, 'combined') // "Outlet 1"
+      
+      console.log('🔍 SetUp: Outlet name formats:', {
+        deviceFormat: deviceFormatName,
+        combinedFormat: combinedFormatName
+      })
+      
+      // 1. Remove the outlet from combined limit settings if it exists there
+      try {
+        console.log('🔍 DEBUG: Starting combined limit cleanup for outlet:', deviceToDelete.outletName)
+        
+        const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
+        const combinedLimitSnapshot = await get(combinedLimitRef)
+        
+        if (combinedLimitSnapshot.exists()) {
+          const combinedLimitData = combinedLimitSnapshot.val()
+          const currentSelectedOutlets = combinedLimitData.selected_outlets || []
+          
+          console.log('🔍 DEBUG: Current combined limit data:', combinedLimitData)
+          console.log('🔍 DEBUG: Current selected outlets:', currentSelectedOutlets)
+          console.log('🔍 DEBUG: Outlet to delete (device format):', deviceFormatName)
+          console.log('🔍 DEBUG: Outlet to delete (combined format):', combinedFormatName)
+          console.log('🔍 DEBUG: Selected outlets types:', currentSelectedOutlets.map((outlet: string) => typeof outlet))
+          
+          // Check if the outlet to delete is in the selected outlets (try both formats)
+          const outletFound = currentSelectedOutlets.some((outlet: string) => 
+            outlet.toLowerCase() === deviceFormatName.toLowerCase() || 
+            outlet.toLowerCase() === combinedFormatName.toLowerCase()
+          )
+          
+          console.log('🔍 DEBUG: Outlet found in selected outlets:', outletFound)
+          
+          if (outletFound) {
+            console.log('✅ SetUp: Removing outlet from combined limit settings:', combinedFormatName)
+            
+            // Remove the outlet from the selected_outlets array (try both formats)
+            const updatedSelectedOutlets = currentSelectedOutlets.filter(
+              (outlet: string) => 
+                outlet.toLowerCase() !== deviceFormatName.toLowerCase() && 
+                outlet.toLowerCase() !== combinedFormatName.toLowerCase()
+            )
+            
+            console.log('🔍 DEBUG: Updated selected outlets:', updatedSelectedOutlets)
+            
+            // Update the combined limit settings
+            await update(combinedLimitRef, {
+              ...combinedLimitData,
+              selected_outlets: updatedSelectedOutlets
+            })
+            
+            console.log('✅ SetUp: Successfully removed outlet from combined limit settings. Updated outlets:', updatedSelectedOutlets)
+          } else {
+            console.log('❌ SetUp: Outlet not found in combined limit settings, no removal needed')
+            console.log('🔍 DEBUG: Available outlets in selected_outlets:', currentSelectedOutlets)
+            console.log('🔍 DEBUG: Looking for outlet:', deviceToDelete.outletName)
+          }
+        } else {
+          console.log('❌ SetUp: No combined limit settings found, skipping removal')
+        }
+      } catch (combinedLimitError) {
+        console.error('❌ SetUp: Error removing outlet from combined limit settings:', combinedLimitError)
+        console.error('❌ SetUp: Combined limit error details:', {
+          outletName: deviceToDelete.outletName,
+          error: combinedLimitError,
+          stack: combinedLimitError instanceof Error ? combinedLimitError.stack : 'No stack trace available'
+        })
+        // Continue with device deletion even if combined limit update fails
+      }
+
+      // 2. Remove the outlet from combined schedule settings if it exists there
+      try {
+        const combinedScheduleRef = ref(realtimeDb, 'combined_schedule_settings')
+        const combinedScheduleSnapshot = await get(combinedScheduleRef)
+        
+        if (combinedScheduleSnapshot.exists()) {
+          const combinedScheduleData = combinedScheduleSnapshot.val()
+          const currentSelectedOutlets = combinedScheduleData.selected_outlets || []
+          
+          // Check if the outlet to delete is in the selected outlets (try both formats)
+          const outletFound = currentSelectedOutlets.some((outlet: string) => 
+            outlet.toLowerCase() === deviceFormatName.toLowerCase() || 
+            outlet.toLowerCase() === combinedFormatName.toLowerCase()
+          )
+          
+          if (outletFound) {
+            console.log('SetUp: Removing outlet from combined schedule settings:', combinedFormatName)
+            
+            // Remove the outlet from the selected_outlets array (try both formats)
+            const updatedSelectedOutlets = currentSelectedOutlets.filter(
+              (outlet: string) => 
+                outlet.toLowerCase() !== deviceFormatName.toLowerCase() && 
+                outlet.toLowerCase() !== combinedFormatName.toLowerCase()
+            )
+            
+            // Update the combined schedule settings
+            await update(combinedScheduleRef, {
+              ...combinedScheduleData,
+              selected_outlets: updatedSelectedOutlets
+            })
+            
+            console.log('SetUp: Successfully removed outlet from combined schedule settings. Updated outlets:', updatedSelectedOutlets)
+          } else {
+            console.log('SetUp: Outlet not found in combined schedule settings, no removal needed')
+          }
+        } else {
+          console.log('SetUp: No combined schedule settings found, skipping removal')
+        }
+      } catch (combinedScheduleError) {
+        console.error('SetUp: Error removing outlet from combined schedule settings:', combinedScheduleError)
+        // Continue with device deletion even if combined schedule update fails
+      }
+
+      // 3. Remove device logs related to this outlet
+      try {
+        console.log('SetUp: Removing device logs for outlet:', deviceToDelete.outletName)
+        const deviceLogsRef = ref(realtimeDb, 'device_logs')
+        const deviceLogsSnapshot = await get(deviceLogsRef)
+        
+        if (deviceLogsSnapshot.exists()) {
+          const deviceLogsData = deviceLogsSnapshot.val()
+          const logsToRemove: string[] = []
+          
+          // Find all logs related to this outlet
+          Object.keys(deviceLogsData).forEach(logKey => {
+            const logEntry = deviceLogsData[logKey]
+            if (logEntry && logEntry.outletName === deviceToDelete.outletName) {
+              logsToRemove.push(logKey)
+            }
+          })
+          
+          // Remove the logs
+          for (const logKey of logsToRemove) {
+            const logRef = ref(realtimeDb, `device_logs/${logKey}`)
+            await remove(logRef)
+          }
+          
+          console.log(`SetUp: Removed ${logsToRemove.length} device logs for outlet:`, deviceToDelete.outletName)
+        } else {
+          console.log('SetUp: No device logs found, skipping removal')
+        }
+      } catch (deviceLogsError) {
+        console.error('SetUp: Error removing device logs:', deviceLogsError)
+        // Continue with device deletion even if device logs removal fails
+      }
+
+      // 4. Remove user logs related to this outlet
+      try {
+        console.log('SetUp: Removing user logs for outlet:', deviceToDelete.outletName)
+        const userLogsRef = ref(realtimeDb, 'user_logs')
+        const userLogsSnapshot = await get(userLogsRef)
+        
+        if (userLogsSnapshot.exists()) {
+          const userLogsData = userLogsSnapshot.val()
+          const logsToRemove: string[] = []
+          
+          // Find all logs related to this outlet
+          Object.keys(userLogsData).forEach(logKey => {
+            const logEntry = userLogsData[logKey]
+            if (logEntry && logEntry.outletName === deviceToDelete.outletName) {
+              logsToRemove.push(logKey)
+            }
+          })
+          
+          // Remove the logs
+          for (const logKey of logsToRemove) {
+            const logRef = ref(realtimeDb, `user_logs/${logKey}`)
+            await remove(logRef)
+          }
+          
+          console.log(`SetUp: Removed ${logsToRemove.length} user logs for outlet:`, deviceToDelete.outletName)
+        } else {
+          console.log('SetUp: No user logs found, skipping removal')
+        }
+      } catch (userLogsError) {
+        console.error('SetUp: Error removing user logs:', userLogsError)
+        // Continue with device deletion even if user logs removal fails
+      }
+
+      // 5. Remove general logs related to this outlet
+      try {
+        console.log('SetUp: Removing general logs for outlet:', deviceToDelete.outletName)
+        const logsRef = ref(realtimeDb, 'logs')
+        const logsSnapshot = await get(logsRef)
+        
+        if (logsSnapshot.exists()) {
+          const logsData = logsSnapshot.val()
+          const logsToRemove: string[] = []
+          
+          // Find all logs related to this outlet
+          Object.keys(logsData).forEach(logKey => {
+            const logEntry = logsData[logKey]
+            if (logEntry && logEntry.outletName === deviceToDelete.outletName) {
+              logsToRemove.push(logKey)
+            }
+          })
+          
+          // Remove the logs
+          for (const logKey of logsToRemove) {
+            const logRef = ref(realtimeDb, `logs/${logKey}`)
+            await remove(logRef)
+          }
+          
+          console.log(`SetUp: Removed ${logsToRemove.length} general logs for outlet:`, deviceToDelete.outletName)
+        } else {
+          console.log('SetUp: No general logs found, skipping removal')
+        }
+      } catch (logsError) {
+        console.error('SetUp: Error removing general logs:', logsError)
+        // Continue with device deletion even if general logs removal fails
+      }
+      
+      // 6. Finally, remove the entire outlet from Firebase database
+      console.log('🗑️ SetUp: Starting complete device deletion from devices collection...')
+      
+      // First, let's see what data exists for this outlet
       const outletRef = ref(realtimeDb, `devices/${deviceToDelete.outletName}`)
-      console.log('SetUp: Deleting outlet at path:', `devices/${deviceToDelete.outletName}`)
+      const outletSnapshot = await get(outletRef)
       
+      if (outletSnapshot.exists()) {
+        const outletData = outletSnapshot.val()
+        console.log('🔍 SetUp: Outlet data that will be deleted:', outletData)
+        console.log('🔍 SetUp: Outlet data keys:', Object.keys(outletData))
+        
+        // Log specific data sections that will be deleted
+        if (outletData.sensor_data) {
+          console.log('🔍 SetUp: Sensor data will be deleted:', outletData.sensor_data)
+        }
+        if (outletData.daily_logs) {
+          console.log('🔍 SetUp: Daily logs will be deleted:', Object.keys(outletData.daily_logs))
+        }
+        if (outletData.office_info) {
+          console.log('🔍 SetUp: Office info will be deleted:', outletData.office_info)
+        }
+        if (outletData.schedule) {
+          console.log('🔍 SetUp: Schedule will be deleted:', outletData.schedule)
+        }
+        if (outletData.relay_control) {
+          console.log('🔍 SetUp: Relay control will be deleted:', outletData.relay_control)
+        }
+        if (outletData.control) {
+          console.log('🔍 SetUp: Control settings will be deleted:', outletData.control)
+        }
+        if (outletData.lifetime_energy !== undefined) {
+          console.log('🔍 SetUp: Lifetime energy will be deleted:', outletData.lifetime_energy)
+        }
+        if (outletData.lifetime_hours !== undefined) {
+          console.log('🔍 SetUp: Lifetime hours will be deleted:', outletData.lifetime_hours)
+        }
+        if (outletData.lifetime_usage_millis !== undefined) {
+          console.log('🔍 SetUp: Lifetime usage millis will be deleted:', outletData.lifetime_usage_millis)
+        }
+      } else {
+        console.log('❌ SetUp: No outlet data found at path:', `devices/${deviceToDelete.outletName}`)
+      }
+      
+      console.log('🗑️ SetUp: Deleting outlet at path:', `devices/${deviceToDelete.outletName}`)
+      
+      // Remove the entire outlet and ALL its data from the devices collection
       const deleteResult = await remove(outletRef)
-      console.log('SetUp: Delete result:', deleteResult)
+      console.log('🗑️ SetUp: Delete result:', deleteResult)
       
-      console.log('SetUp: Device deleted successfully from database!')
+      // Verify the deletion was successful
+      const verifySnapshot = await get(outletRef)
+      if (!verifySnapshot.exists()) {
+        console.log('✅ SetUp: VERIFICATION SUCCESSFUL - Outlet completely deleted from devices collection!')
+      } else {
+        console.log('❌ SetUp: VERIFICATION FAILED - Outlet still exists in devices collection!')
+      }
+      
+      console.log('✅ SetUp: COMPLETE device deletion successful! All outlet data has been removed from database.')
       
       // Show success modal
       setDeleteSuccessModal({ 
@@ -4579,7 +5326,8 @@ export default function SetUp() {
     const statusClasses: { [key: string]: string } = {
       'Active': 'status-active',
       'Inactive': 'status-inactive',
-      'Warning': 'status-warning'
+      'Warning': 'status-warning',
+      'Idle': 'status-idle'
     }
     
     return (

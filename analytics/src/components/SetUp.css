@@ -352,12 +352,12 @@
 }
 
 .status-inactive {
-  background: #f3f4f6;
-  color: #6b7280;
+  background: #fef2f2;
+  color: #dc2626;
 }
 
 .status-inactive .status-dot {
-  background: #9ca3af;
+  background: #dc2626;
 }
 
 .status-warning {
@@ -366,6 +366,15 @@
 }
 
 .status-warning .status-dot {
+  background: #f59e0b;
+}
+
+.status-idle {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.status-idle .status-dot {
   background: #f59e0b;
 }
 
