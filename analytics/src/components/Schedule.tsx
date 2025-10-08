@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { ref, get, onValue, off, set, update } from 'firebase/database'
 import { realtimeDb } from '../firebase/config'
-import { logScheduleActivity, logDeviceControlActivity, logSystemActivity } from '../utils/deviceLogging'
+import { logScheduleActivity } from '../utils/deviceLogging'
 import './Schedule.css'
 
 // Function to calculate total monthly energy for combined limit group
@@ -81,40 +81,7 @@ const calculateCombinedMonthlyEnergy = (devicesData: any, selectedOutlets: strin
   }
 }
 
-// Auto-turnoff functions for non-idle devices
-const startAutoTurnoffTimer = (outletKey: string, setAutoTurnoffTimers: React.Dispatch<React.SetStateAction<Record<string, NodeJS.Timeout | null>>>) => {
-  // Clear existing timer if any
-  setAutoTurnoffTimers(prev => {
-    if (prev[outletKey]) {
-      clearTimeout(prev[outletKey]!)
-    }
-    return prev
-  })
-
-  // Start new 15-second timer
-  const timer = setTimeout(async () => {
-    try {
-      console.log(`🔄 Auto-turnoff: Turning off ${outletKey} after 15 seconds of non-idle status`)
-      
-      // Turn off the device control
-      const controlRef = ref(realtimeDb, `devices/${outletKey}/control`)
-      await update(controlRef, {
-        device: 'off'
-      })
-      
-      console.log(`✅ Auto-turnoff: Successfully turned off ${outletKey}`)
-    } catch (error) {
-      console.error(`❌ Auto-turnoff: Error turning off ${outletKey}:`, error)
-    }
-  }, 15000) // 15 seconds
-
-  // Store the timer
-  setAutoTurnoffTimers(prev => ({
-    ...prev,
-    [outletKey]: timer
-  }))
-}
-
+// Auto-turnoff functions for non-idle devices (currently unused)
 const clearAutoTurnoffTimer = (outletKey: string, setAutoTurnoffTimers: React.Dispatch<React.SetStateAction<Record<string, NodeJS.Timeout | null>>>) => {
   setAutoTurnoffTimers(prev => {
     if (prev[outletKey]) {
@@ -126,12 +93,6 @@ const clearAutoTurnoffTimer = (outletKey: string, setAutoTurnoffTimers: React.Di
       [outletKey]: null
     }
   })
-}
-
-const resetAutoTurnoffFunction = (outletKey: string, setAutoTurnoffTimers: React.Dispatch<React.SetStateAction<Record<string, NodeJS.Timeout | null>>>) => {
-  // Clear any existing timer
-  clearAutoTurnoffTimer(outletKey, setAutoTurnoffTimers)
-  console.log(`🔄 Auto-turnoff: Reset function for ${outletKey} - outlet turned on again`)
 }
 
 // Function to check and enforce combined monthly limits
@@ -434,7 +395,20 @@ const isDeviceActiveBySchedule = (schedule: any, controlState: string, deviceDat
   }
 
   // Check if current time is within the scheduled time range
-  const isWithinTimeRange = currentTime >= startTime && currentTime <= endTime
+  // Turn off exactly at end time - device is active only when current time is less than end time
+  const isWithinTimeRange = currentTime >= startTime && currentTime < endTime
+  
+  // Log exact time checking for debugging
+  if (schedule.timeRange || (schedule.startTime && schedule.endTime)) {
+    const currentTimeStr = `${Math.floor(currentTime / 60).toString().padStart(2, '0')}:${(currentTime % 60).toString().padStart(2, '0')}`
+    const endTimeStr = `${Math.floor(endTime / 60).toString().padStart(2, '0')}:${(endTime % 60).toString().padStart(2, '0')}`
+    
+    if (currentTime >= endTime) {
+      console.log(`⏰ END TIME REACHED: Device should be OFF (current: ${currentTimeStr}, end: ${endTimeStr})`)
+    } else if (currentTime === endTime - 1) {
+      console.log(`⏰ ONE MINUTE TO END: Device will turn OFF at ${endTimeStr} (current: ${currentTimeStr})`)
+    }
+  }
 
   // Check if current day matches the schedule frequency
   const frequency = schedule.frequency || ''
@@ -1994,12 +1968,12 @@ export default function Schedule() {
     // Run monthly limit check immediately
     checkMonthlyLimits()
     
-    // Set up interval for monthly limit check (every 5 seconds)
-    const monthlyLimitInterval = setInterval(checkMonthlyLimits, 5000)
+    // DISABLED: Monthly limit check interval to prevent conflicts with schedule logic
+    // const monthlyLimitInterval = setInterval(checkMonthlyLimits, 5000)
     
     // Cleanup interval on unmount
     return () => {
-      clearInterval(monthlyLimitInterval)
+      // clearInterval(monthlyLimitInterval) // Disabled
       
       // Cleanup auto-turnoff timers
       Object.values(autoTurnoffTimers).forEach(timer => {
@@ -2081,6 +2055,47 @@ export default function Schedule() {
                 continue
               }
               
+              // CRITICAL: Check if device is past schedule end time BEFORE any other logic
+              if (deviceData.schedule && (deviceData.schedule.timeRange || deviceData.schedule.startTime)) {
+                const now = new Date()
+                const currentTime = now.getHours() * 60 + now.getMinutes()
+                let endTime: number = 0
+                
+                if (deviceData.schedule.startTime && deviceData.schedule.endTime) {
+                  const [endHours, endMinutes] = deviceData.schedule.endTime.split(':').map(Number)
+                  endTime = endHours * 60 + endMinutes
+                } else if (deviceData.schedule.timeRange) {
+                  const [, endTimeStr] = deviceData.schedule.timeRange.split(' - ')
+                  const convertTo24Hour = (time12h: string): number => {
+                    const [time, modifier] = time12h.split(' ')
+                    let [hours, minutes] = time.split(':').map(Number)
+                    if (hours === 12) hours = 0
+                    if (modifier === 'PM') hours += 12
+                    return hours * 60 + minutes
+                  }
+                  endTime = convertTo24Hour(endTimeStr)
+                }
+                
+                // If device is past schedule end time, FORCE it OFF and set main_status to OFF
+                if (endTime > 0 && currentTime >= endTime) {
+                  console.log(`🔒 Schedule: Device ${outletKey} is past schedule end time - FORCING OFF and locking main_status`)
+                  
+                  // Force device OFF
+                  await update(ref(realtimeDb, `devices/${outletKey}/control`), {
+                    device: 'off'
+                  })
+                  
+                  // Lock main_status to OFF to prevent any re-activation
+                  await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
+                    main_status: 'OFF'
+                  })
+                  
+                  console.log(`🔒 Schedule: Device ${outletKey} LOCKED OFF - past schedule end time (current: ${Math.floor(currentTime / 60)}:${(currentTime % 60).toString().padStart(2, '0')}, end: ${Math.floor(endTime / 60)}:${(endTime % 60).toString().padStart(2, '0')})`)
+                  continue
+                }
+              }
+              
+              
               // Check if device is in combined group
               const outletDisplayName = outletKey.replace('_', ' ')
               const isInCombinedGroup = combinedLimitInfo?.enabled && 
@@ -2091,6 +2106,7 @@ export default function Schedule() {
               // Skip individual limit check if device is in combined group (combined limit takes precedence)
               const shouldBeActive = isDeviceActiveBySchedule(deviceData.schedule, 'on', deviceData, isInCombinedGroup)
               let newControlState = shouldBeActive ? 'on' : 'off'
+              
               
               // AUTOMATIC STATUS UPDATE: Apply limit restrictions to the schedule result
               if (isInCombinedGroup && monthlyLimitExceeded) {
@@ -2138,6 +2154,34 @@ export default function Schedule() {
                 monthlyLimitExceeded: monthlyLimitExceeded
               })
               
+              // Log exact time turn-off events
+              if (!shouldBeActive && deviceData.schedule && (deviceData.schedule.timeRange || (deviceData.schedule.startTime && deviceData.schedule.endTime))) {
+                const now = new Date()
+                const currentTime = now.getHours() * 60 + now.getMinutes()
+                let endTime: number = 0
+                
+                if (deviceData.schedule.startTime && deviceData.schedule.endTime) {
+                  const [endHours, endMinutes] = deviceData.schedule.endTime.split(':').map(Number)
+                  endTime = endHours * 60 + endMinutes
+                } else if (deviceData.schedule.timeRange) {
+                  const [, endTimeStr] = deviceData.schedule.timeRange.split(' - ')
+                  const convertTo24Hour = (time12h: string): number => {
+                    const [time, modifier] = time12h.split(' ')
+                    let [hours, minutes] = time.split(':').map(Number)
+                    if (hours === 12) hours = 0
+                    if (modifier === 'PM') hours += 12
+                    return hours * 60 + minutes
+                  }
+                  endTime = convertTo24Hour(endTimeStr)
+                }
+                
+                if (endTime > 0 && currentTime >= endTime) {
+                  const endTimeStr = `${Math.floor(endTime / 60).toString().padStart(2, '0')}:${(endTime % 60).toString().padStart(2, '0')}`
+                  const currentTimeStr = `${Math.floor(currentTime / 60).toString().padStart(2, '0')}:${(currentTime % 60).toString().padStart(2, '0')}`
+                  console.log(`⏰ SCHEDULE TURN-OFF: ${outletKey} turned OFF at exact time ${endTimeStr} (current: ${currentTimeStr})`)
+                }
+              }
+              
               // AUTOMATIC STATUS UPDATE: Update device status based on final decision
               if (currentControlState !== newControlState) {
                 console.log(`Schedule: AUTOMATIC UPDATE - ${outletKey} control state from ${currentControlState} to ${newControlState}`)
@@ -2146,13 +2190,45 @@ export default function Schedule() {
                   device: newControlState
                 })
                 
-                // Also update main_status to reflect the automatic change
-                const newMainStatus = newControlState === 'on' ? 'ON' : 'OFF'
-                await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
-                  main_status: newMainStatus
-                })
+                // CRITICAL: When turning OFF due to schedule expiration, set main_status to 'OFF' to prevent re-activation
+                if (newControlState === 'off') {
+                  await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
+                    main_status: 'OFF'
+                  })
+                  console.log(`🔒 Schedule: Set main_status to 'OFF' for ${outletKey} to prevent re-activation after schedule expiration`)
+                } else {
+                  // When turning ON, only set main_status to 'ON' if device is within schedule time
+                  const now = new Date()
+                  const currentTime = now.getHours() * 60 + now.getMinutes()
+                  let endTime: number = 0
+                  
+                  if (deviceData.schedule && deviceData.schedule.startTime && deviceData.schedule.endTime) {
+                    const [endHours, endMinutes] = deviceData.schedule.endTime.split(':').map(Number)
+                    endTime = endHours * 60 + endMinutes
+                  } else if (deviceData.schedule && deviceData.schedule.timeRange) {
+                    const [, endTimeStr] = deviceData.schedule.timeRange.split(' - ')
+                    const convertTo24Hour = (time12h: string): number => {
+                      const [time, modifier] = time12h.split(' ')
+                      let [hours, minutes] = time.split(':').map(Number)
+                      if (hours === 12) hours = 0
+                      if (modifier === 'PM') hours += 12
+                      return hours * 60 + minutes
+                    }
+                    endTime = convertTo24Hour(endTimeStr)
+                  }
+                  
+                  // Only set main_status to 'ON' if device is within schedule time
+                  if (endTime === 0 || currentTime < endTime) {
+                    await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
+                      main_status: 'ON'
+                    })
+                    console.log(`✅ Schedule: Set main_status to 'ON' for ${outletKey} - within schedule time`)
+                  } else {
+                    console.log(`🔒 Schedule: NOT setting main_status to 'ON' for ${outletKey} - past schedule end time`)
+                  }
+                }
                 
-                console.log(`✅ Schedule: AUTOMATIC UPDATE COMPLETE - ${outletKey} updated to ${newControlState}/${newMainStatus}`)
+                console.log(`✅ Schedule: AUTOMATIC UPDATE COMPLETE - ${outletKey} updated to ${newControlState}`)
                 
                 // Note: Automatic system activities are not logged to avoid cluttering device logs
               } else {
@@ -2531,7 +2607,7 @@ export default function Schedule() {
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
               <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
             </svg>
-            {detectExistingCombinedSchedule() ? 'Edit Multiple Schedule' : 'Add Outlets'}
+            {detectExistingCombinedSchedule() ? 'Edit Multiple Schedule' : 'Multiple Schedule'}
           </button>
         </div>
       </div>

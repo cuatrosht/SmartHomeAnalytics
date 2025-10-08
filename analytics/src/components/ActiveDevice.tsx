@@ -585,7 +585,8 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
     }
 
     // Check if current time is within the scheduled time range
-    const isWithinTimeRange = currentTime >= startTime && currentTime <= endTime
+    // Turn off exactly at end time - device is active only when current time is less than end time
+    const isWithinTimeRange = currentTime >= startTime && currentTime < endTime
 
     // Check if current day matches the schedule frequency
     const frequency = schedule.frequency || ''

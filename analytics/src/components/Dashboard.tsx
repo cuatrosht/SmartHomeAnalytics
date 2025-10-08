@@ -324,7 +324,8 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     }
 
     // Check if current time is within the scheduled time range
-    const isWithinTimeRange = currentTime >= startTime && currentTime <= endTime
+    // Turn off exactly at end time - device is active only when current time is less than end time
+    const isWithinTimeRange = currentTime >= startTime && currentTime < endTime
 
     // Check if current day matches the schedule frequency
     const frequency = schedule.frequency || ''
@@ -1339,8 +1340,10 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
       }
     }
     
-    // Run both functions immediately
-    checkScheduleAndUpdateDevices()
+    // DISABLED: Schedule check to prevent conflicts with centralized Schedule.tsx
+    // checkScheduleAndUpdateDevices()
+    
+    // Only run power limit check (no conflicts with schedule)
     checkPowerLimitsAndTurnOffDevices()
     
     // Add manual test function for debugging
@@ -1359,12 +1362,13 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     }
     
     // Set up intervals for automatic checking
-    const scheduleInterval = setInterval(checkScheduleAndUpdateDevices, 10000) // 10 seconds (more frequent for short schedules)
+    // DISABLED: Schedule checking is now centralized in Schedule.tsx to prevent conflicts
+    // const scheduleInterval = setInterval(checkScheduleAndUpdateDevices, 10000) // 10 seconds (more frequent for short schedules)
     const powerLimitInterval = setInterval(checkPowerLimitsAndTurnOffDevices, 30000) // 30 seconds (more frequent for power limits)
     
     // Cleanup intervals on unmount
     return () => {
-      clearInterval(scheduleInterval)
+      // clearInterval(scheduleInterval) // Disabled
       clearInterval(powerLimitInterval)
       
       // Cleanup auto-turnoff timers

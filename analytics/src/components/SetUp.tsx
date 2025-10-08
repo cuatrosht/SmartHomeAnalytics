@@ -2871,7 +2871,8 @@ const isDeviceActiveBySchedule = (schedule: any, controlState: string, deviceDat
   }
 
   // Check if current time is within the scheduled time range
-  const isWithinTimeRange = currentTime >= startTime && currentTime <= endTime
+  // Turn off exactly at end time - device is active only when current time is less than end time
+  const isWithinTimeRange = currentTime >= startTime && currentTime < endTime
 
   // Check if current day matches the schedule frequency
   const frequency = schedule.frequency || ''
@@ -3180,7 +3181,8 @@ export default function SetUp() {
               const endTime = convertTo24Hour(endTimeStr)
 
               // Check if current time is within schedule
-              const isWithinTimeRange = currentTime >= startTime && currentTime <= endTime
+              // Turn off exactly at end time - device is active only when current time is less than end time
+              const isWithinTimeRange = currentTime >= startTime && currentTime < endTime
 
               // Check if current day is in schedule
               const frequency = schedule.frequency?.toLowerCase() || ''
@@ -3599,21 +3601,12 @@ export default function SetUp() {
       }
     }
     
-    // HIERARCHY: Monthly limit check FIRST (highest priority)
-    // This prevents scheduler from turning devices back on
-    checkMonthlyLimits()
+    // DISABLED: All immediate checks to prevent conflicts with centralized Schedule.tsx
+    // checkMonthlyLimits()
+    // checkScheduleAndUpdateDevices()
+    // checkPowerLimitsAndTurnOffDevices()
     
-    // Also run it again after a short delay to ensure immediate enforcement
-    setTimeout(() => {
-      console.log('🚨 SetUp: Running immediate monthly limit check after delay...')
-      checkMonthlyLimits()
-    }, 2000)
-    
-    // HIERARCHY: Schedule check SECOND (only if monthly limit allows)
-    // Schedule will respect monthly limit protection
-    checkScheduleAndUpdateDevices()
-    
-    // HIERARCHY: Power limit check THIRD (only if monthly limit allows)
+    // Only run power limit check (no conflicts with schedule)
     checkPowerLimitsAndTurnOffDevices()
     
     // Add manual test functions for debugging
@@ -4199,20 +4192,21 @@ export default function SetUp() {
     console.log('- window.testCombinedLimitSaveWithRemoval("Outlet 1") - Test combined limit save with device removal')
     
     // HIERARCHY: Set up intervals in priority order
-    // 1. Monthly limit check - HIGHEST PRIORITY (every 3 seconds)
-    const monthlyLimitInterval = setInterval(checkMonthlyLimits, 3000) // 3 seconds - HIGHEST PRIORITY
+    // DISABLED: Monthly limit check interval to prevent conflicts with schedule logic
+    // const monthlyLimitInterval = setInterval(checkMonthlyLimits, 3000) // 3 seconds - HIGHEST PRIORITY
     
     // 2. Schedule check - SECOND PRIORITY (every 10 seconds, but respects monthly limits)
-    const scheduleInterval = setInterval(checkScheduleAndUpdateDevices, 10000) // 10 seconds
+    // DISABLED: Schedule checking is now centralized in Schedule.tsx to prevent conflicts
+    // const scheduleInterval = setInterval(checkScheduleAndUpdateDevices, 10000) // 10 seconds
     
     // 3. Power limit check - THIRD PRIORITY (every 5 seconds, but respects monthly limits)
     const powerLimitInterval = setInterval(checkPowerLimitsAndTurnOffDevices, 5000) // 5 seconds
     
     // Cleanup intervals on unmount
     return () => {
-      clearInterval(scheduleInterval)
+      // clearInterval(scheduleInterval) // Disabled
       clearInterval(powerLimitInterval)
-      clearInterval(monthlyLimitInterval)
+      // clearInterval(monthlyLimitInterval) // Disabled
       
       // Cleanup auto-turnoff timers
       Object.values(autoTurnoffTimers).forEach(timer => {
