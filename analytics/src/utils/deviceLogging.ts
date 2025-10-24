@@ -29,11 +29,13 @@ export const logDeviceActivity = async (
 ): Promise<void> => {
   try {
     // Get current user info if not provided
-    let currentUser = user;
+    let currentUser: string;
     let currentUserId = '';
     let currentUserRole = '';
 
-    if (!currentUser) {
+    if (user) {
+      currentUser = user;
+    } else {
       // Try to get current user from Firebase Auth first
       if (auth.currentUser) {
         currentUser = auth.currentUser.displayName || auth.currentUser.email || 'Authenticated User';

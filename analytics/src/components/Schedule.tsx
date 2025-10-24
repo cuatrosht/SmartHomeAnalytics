@@ -2208,35 +2208,7 @@ export default function Schedule() {
                   })
                   console.log(`🔒 Schedule: Set main_status to 'OFF' for ${outletKey} to prevent re-activation after schedule expiration`)
                 } else {
-                  // When turning ON, only set main_status to 'ON' if device is within schedule time
-                  const now = new Date()
-                  const currentTime = now.getHours() * 60 + now.getMinutes()
-                  let endTime: number = 0
-                  
-                  if (deviceData.schedule && deviceData.schedule.startTime && deviceData.schedule.endTime) {
-                    const [endHours, endMinutes] = deviceData.schedule.endTime.split(':').map(Number)
-                    endTime = endHours * 60 + endMinutes
-                  } else if (deviceData.schedule && deviceData.schedule.timeRange) {
-                    const [, endTimeStr] = deviceData.schedule.timeRange.split(' - ')
-                    const convertTo24Hour = (time12h: string): number => {
-                      const [time, modifier] = time12h.split(' ')
-                      let [hours, minutes] = time.split(':').map(Number)
-                      if (hours === 12) hours = 0
-                      if (modifier === 'PM') hours += 12
-                      return hours * 60 + minutes
-                    }
-                    endTime = convertTo24Hour(endTimeStr)
-                  }
-                  
-                  // Only set main_status to 'ON' if device is within schedule time
-                  if (endTime === 0 || currentTime < endTime) {
-                    await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
-                      main_status: 'ON'
-                    })
-                    console.log(`✅ Schedule: Set main_status to 'ON' for ${outletKey} - within schedule time`)
-                  } else {
-                    console.log(`🔒 Schedule: NOT setting main_status to 'ON' for ${outletKey} - past schedule end time`)
-                  }
+                  console.log(`✅ Schedule: Device ${outletKey} turned ON by schedule - main_status unchanged`)
                 }
                 
                 console.log(`✅ Schedule: AUTOMATIC UPDATE COMPLETE - ${outletKey} updated to ${newControlState}`)
@@ -2383,12 +2355,7 @@ export default function Schedule() {
         device: newControlState
       })
       
-      // Reset main_status to 'ON' when setting new schedule to allow it to take effect
-      await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
-        main_status: 'ON'
-      })
-      
-      console.log(`✅ Reset main_status to 'ON' for ${outletKey} to allow new schedule to take effect`)
+      console.log(`✅ Updated control state to ${newControlState} for ${outletKey} based on new schedule`)
       
       // Log the schedule activity
       const scheduleDetails = `${updatedSchedule.timeRange} (${updatedSchedule.frequency})`
@@ -2503,12 +2470,7 @@ export default function Schedule() {
           selectedOutlets: selectedOutlets
         })
         
-        // Reset main_status to 'ON' when setting new combined schedule to allow it to take effect
-        await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
-          main_status: 'ON'
-        })
-        
-        console.log(`Saved combined schedule to ${outletKey} and reset main_status to 'ON'`)
+        console.log(`Saved combined schedule to ${outletKey}`)
       }
       
       // Log the combined schedule activity
