@@ -114,7 +114,7 @@ const removeDeviceFromCombinedGroup = async (outletKey: string): Promise<{
 }
 
 interface LogInProps {
-  onSuccess?: (userName: string, userRole: 'faculty' | 'admin') => void
+  onSuccess?: (userName: string, userRole: 'Coordinator' | 'admin') => void
   onNavigateToSignUp?: () => void
 }
 
@@ -155,10 +155,10 @@ export default function LogIn({ onSuccess, onNavigateToSignUp }: LogInProps) {
     }
   }
 
-  const scheduleSuccessRedirect = (userName?: string, userRole?: 'faculty' | 'admin') => {
+  const scheduleSuccessRedirect = (userName?: string, userRole?: 'Coordinator' | 'admin') => {
     if (onSuccess) {
       const displayName = userName || email?.trim() || 'User'
-      const role = userRole || 'faculty' // Default to 'faculty' if role not found
+      const role = userRole || 'Coordinator' // Default to 'Coordinator' if role not found
       successTimer.current = window.setTimeout(() => {
         onSuccess(displayName, role)
       }, 3000)
@@ -354,9 +354,11 @@ export default function LogIn({ onSuccess, onNavigateToSignUp }: LogInProps) {
               const currentControlState = deviceData.control?.device || 'off'
               const currentMainStatus = deviceData.relay_control?.main_status || 'ON'
               
-              // Always check schedule - main_status is just a manual override flag
-              // The real control is through control.device which we will update based on schedule
-              console.log(`LogIn: Device ${outletKey} main status is ${currentMainStatus} - checking schedule anyway`)
+              // RESPECT bypass mode - if main_status is ON, don't override it (device is in bypass mode)
+              if (currentMainStatus === 'ON') {
+                console.log(`LogIn: Device ${outletKey} has main_status = 'ON' - respecting bypass mode, skipping schedule check`)
+                continue
+              }
               
               // Check if device should be active based on current time and schedule
               // Skip individual limit check if device is in combined group (combined limit takes precedence)
@@ -430,6 +432,12 @@ export default function LogIn({ onSuccess, onNavigateToSignUp }: LogInProps) {
               continue
             }
             
+            // Check if main_status is 'ON' - if so, skip automatic power limit enforcement (device is in bypass mode)
+            if (currentMainStatus === 'ON') {
+              console.log(`LogIn: Device ${outletKey} main_status is ON - respecting bypass mode, skipping automatic power limit enforcement`)
+              continue
+            }
+            
             // Check if device is in a combined group
             const outletDisplayName = outletKey.replace('_', ' ')
             const isInCombinedGroup = combinedLimitInfo?.enabled && 
@@ -476,7 +484,34 @@ export default function LogIn({ onSuccess, onNavigateToSignUp }: LogInProps) {
                 }
               }
             } else {
-              console.log(`LogIn: Device ${outletKey} is in combined group - skipping individual daily limit check (monthly limit takes precedence)`)
+              console.log(`LogIn: Device ${outletKey} is in combined group - checking combined group power limits`)
+              
+              // For devices in combined groups, check combined monthly limit
+              if (combinedLimitInfo?.enabled && combinedLimitInfo?.selectedOutlets?.length > 0) {
+                const totalMonthlyEnergy = calculateCombinedMonthlyEnergy(devicesData, combinedLimitInfo.selectedOutlets)
+                const combinedLimitkW = combinedLimitInfo.combinedLimit / 1000 // Convert to kW
+                
+                console.log(`LogIn: Combined group limit check for ${outletKey}:`, {
+                  totalMonthlyEnergy: `${(totalMonthlyEnergy * 1000).toFixed(0)}W`,
+                  combinedLimit: `${combinedLimitInfo.combinedLimit}W`,
+                  exceedsLimit: totalMonthlyEnergy >= combinedLimitkW
+                })
+                
+                if (totalMonthlyEnergy >= combinedLimitkW) {
+                  console.log(`LogIn: Combined monthly limit exceeded - turning off ${outletKey}`)
+                  
+                  await update(ref(realtimeDb, `devices/${outletKey}/control`), {
+                    device: 'off'
+                  })
+                  
+                  // Also turn off main status to prevent immediate re-activation
+                  await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
+                    main_status: 'OFF'
+                  })
+                  
+                  console.log(`LogIn: Device ${outletKey} turned OFF due to combined monthly limit exceeded`)
+                }
+              }
             }
           }
         }
@@ -485,9 +520,62 @@ export default function LogIn({ onSuccess, onNavigateToSignUp }: LogInProps) {
       }
     }
     
-    // Run both functions immediately
+    // Monthly limit check for combined groups
+    const checkMonthlyLimitAndTurnOffDevices = async () => {
+      try {
+        if (!combinedLimitInfo?.enabled || combinedLimitInfo?.selectedOutlets?.length === 0) {
+          return
+        }
+
+        const devicesRef = ref(realtimeDb, 'devices')
+        const snapshot = await get(devicesRef)
+        
+        if (snapshot.exists()) {
+          const devicesData = snapshot.val()
+          
+          // Calculate total monthly energy for combined group
+          const totalMonthlyEnergy = calculateCombinedMonthlyEnergy(devicesData, combinedLimitInfo.selectedOutlets)
+          const combinedLimitWatts = combinedLimitInfo.combinedLimit
+          const combinedLimitkW = combinedLimitWatts / 1000 // Convert to kW
+          
+          console.log(`LogIn: Monthly limit check - Total: ${(totalMonthlyEnergy * 1000).toFixed(0)}W / Limit: ${combinedLimitWatts}W`)
+          
+          if (totalMonthlyEnergy >= combinedLimitkW) {
+            console.log(`LogIn: Monthly limit exceeded! Turning off all devices in combined group.`)
+            
+            // Turn off all devices in the combined group
+            for (const outletKey of combinedLimitInfo.selectedOutlets) {
+              const firebaseKey = outletKey.replace(' ', '_')
+              
+              try {
+                // Turn off device control
+                const controlRef = ref(realtimeDb, `devices/${firebaseKey}/control`)
+                await update(controlRef, { device: 'off' })
+                
+                // Turn off main status to prevent immediate re-activation
+                const mainStatusRef = ref(realtimeDb, `devices/${firebaseKey}/relay_control`)
+                await update(mainStatusRef, { main_status: 'OFF' })
+                
+                console.log(`✅ TURNED OFF: ${outletKey} (${firebaseKey}) due to monthly limit`)
+              } catch (error) {
+                console.error(`❌ FAILED to turn off ${outletKey}:`, error)
+              }
+            }
+          }
+        }
+      } catch (error) {
+        console.error('LogIn: Error in monthly limit check:', error)
+      }
+    }
+
+    // Re-enable schedule checking with bypass support
     checkScheduleAndUpdateDevices()
+    
+    // Run power limit check
     checkPowerLimitsAndTurnOffDevices()
+    
+    // Run monthly limit check
+    checkMonthlyLimitAndTurnOffDevices()
     
     // Add manual test function for debugging
     ;(window as any).testLogInSchedule = checkScheduleAndUpdateDevices
@@ -505,14 +593,15 @@ export default function LogIn({ onSuccess, onNavigateToSignUp }: LogInProps) {
     }
     
     // Set up intervals for automatic checking
-    // DISABLED: Schedule checking is now centralized in Schedule.tsx to prevent conflicts
-    // const scheduleInterval = setInterval(checkScheduleAndUpdateDevices, 10000) // 10 seconds (more frequent for short schedules)
+    const scheduleInterval = setInterval(checkScheduleAndUpdateDevices, 10000) // 10 seconds (more frequent for short schedules)
     const powerLimitInterval = setInterval(checkPowerLimitsAndTurnOffDevices, 30000) // 30 seconds (more frequent for power limits)
+    const monthlyLimitInterval = setInterval(checkMonthlyLimitAndTurnOffDevices, 60000) // 1 minute for monthly limit check
     
     // Cleanup intervals on unmount
     return () => {
-      // clearInterval(scheduleInterval) // Disabled
+      clearInterval(scheduleInterval)
       clearInterval(powerLimitInterval)
+      clearInterval(monthlyLimitInterval)
     }
   }, []);
 
@@ -533,7 +622,7 @@ export default function LogIn({ onSuccess, onNavigateToSignUp }: LogInProps) {
 
       // Get additional user data from Realtime Database
       let displayName = user.displayName || email.trim()
-      let userRole: 'faculty' | 'admin' = 'faculty' // Default role
+      let userRole: 'Coordinator' | 'admin' = 'Coordinator' // Default role
       
       try {
         const userRef = ref(realtimeDb, `users/${user.uid}`)
@@ -542,7 +631,7 @@ export default function LogIn({ onSuccess, onNavigateToSignUp }: LogInProps) {
         if (userSnapshot.exists()) {
           const userData = userSnapshot.val()
           displayName = userData.displayName || userData.firstName || userData.email || displayName
-          userRole = userData.role || 'faculty' // Get role from database
+          userRole = userData.role || 'Coordinator' // Get role from database
           
           console.log('User role from database:', userRole)
           
@@ -566,7 +655,8 @@ export default function LogIn({ onSuccess, onNavigateToSignUp }: LogInProps) {
         'email'
       )
 
-      openModal('success', 'Sign-in Successful', `Welcome back, ${displayName}! You have successfully signed in as ${userRole}.`)
+      const roleDisplay = userRole === 'admin' ? 'GSO' : userRole
+      openModal('success', 'Sign-in Successful', `Welcome back, ${displayName}! You have successfully signed in as ${roleDisplay}.`)
       scheduleSuccessRedirect(displayName, userRole)
       
     } catch (error: any) {
@@ -614,7 +704,7 @@ export default function LogIn({ onSuccess, onNavigateToSignUp }: LogInProps) {
       const user = result.user
       
       // Get user role from database
-      let userRole: 'faculty' | 'admin' = 'faculty' // Default role
+      let userRole: 'Coordinator' | 'admin' = 'Coordinator' // Default role
       
       try {
         const userRef = ref(realtimeDb, `users/${user.uid}`)
@@ -622,7 +712,7 @@ export default function LogIn({ onSuccess, onNavigateToSignUp }: LogInProps) {
         
         if (userSnapshot.exists()) {
           const userData = userSnapshot.val()
-          userRole = userData.role || 'faculty' // Get role from database
+          userRole = userData.role || 'Coordinator' // Get role from database
           
           console.log('Google user role from database:', userRole)
           
@@ -648,7 +738,8 @@ export default function LogIn({ onSuccess, onNavigateToSignUp }: LogInProps) {
         'google'
       )
 
-      openModal('success', 'Signed in with Google', `Welcome back, ${user.displayName || 'User'}! Your Google account has been authenticated as ${userRole}.`)
+      const roleDisplay = userRole === 'admin' ? 'GSO' : userRole
+      openModal('success', 'Signed in with Google', `Welcome back, ${user.displayName || 'User'}! Your Google account has been authenticated as ${roleDisplay}.`)
       scheduleSuccessRedirect(user.displayName || undefined, userRole)
     } catch (error: any) {
       console.error('Google sign-in error:', error)

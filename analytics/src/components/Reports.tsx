@@ -16,6 +16,69 @@ import { realtimeDb } from '../firebase/config'
 import jsPDF from 'jspdf'
 import './Reports.css'
 
+// Function to calculate total monthly energy for combined limit group
+const calculateCombinedMonthlyEnergy = (devicesData: any, selectedOutlets: string[]): number => {
+  try {
+    // Get current month and year
+    const now = new Date()
+    const currentYear = now.getFullYear()
+    const currentMonth = now.getMonth() + 1 // getMonth() returns 0-11, so add 1
+    const daysInMonth = new Date(currentYear, currentMonth, 0).getDate()
+    
+    console.log('📊 Monthly energy calculation:', {
+      currentYear,
+      currentMonth,
+      daysInMonth,
+      selectedOutlets: [...new Set(selectedOutlets)], // Remove duplicates
+      totalOutlets: selectedOutlets.length,
+      uniqueOutlets: [...new Set(selectedOutlets)].length
+    })
+    
+    // Process each outlet in the combined limit group
+    const processedOutlets = new Set()
+    let totalMonthlyEnergy = 0
+    
+    selectedOutlets.forEach((outletKey, index) => {
+      // Skip if already processed (avoid duplicates)
+      if (processedOutlets.has(outletKey)) {
+        console.log(`📊 Skipping duplicate outlet: ${outletKey}`)
+        return
+      }
+      
+      processedOutlets.add(outletKey)
+      
+      // Convert display name to Firebase key (Outlet 1 -> Outlet_1)
+      const firebaseKey = outletKey.replace(' ', '_')
+      const deviceData = devicesData[firebaseKey]
+      
+      if (deviceData && deviceData.daily_logs) {
+        let outletMonthlyEnergy = 0
+        
+        // Sum energy for all days in the current month
+        for (let day = 1; day <= daysInMonth; day++) {
+          const dayKey = `day_${currentYear}_${String(currentMonth).padStart(2, '0')}_${String(day).padStart(2, '0')}`
+          const dayData = deviceData.daily_logs[dayKey]
+          
+          if (dayData && dayData.total_energy !== undefined) {
+            outletMonthlyEnergy += dayData.total_energy
+          }
+        }
+        
+        totalMonthlyEnergy += outletMonthlyEnergy
+        
+        console.log(`📊 Outlet ${outletKey} (${firebaseKey}) monthly energy: ${(outletMonthlyEnergy * 1000).toFixed(0)}Wh`)
+      } else {
+        console.log(`📊 No data found for outlet: ${outletKey} (${firebaseKey})`)
+      }
+    })
+    
+    console.log(`📊 Total combined monthly energy: ${(totalMonthlyEnergy * 1000).toFixed(0)}Wh`)
+    return totalMonthlyEnergy
+  } catch (error) {
+    console.error('📊 Error calculating combined monthly energy:', error)
+    return 0
+  }
+}
 
 ChartJS.register(
   CategoryScale,
@@ -88,6 +151,13 @@ interface DeviceData {
   lifetime_energy: number
   officeRoom: string
   appliances: string
+  office_info?: {
+    assigned_date: string
+    office: string
+    department?: string
+    appliance?: string
+    enable_power_scheduling?: boolean
+  }
   relay_control?: {
     auto_cutoff?: {
       enabled: boolean
@@ -207,7 +277,7 @@ export default function Reports() {
 
   // Calculate current bill using EXACT same method as PDF (no runtime verification)
   const calculateCurrentBill = async (devices: DeviceData[]) => {
-    let totalMonthlyEnergy = 0
+    let totalBill = 0
     const now = new Date()
     const currentYear = now.getFullYear()
     const currentMonth = now.getMonth() + 1
@@ -241,26 +311,30 @@ export default function Reports() {
               }
             }
             
-            totalMonthlyEnergy += monthlyEnergy
-            console.log(`📊 Device ${outletKey}: Monthly energy = ${monthlyEnergy.toFixed(6)} kWh`)
+            // Calculate cost for this device and truncate to 2 decimals (same as PDF)
+            const deviceCost = monthlyEnergy * currentRate
+            const truncatedCost = Math.floor(deviceCost * 100) / 100
+            totalBill += truncatedCost
+            
+            console.log(`📊 Device ${outletKey}: Monthly energy = ${monthlyEnergy.toFixed(6)} kWh, Cost = PHP ${truncatedCost.toFixed(2)}`)
           }
         }
       }
     } catch (error) {
       console.error('❌ Error calculating current bill:', error)
       // Fallback: use current day's data
-      totalMonthlyEnergy = devices.reduce((sum, device) => {
+      const totalMonthlyEnergy = devices.reduce((sum, device) => {
         return sum + (device.total_energy || 0)
       }, 0)
+      const fallbackCost = totalMonthlyEnergy * currentRate
+      totalBill = Math.floor(fallbackCost * 100) / 100
     }
     
     console.log(`📊 Current bill calculation results:`)
-    console.log(`   Total monthly energy: ${totalMonthlyEnergy.toFixed(6)} kWh`)
-    console.log(`   Rate: ₱${currentRate} per kWh`)
-    console.log(`   Current bill: ₱${(totalMonthlyEnergy * currentRate).toFixed(2)}`)
+    console.log(`   Total bill (sum of truncated costs): PHP ${totalBill.toFixed(2)}`)
     
-    // Energy is already in kWh, multiply by current rate (EXACT same as PDF calculation)
-    return totalMonthlyEnergy * currentRate
+    // Return sum of truncated individual costs (EXACT same as PDF calculation)
+    return totalBill
   }
 
   // Calculate trend percentage
@@ -443,14 +517,184 @@ export default function Reports() {
     return isWithinTimeRange && isCorrectDay
   }
 
-  // Show office selection dialog for PDF generation
-  const showPdfOfficeSelection = () => {
-    setIsPdfOfficeModalOpen(true)
+  // Show department selection dialog for PDF generation
+  const showPdfDepartmentSelection = () => {
+    setIsPdfDepartmentModalOpen(true)
+  }
+
+  // Format date for display
+  const formatDate = (dateString: string) => {
+    if (!dateString) return ''
+    const date = new Date(dateString)
+    return date.toLocaleDateString('en-US', { 
+      year: 'numeric', 
+      month: 'long', 
+      day: 'numeric' 
+    })
+  }
+
+  // Handle date range confirmation and show preview
+  const handleDateRangeConfirm = async () => {
+    if (!selectedStartDate || !selectedEndDate) return
+    
+    setIsLoadingPreview(true)
+    console.log('Date range selected:', { selectedStartDate, selectedEndDate, selectedOffice, selectedPdfDepartment })
+    
+    // Filter devices based on selected department and office
+    let filteredDevices = devices
+    
+    // First filter by department
+    if (selectedPdfDepartment !== 'All Departments') {
+      filteredDevices = devices.filter(device => {
+        if (device.office_info && device.office_info.department) {
+          return device.office_info.department.toLowerCase() === selectedPdfDepartment.toLowerCase()
+        }
+        return false
+      })
+    }
+    
+    // Then filter by office if specific office is selected
+    if (selectedOffice !== 'All Offices') {
+      filteredDevices = filteredDevices.filter(device => device.officeRoom === selectedOffice)
+    }
+
+    console.log('Filtered devices:', filteredDevices.length, 'Department:', selectedPdfDepartment, 'Office:', selectedOffice)
+
+    // Calculate preview data for the selected date range
+    const startDate = new Date(selectedStartDate)
+    const endDate = new Date(selectedEndDate)
+    
+    let totalEnergy = 0
+    let deviceCount = filteredDevices.length
+    const deviceTableData: any[] = []
+
+    console.log('Processing date range:', { startDate, endDate })
+
+    // Calculate energy consumption for the date range and prepare table data
+    for (const device of filteredDevices) {
+      const deviceRef = ref(realtimeDb, `devices/${device.outletId}`)
+      try {
+        const snapshot = await get(deviceRef)
+        if (snapshot.exists()) {
+          const deviceData = snapshot.val() as FirebaseDeviceData
+          let deviceEnergy = 0
+          let deviceHours = 0
+          
+          console.log(`Processing device ${device.outletId}:`, deviceData)
+          
+          if (deviceData.daily_logs) {
+            console.log(`Daily logs for ${device.outletId}:`, Object.keys(deviceData.daily_logs))
+            
+            for (const [dateStr, dayData] of Object.entries(deviceData.daily_logs)) {
+              // Handle different date formats from the database
+              let logDate: Date
+              try {
+                // Try parsing as-is first
+                logDate = new Date(dateStr)
+                
+                // If that fails or gives invalid date, try parsing day_YYYY_MM_DD format
+                if (isNaN(logDate.getTime()) && dateStr.startsWith('day_')) {
+                  const datePart = dateStr.replace('day_', '').replace(/_/g, '-')
+                  logDate = new Date(datePart)
+                }
+                
+                // If still invalid, try to extract date from the string
+                if (isNaN(logDate.getTime())) {
+                  const match = dateStr.match(/(\d{4})_(\d{2})_(\d{2})/)
+                  if (match) {
+                    const [, year, month, day] = match
+                    logDate = new Date(parseInt(year), parseInt(month) - 1, parseInt(day))
+                  }
+                }
+              } catch (error) {
+                console.error(`Error parsing date ${dateStr}:`, error)
+                continue
+              }
+              
+              console.log(`Checking date ${dateStr}:`, { logDate, startDate, endDate, inRange: logDate >= startDate && logDate <= endDate })
+              
+              if (logDate >= startDate && logDate <= endDate) {
+                const dayDataTyped = dayData as { total_energy?: number; usage_time_hours?: number }
+                console.log(`Adding data for ${dateStr}:`, dayDataTyped)
+                deviceEnergy += dayDataTyped.total_energy || 0
+                deviceHours += dayDataTyped.usage_time_hours || 0
+              }
+            }
+          }
+          
+          console.log(`Device ${device.outletId} total energy:`, deviceEnergy)
+          totalEnergy += deviceEnergy
+          
+          // Add device data for table preview
+          deviceTableData.push({
+            outletId: device.outletId,
+            appliance: device.appliances || 'Unassigned',
+            powerLimit: (device.relay_control?.auto_cutoff?.power_limit || 0) * 1000, // Convert to watts
+            monthlyEnergy: deviceEnergy * 1000, // Convert to watts
+            totalHours: deviceHours,
+            monthlyCost: deviceEnergy * currentRate
+          })
+        } else {
+          console.log(`No data found for device ${device.outletId}`)
+          // Add device with zero data if no data found
+          deviceTableData.push({
+            outletId: device.outletId,
+            appliance: device.appliances || 'Unassigned',
+            powerLimit: (device.relay_control?.auto_cutoff?.power_limit || 0) * 1000,
+            monthlyEnergy: 0,
+            totalHours: 0,
+            monthlyCost: 0
+          })
+        }
+      } catch (error) {
+        console.error(`Error fetching data for device ${device.outletId}:`, error)
+        // Add device with zero data if error occurs
+        deviceTableData.push({
+          outletId: device.outletId,
+          appliance: device.appliances || 'Unassigned',
+          powerLimit: (device.relay_control?.auto_cutoff?.power_limit || 0) * 1000,
+          monthlyEnergy: 0,
+          totalHours: 0,
+          monthlyCost: 0
+        })
+      }
+    }
+
+    // Sum the truncated individual costs instead of calculating from total energy
+    const estimatedCost = deviceTableData.reduce((sum, device) => sum + (Math.floor(device.monthlyCost * 100) / 100), 0)
+
+    console.log('Preview data calculated:', {
+      deviceCount,
+      totalEnergy,
+      estimatedCost,
+      currentRate,
+      deviceTableData
+    })
+
+    setPreviewData({
+      deviceCount,
+      totalEnergy,
+      estimatedCost,
+      filteredDevices,
+      deviceTableData
+    })
+
+    setIsLoadingPreview(false)
+    setIsDateRangeModalOpen(false)
+    setIsPdfPreviewModalOpen(true)
+  }
+
+  // Handle PDF generation with filtered data
+  const handleGeneratePDF = () => {
+    generatePDFReport(selectedOffice, selectedStartDate, selectedEndDate)
+    setIsPdfPreviewModalOpen(false)
   }
 
   // Generate and download PDF report with selected office data
-  const generatePDFReport = async (targetOffice: string = '') => {
+  const generatePDFReport = async (targetOffice: string = '', startDate?: string, endDate?: string) => {
     try {
+      console.log('PDF Generation started with:', { targetOffice, startDate, endDate })
+      
       // Get current date
       const now = new Date()
       const currentDate = now.toLocaleDateString('en-US', { 
@@ -459,30 +703,30 @@ export default function Reports() {
         day: 'numeric' 
       })
 
-      // Filter devices based on selected office
+      // Filter devices based on selected department and office
       let reportDevices = devices
       let officeDisplayName = 'All Offices'
       
+      // First filter by department
+      if (selectedPdfDepartment !== 'All Departments') {
+        reportDevices = devices.filter(device => {
+          if (device.office_info && device.office_info.department) {
+            return device.office_info.department.toLowerCase() === selectedPdfDepartment.toLowerCase()
+          }
+          return false
+        })
+      }
+      
+      // Then filter by office if specific office is selected
       if (targetOffice && targetOffice !== 'All Offices') {
-        reportDevices = devices.filter(device => device.officeRoom === targetOffice)
+        reportDevices = reportDevices.filter(device => device.officeRoom === targetOffice)
         officeDisplayName = targetOffice
       }
 
       // Calculate real data
       const totalDevices = reportDevices.length
       
-      // Use combined limit if available, otherwise calculate from individual limits
-      let totalPowerLimit = 0
-      if (combinedLimitInfo?.enabled && combinedLimitInfo?.combinedLimit > 0) {
-        // Use the existing combined power limit
-        totalPowerLimit = combinedLimitInfo.combinedLimit
-      } else {
-        // Fallback to individual device limits
-        totalPowerLimit = reportDevices.reduce((sum, device) => {
-          const powerLimit = device.relay_control?.auto_cutoff?.power_limit || 0
-          return sum + (powerLimit * 1000) // Convert to watts
-        }, 0)
-      }
+      // Note: Power limit calculation removed as it's not used in the current PDF generation
 
       // Get current month data for calculations
       const currentYear = now.getFullYear()
@@ -503,18 +747,58 @@ export default function Reports() {
               let monthlyEnergy = 0
               let totalHours = 0
               
-              // Sum up all daily energy and usage hours for the current month
-              for (let day = 1; day <= daysInMonth; day++) {
-                const dayKey = `day_${currentYear}_${String(currentMonth).padStart(2, '0')}_${String(day).padStart(2, '0')}`
-                const dayData = outlet.daily_logs[dayKey]
+              if (startDate && endDate) {
+                // Use date range filtering with robust date parsing
+                const start = new Date(startDate)
+                const end = new Date(endDate)
                 
-                if (dayData) {
-                  monthlyEnergy += dayData.total_energy || 0 // Already in kW
-                  totalHours += dayData.usage_time_hours || 0 // Usage time in hours
+                for (const [dateStr, dayData] of Object.entries(outlet.daily_logs)) {
+                  // Handle different date formats from the database
+                  let logDate: Date
+                  try {
+                    // Try parsing as-is first
+                    logDate = new Date(dateStr)
+                    
+                    // If that fails or gives invalid date, try parsing day_YYYY_MM_DD format
+                    if (isNaN(logDate.getTime()) && dateStr.startsWith('day_')) {
+                      const datePart = dateStr.replace('day_', '').replace(/_/g, '-')
+                      logDate = new Date(datePart)
+                    }
+                    
+                    // If still invalid, try to extract date from the string
+                    if (isNaN(logDate.getTime())) {
+                      const match = dateStr.match(/(\d{4})_(\d{2})_(\d{2})/)
+                      if (match) {
+                        const [, year, month, day] = match
+                        logDate = new Date(parseInt(year), parseInt(month) - 1, parseInt(day))
+                      }
+                    }
+                  } catch (error) {
+                    console.error(`Error parsing date ${dateStr}:`, error)
+                    continue
+                  }
+                  
+                  if (logDate >= start && logDate <= end) {
+                    const dayDataTyped = dayData as { total_energy?: number; usage_time_hours?: number }
+                    console.log(`PDF: Adding data for ${dateStr} in date range:`, dayDataTyped)
+                    monthlyEnergy += dayDataTyped.total_energy || 0 // Already in kW
+                    totalHours += dayDataTyped.usage_time_hours || 0 // Usage time in hours
+                  }
+                }
+              } else {
+                // Fallback to current month calculation
+                for (let day = 1; day <= daysInMonth; day++) {
+                  const dayKey = `day_${currentYear}_${String(currentMonth).padStart(2, '0')}_${String(day).padStart(2, '0')}`
+                  const dayData = outlet.daily_logs[dayKey]
+                  
+                  if (dayData) {
+                    monthlyEnergy += dayData.total_energy || 0 // Already in kW
+                    totalHours += dayData.usage_time_hours || 0 // Usage time in hours
+                  }
                 }
               }
               
-              return {
+              const deviceData = {
                 outletId: device.outletId,
                 appliance: device.appliances || 'Unassigned',
                 powerLimit: (device.relay_control?.auto_cutoff?.power_limit || 0) * 1000, // Convert to watts
@@ -522,6 +806,9 @@ export default function Reports() {
                 totalHours: totalHours,
                 monthlyCost: monthlyEnergy * currentRate
               }
+              
+              console.log(`PDF: Device ${device.outletId} calculated data:`, deviceData)
+              return deviceData
             }
           }
           
@@ -545,6 +832,11 @@ export default function Reports() {
           }
         }
       }))
+
+      console.log('PDF: All device data calculated:', deviceMonthlyData)
+      console.log('PDF: Total devices:', deviceMonthlyData.length)
+      console.log('PDF: Total energy:', deviceMonthlyData.reduce((sum, device) => sum + (device.monthlyEnergy / 1000), 0), 'kWh')
+      console.log('PDF: Total cost:', deviceMonthlyData.reduce((sum, device) => sum + device.monthlyCost, 0), 'PHP')
 
       const doc = new jsPDF()
       const pageWidth = doc.internal.pageSize.getWidth()
@@ -590,10 +882,13 @@ export default function Reports() {
       }
 
       // Institutional Header
-      doc.setFontSize(12)
-      doc.setFont('arial', 'normal')
-      doc.text('College of Computing and Multimedia Studies', pageWidth / 2, yPosition, { align: 'center' })
-      yPosition += 8
+      // Only show department name if not "All Departments"
+      if (selectedPdfDepartment !== 'All Departments') {
+        doc.setFontSize(12)
+        doc.setFont('arial', 'normal')
+        doc.text(selectedPdfDepartment, pageWidth / 2, yPosition, { align: 'center' })
+        yPosition += 8
+      }
       
       doc.setFontSize(12)
       doc.setFont('arial', 'normal')
@@ -616,11 +911,28 @@ export default function Reports() {
       yPosition += 15
 
       // Add report details with real data
-      addText(`Date: ${currentDate}`, 20, yPosition, { fontSize: 12 })
+      if (startDate && endDate) {
+        const startDateFormatted = new Date(startDate).toLocaleDateString('en-US', { 
+          year: 'numeric', 
+          month: 'long', 
+          day: 'numeric' 
+        })
+        const endDateFormatted = new Date(endDate).toLocaleDateString('en-US', { 
+          year: 'numeric', 
+          month: 'long', 
+          day: 'numeric' 
+        })
+        addText(`Date Range: ${startDateFormatted} to ${endDateFormatted}`, 20, yPosition, { fontSize: 12 })
+      } else {
+        addText(`Date: ${currentDate}`, 20, yPosition, { fontSize: 12 })
+      }
       yPosition += 7
 
-      addText('Department: College of Computing and Multimedia Studies', 20, yPosition, { fontSize: 12 })
-      yPosition += 7
+      // Only show department line if not "All Departments"
+      if (selectedPdfDepartment !== 'All Departments') {
+        addText(`Department: ${selectedPdfDepartment}`, 20, yPosition, { fontSize: 12 })
+        yPosition += 7
+      }
 
       addText(`Offices: ${officeDisplayName}`, 20, yPosition, { fontSize: 12 })
       yPosition += 7
@@ -719,7 +1031,8 @@ export default function Reports() {
       }
       const monthlyEnergyDisplay = device.monthlyEnergy.toFixed(3)
       const totalHoursDisplay = device.totalHours.toFixed(3)
-      const monthlyCostDisplay = device.monthlyCost.toFixed(2)
+      // Truncate to 2 decimal places without rounding
+      const monthlyCostDisplay = `PHP ${(Math.floor(device.monthlyCost * 100) / 100).toFixed(2)}`
       const sharePercentage = deviceMonthlyData.reduce((sum, d) => sum + d.monthlyEnergy, 0) > 0 
         ? ((device.monthlyEnergy / deviceMonthlyData.reduce((sum, d) => sum + d.monthlyEnergy, 0)) * 100).toFixed(3)
         : '0.000'
@@ -763,7 +1076,8 @@ export default function Reports() {
     
     // Calculate totals
     const totalMonthlyEnergy = deviceMonthlyData.reduce((sum, device) => sum + device.monthlyEnergy, 0)
-    const totalMonthlyCost = deviceMonthlyData.reduce((sum, device) => sum + device.monthlyCost, 0)
+    // Sum the truncated individual costs instead of calculating from total
+    const totalMonthlyCost = deviceMonthlyData.reduce((sum, device) => sum + (Math.floor(device.monthlyCost * 100) / 100), 0)
     const totalHours = deviceMonthlyData.reduce((sum, device) => sum + device.totalHours, 0)
     
     // Calculate total table width
@@ -776,6 +1090,7 @@ export default function Reports() {
     
     // Estimated Cost row - single cell spanning all columns
     addRect(20, yPosition - 2, totalTableWidth, rowHeight)
+    // totalMonthlyCost is already the sum of truncated values
     addText(`Estimated Cost: PHP ${totalMonthlyCost.toFixed(2)}`, 22, yPosition + 4, { fontSize: 10, bold: true })
     yPosition += rowHeight
 
@@ -986,10 +1301,18 @@ export default function Reports() {
       color: '#666666' 
     })
     yPosition += 5
-    addText('College of Computing and Multimedia Studies - Camarines Norte State College', 20, yPosition, { 
-      fontSize: 9, 
-      color: '#666666' 
-    })
+    // Only show department in footer if not "All Departments"
+    if (selectedPdfDepartment !== 'All Departments') {
+      addText(`${selectedPdfDepartment} - Camarines Norte State College`, 20, yPosition, { 
+        fontSize: 9, 
+        color: '#666666' 
+      })
+    } else {
+      addText('Camarines Norte State College', 20, yPosition, { 
+        fontSize: 9, 
+        color: '#666666' 
+      })
+    }
     yPosition += 5
     addText('For questions or concerns, please contact the system administrator.', 20, yPosition, { 
       fontSize: 9, 
@@ -999,7 +1322,15 @@ export default function Reports() {
     // Generate filename
     const timestamp = new Date().toISOString().split('T')[0]
     const officeName = officeDisplayName === 'All Offices' ? 'All_Offices' : officeDisplayName.replace(/\s+/g, '_')
-    const filename = `CNSC_CCMS_Power_Report_${officeName}_${timestamp}.pdf`
+    // Create department abbreviation by filtering out common words
+    const wordsToExclude = ['of', 'and', 'the', 'in', 'for', 'a', 'an', 'to']
+    const departmentAbbrev = selectedPdfDepartment === 'All Departments' 
+      ? 'All_Departments' 
+      : selectedPdfDepartment.split(' ')
+          .filter(word => !wordsToExclude.includes(word.toLowerCase()))
+          .map(word => word.charAt(0).toUpperCase())
+          .join('')
+    const filename = `CNSC_${departmentAbbrev}_Power_Report_${officeName}_${timestamp}.pdf`
 
     // Save the PDF
     doc.save(filename)
@@ -1014,11 +1345,23 @@ export default function Reports() {
   }
 
   const [deptOpen, setDeptOpen] = useState(false)
+  const [officeOpen, setOfficeOpen] = useState(false)
   const [timeSegment, setTimeSegment] = useState('Week')
-  const [department, setDepartment] = useState('College of Computer and Multimedia Studies')
+  const [department, setDepartment] = useState('All Departments')
+  const [office, setOffice] = useState('All Offices')
   const [searchQuery, setSearchQuery] = useState('')
   const [devices, setDevices] = useState<DeviceData[]>([])
   const [filteredDevices, setFilteredDevices] = useState<DeviceData[]>([])
+  const [officesData, setOfficesData] = useState<any>({})
+  const [offices, setOffices] = useState<string[]>([])
+  const [departments, setDepartments] = useState<string[]>(['All Departments'])
+
+  // Debug departments state
+  useEffect(() => {
+    console.log('Departments state updated:', departments)
+    console.log('Available departments for dropdown:', departments)
+  }, [departments])
+
   const [totalPower, setTotalPower] = useState(0)
   const [totalEnergy, setTotalEnergy] = useState(0)
   const [currentTotalEnergy, setCurrentTotalEnergy] = useState(0) // For device list (not time-filtered)
@@ -1035,7 +1378,17 @@ export default function Reports() {
     energyUsage: []
   })
   const [isModalOpen, setIsModalOpen] = useState(false)
+  const [isPdfDepartmentModalOpen, setIsPdfDepartmentModalOpen] = useState(false)
   const [isPdfOfficeModalOpen, setIsPdfOfficeModalOpen] = useState(false)
+  const [isDateRangeModalOpen, setIsDateRangeModalOpen] = useState(false)
+  const [isPdfPreviewModalOpen, setIsPdfPreviewModalOpen] = useState(false)
+  const [selectedPdfDepartment, setSelectedPdfDepartment] = useState('')
+  const [selectedPdfOffice, setSelectedPdfOffice] = useState('')
+  const [selectedOffice, setSelectedOffice] = useState('')
+  const [selectedStartDate, setSelectedStartDate] = useState('')
+  const [selectedEndDate, setSelectedEndDate] = useState('')
+  const [previewData, setPreviewData] = useState<any>(null)
+  const [isLoadingPreview, setIsLoadingPreview] = useState(false)
   const [combinedLimitInfo, setCombinedLimitInfo] = useState<{
     enabled: boolean;
     selectedOutlets: string[];
@@ -1260,14 +1613,6 @@ export default function Reports() {
     updateChartData()
   }, [timeSegment, filteredDevices])
 
-  const departments = [
-    'College of Computer and Multimedia Studies',
-    'Computer Laboratory 1',
-    'Computer Laboratory 2', 
-    'Computer Laboratory 3',
-    "Dean's Office",
-    'Faculty Office'
-  ]
 
   // Subscribe to CANORECO electricity rate (Region V - Camarines Norte)
   useEffect(() => {
@@ -1330,6 +1675,7 @@ export default function Reports() {
               lifetime_energy: lifetimeEnergyKw, // This is in kW from root level
               officeRoom: officeInfo,
               appliances: outlet.office_info?.appliance || 'Unassigned',
+              office_info: outlet.office_info, // Add office_info data
               relay_control: outlet.relay_control // Add relay_control data
             }
             devicesArray.push(deviceData)
@@ -1347,7 +1693,8 @@ export default function Reports() {
             total_energy: d.total_energy,
             lifetime_energy: d.lifetime_energy,
             peak_power: d.peak_power,
-            officeRoom: d.officeRoom
+            officeRoom: d.officeRoom,
+            office_info: d.office_info
           }))
         })
       }
@@ -1356,15 +1703,202 @@ export default function Reports() {
     return () => off(devicesRef, 'value', unsubscribe)
   }, [])
 
-  // Filter devices based on selected department
+  // Fetch offices data from database
   useEffect(() => {
-    if (department === 'College of Computer and Multimedia Studies') {
-      setFilteredDevices(devices)
-    } else {
-      const filtered = devices.filter(device => device.officeRoom === department)
-      setFilteredDevices(filtered)
+    const fetchOfficesData = async () => {
+      try {
+        console.log('Fetching offices data from database...')
+        const officesRef = ref(realtimeDb, 'offices')
+        const snapshot = await get(officesRef)
+        
+        console.log('Database snapshot exists:', snapshot.exists())
+        console.log('Database snapshot value:', snapshot.val())
+        
+        if (snapshot.exists()) {
+          const officesData = snapshot.val()
+          setOfficesData(officesData)
+          
+          // Extract unique departments and offices
+          const departmentsSet = new Set<string>()
+          const officesSet = new Set<string>()
+          
+          console.log('Processing offices data:', Object.keys(officesData))
+          
+          Object.values(officesData).forEach((office: any) => {
+            console.log('Processing office entry:', {
+              department: office.department,
+              office: office.office,
+              fullEntry: office
+            })
+            if (office.department) {
+              departmentsSet.add(office.department)
+            }
+            if (office.office) {
+              officesSet.add(office.office)
+            }
+          })
+          
+          // Update departments array with unique departments from database
+          const uniqueDepartments = Array.from(departmentsSet)
+          console.log('Fetched departments from database:', uniqueDepartments)
+          console.log('Setting departments to:', ['All Departments', ...uniqueDepartments])
+          setDepartments(['All Departments', ...uniqueDepartments])
+          
+          // Update offices array with unique offices from database
+          const uniqueOffices = Array.from(officesSet)
+          console.log('Fetched offices from database:', uniqueOffices)
+          setOffices(uniqueOffices)
+        } else {
+          console.log('No offices data found in database')
+          // Keep only 'All Departments' if no data exists
+          setDepartments(['All Departments'])
+        }
+      } catch (error) {
+        console.error('Error fetching offices data:', error)
+        // Keep only 'All Departments' on error
+        setDepartments(['All Departments'])
+      }
     }
-  }, [department, devices])
+    
+    fetchOfficesData()
+  }, [])
+
+  // Function to get filtered offices based on selected department
+  const getFilteredOffices = () => {
+    if (department === 'All Departments') {
+      return ['All Offices', ...offices]
+    }
+    
+    const filteredOffices: string[] = ['All Offices']
+    
+    Object.values(officesData).forEach((officeData: any) => {
+      if (officeData.department === department && officeData.office) {
+        filteredOffices.push(officeData.office)
+      }
+    })
+    
+    return filteredOffices
+  }
+
+  // Function to get filtered offices for PDF based on selected PDF department
+  const getFilteredOfficesForPdf = (pdfDepartment: string) => {
+    console.log('PDF Office Filtering:', {
+      pdfDepartment,
+      officesData: Object.values(officesData),
+      allOffices: offices
+    })
+    
+    if (pdfDepartment === 'All Departments') {
+      return ['All Offices', ...offices]
+    }
+    
+    const filteredOffices: string[] = ['All Offices']
+    
+    Object.values(officesData).forEach((officeData: any) => {
+      console.log('Checking office data:', {
+        officeData,
+        pdfDepartment,
+        departmentMatch: officeData.department && officeData.department.toLowerCase() === pdfDepartment.toLowerCase()
+      })
+      
+      if (officeData.department && officeData.office && 
+          officeData.department.toLowerCase() === pdfDepartment.toLowerCase()) {
+        filteredOffices.push(officeData.office)
+      }
+    })
+    
+    console.log('Filtered offices for PDF:', filteredOffices)
+    return filteredOffices
+  }
+
+  // Reset office selection when department changes
+  useEffect(() => {
+    setOffice('All Offices')
+  }, [department])
+
+  // Filter devices based on selected department and office
+  useEffect(() => {
+    let filteredDevices = devices
+    
+    // Filter by department and office selection
+    if (department !== 'All Departments') {
+      if (office !== 'All Offices') {
+        // Filter by specific office within the selected department
+        filteredDevices = devices.filter(device => {
+          // Check if device has office_info with department and office
+          if (device.office_info && device.office_info.department && device.office_info.office) {
+            console.log('Device filtering check (office_info):', {
+              deviceOfficeRoom: device.officeRoom,
+              deviceOfficeInfo: device.office_info,
+              selectedOffice: office,
+              selectedDepartment: department,
+              officeMatch: device.office_info.office === office,
+              departmentMatch: device.office_info.department === department
+            })
+            
+            // Check if the device's office_info matches the selected department and office (case-insensitive)
+            return device.office_info.department.toLowerCase() === department.toLowerCase() && 
+                   device.office_info.office.toLowerCase() === office.toLowerCase()
+          } else if (officesData && device.officeRoom) {
+            // Fallback: Use officesData if office_info is not available
+            const deviceOfficeData = Object.values(officesData).find((officeData: any) => 
+              officeData.office === device.officeRoom
+            )
+            
+            console.log('Device filtering check (fallback):', {
+              deviceOfficeRoom: device.officeRoom,
+              selectedOffice: office,
+              selectedDepartment: department,
+              deviceOfficeData: deviceOfficeData,
+              officeMatch: deviceOfficeData && (deviceOfficeData as any).office === office,
+              departmentMatch: deviceOfficeData && (deviceOfficeData as any).department === department
+            })
+            
+            // Check if the office matches AND belongs to the selected department (case-insensitive)
+            return deviceOfficeData && 
+                   (deviceOfficeData as any).office.toLowerCase() === office.toLowerCase() && 
+                   (deviceOfficeData as any).department.toLowerCase() === department.toLowerCase()
+          }
+          return false
+        })
+      } else {
+        // Filter by department (all offices in that department)
+        filteredDevices = devices.filter(device => {
+          // Check if device has office_info with department (case-insensitive)
+          if (device.office_info && device.office_info.department) {
+            return device.office_info.department.toLowerCase() === department.toLowerCase()
+          } else if (officesData && device.officeRoom) {
+            // Fallback: Use officesData if office_info is not available
+            const deviceOfficeData = Object.values(officesData).find((officeData: any) => 
+              officeData.office === device.officeRoom
+            )
+            
+            return deviceOfficeData && (deviceOfficeData as any).department.toLowerCase() === department.toLowerCase()
+          }
+          return false
+        })
+      }
+    }
+    
+    setFilteredDevices(filteredDevices)
+    
+    console.log('Device filtering result:', {
+      totalDevices: devices.length,
+      filteredDevices: filteredDevices.length,
+      department: department,
+      office: office,
+      allDevicesOfficeInfo: devices.map(d => ({
+        outletId: d.outletId,
+        officeRoom: d.officeRoom,
+        office_info: d.office_info
+      })),
+      filteredDevicesList: filteredDevices.map(d => ({
+        outletId: d.outletId,
+        officeRoom: d.officeRoom,
+        office_info: d.office_info
+      }))
+    })
+  }, [department, office, devices, officesData])
 
   // Calculate current total energy for device list (not time-filtered)
   useEffect(() => {
@@ -1428,10 +1962,35 @@ export default function Reports() {
             }
           }
           
-          // Total Consumption: Sum of lifetime_energy from root level (already in kW)
-          const currentTotalEnergySum = filteredDevices.reduce((sum, device) => {
-            return sum + (device.lifetime_energy || 0)
-          }, 0) // Already in kW from database
+          // Total Consumption: Sum of all daily energy consumption from all time periods
+          let currentTotalEnergySum = 0
+          
+          for (const device of filteredDevices) {
+            try {
+              const deviceRef = ref(realtimeDb, `devices/${device.outletId}`)
+              const snapshot = await get(deviceRef)
+              
+              if (snapshot.exists()) {
+                const outlet = snapshot.val()
+                
+                if (outlet && outlet.daily_logs) {
+                  let totalLifetimeEnergy = 0
+                  
+                  // Sum up all daily energy from all time periods
+                  Object.keys(outlet.daily_logs).forEach(dayKey => {
+                    const dayData = outlet.daily_logs[dayKey]
+                    if (dayData && dayData.total_energy) {
+                      totalLifetimeEnergy += dayData.total_energy // Already in kW
+                    }
+                  })
+                  
+                  currentTotalEnergySum += totalLifetimeEnergy
+                }
+              }
+            } catch (error) {
+              console.error(`Error calculating total energy for ${device.outletId}:`, error)
+            }
+          }
           
           // Store previous values for trend calculation
           setPreviousTotalPower(totalPower)
@@ -1547,9 +2106,11 @@ export default function Reports() {
               const currentControlState = deviceData.control?.device || 'off'
               const currentMainStatus = deviceData.relay_control?.main_status || 'ON'
               
-              // Always check schedule - main_status is just a manual override flag
-              // The real control is through control.device which we will update based on schedule
-              console.log(`Reports: Device ${outletKey} main status is ${currentMainStatus} - checking schedule anyway`)
+              // RESPECT bypass mode - if main_status is ON, don't override it (device is in bypass mode)
+              if (currentMainStatus === 'ON') {
+                console.log(`Reports: Device ${outletKey} has main_status = 'ON' - respecting bypass mode, skipping schedule check`)
+                continue
+              }
               
               // Check if device should be active based on current time and schedule
               // Skip individual limit check if device is in combined group (combined limit takes precedence)
@@ -1623,6 +2184,12 @@ export default function Reports() {
               continue
             }
             
+            // Check if main_status is 'ON' - if so, skip automatic power limit enforcement (device is in bypass mode)
+            if (currentMainStatus === 'ON') {
+              console.log(`Reports: Device ${outletKey} main_status is ON - respecting bypass mode, skipping automatic power limit enforcement`)
+              continue
+            }
+            
             // Check if device is in a combined group
             const outletDisplayName = outletKey.replace('_', ' ')
             const isInCombinedGroup = combinedLimitInfo?.enabled && 
@@ -1669,7 +2236,34 @@ export default function Reports() {
                 }
               }
             } else {
-              console.log(`Reports: Device ${outletKey} is in combined group - skipping individual daily limit check (monthly limit takes precedence)`)
+              console.log(`Reports: Device ${outletKey} is in combined group - checking combined group power limits`)
+              
+              // For devices in combined groups, check combined monthly limit
+              if (combinedLimitInfo?.enabled && combinedLimitInfo?.selectedOutlets?.length > 0) {
+                const totalMonthlyEnergy = calculateCombinedMonthlyEnergy(devicesData, combinedLimitInfo.selectedOutlets)
+                const combinedLimitkW = combinedLimitInfo.combinedLimit / 1000 // Convert to kW
+                
+                console.log(`Reports: Combined group limit check for ${outletKey}:`, {
+                  totalMonthlyEnergy: `${(totalMonthlyEnergy * 1000).toFixed(0)}W`,
+                  combinedLimit: `${combinedLimitInfo.combinedLimit}W`,
+                  exceedsLimit: totalMonthlyEnergy >= combinedLimitkW
+                })
+                
+                if (totalMonthlyEnergy >= combinedLimitkW) {
+                  console.log(`Reports: Combined monthly limit exceeded - turning off ${outletKey}`)
+                  
+                  await update(ref(realtimeDb, `devices/${outletKey}/control`), {
+                    device: 'off'
+                  })
+                  
+                  // Also turn off main status to prevent immediate re-activation
+                  await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
+                    main_status: 'OFF'
+                  })
+                  
+                  console.log(`Reports: Device ${outletKey} turned OFF due to combined monthly limit exceeded`)
+                }
+              }
             }
           }
         }
@@ -1678,11 +2272,62 @@ export default function Reports() {
       }
     }
     
-    // DISABLED: Schedule check to prevent conflicts with centralized Schedule.tsx
-    // checkScheduleAndUpdateDevices()
+    // Monthly limit check for combined groups
+    const checkMonthlyLimitAndTurnOffDevices = async () => {
+      try {
+        if (!combinedLimitInfo?.enabled || combinedLimitInfo?.selectedOutlets?.length === 0) {
+          return
+        }
+
+        const devicesRef = ref(realtimeDb, 'devices')
+        const snapshot = await get(devicesRef)
+        
+        if (snapshot.exists()) {
+          const devicesData = snapshot.val()
+          
+          // Calculate total monthly energy for combined group
+          const totalMonthlyEnergy = calculateCombinedMonthlyEnergy(devicesData, combinedLimitInfo.selectedOutlets)
+          const combinedLimitWatts = combinedLimitInfo.combinedLimit
+          const combinedLimitkW = combinedLimitWatts / 1000 // Convert to kW
+          
+          console.log(`Reports: Monthly limit check - Total: ${(totalMonthlyEnergy * 1000).toFixed(0)}W / Limit: ${combinedLimitWatts}W`)
+          
+          if (totalMonthlyEnergy >= combinedLimitkW) {
+            console.log(`Reports: Monthly limit exceeded! Turning off all devices in combined group.`)
+            
+            // Turn off all devices in the combined group
+            for (const outletKey of combinedLimitInfo.selectedOutlets) {
+              const firebaseKey = outletKey.replace(' ', '_')
+              
+              try {
+                // Turn off device control
+                const controlRef = ref(realtimeDb, `devices/${firebaseKey}/control`)
+                await update(controlRef, { device: 'off' })
+                
+                // Turn off main status to prevent immediate re-activation
+                const mainStatusRef = ref(realtimeDb, `devices/${firebaseKey}/relay_control`)
+                await update(mainStatusRef, { main_status: 'OFF' })
+                
+                console.log(`✅ TURNED OFF: ${outletKey} (${firebaseKey}) due to monthly limit`)
+              } catch (error) {
+                console.error(`❌ FAILED to turn off ${outletKey}:`, error)
+              }
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Reports: Error in monthly limit check:', error)
+      }
+    }
+
+    // Re-enable schedule checking with bypass support
+    checkScheduleAndUpdateDevices()
     
-    // Only run power limit check (no conflicts with schedule)
+    // Run power limit check
     checkPowerLimitsAndTurnOffDevices()
+    
+    // Run monthly limit check
+    checkMonthlyLimitAndTurnOffDevices()
     
     // Add manual test function for debugging
     ;(window as any).testReportsSchedule = checkScheduleAndUpdateDevices
@@ -1700,14 +2345,15 @@ export default function Reports() {
     }
     
     // Set up intervals for automatic checking
-    // DISABLED: Schedule checking is now centralized in Schedule.tsx to prevent conflicts
-    // const scheduleInterval = setInterval(checkScheduleAndUpdateDevices, 10000) // 10 seconds (more frequent for short schedules)
+    const scheduleInterval = setInterval(checkScheduleAndUpdateDevices, 10000) // 10 seconds (more frequent for short schedules)
     const powerLimitInterval = setInterval(checkPowerLimitsAndTurnOffDevices, 30000) // 30 seconds (more frequent for power limits)
+    const monthlyLimitInterval = setInterval(checkMonthlyLimitAndTurnOffDevices, 60000) // 1 minute for monthly limit check
     
     // Cleanup intervals on unmount
     return () => {
-      // clearInterval(scheduleInterval) // Disabled
+      clearInterval(scheduleInterval)
       clearInterval(powerLimitInterval)
+      clearInterval(monthlyLimitInterval)
     }
   }, [])
 
@@ -1735,7 +2381,7 @@ export default function Reports() {
           <button 
             className="print-report-btn" 
             type="button" 
-            onClick={() => showPdfOfficeSelection()}
+            onClick={() => showPdfDepartmentSelection()}
             title="Generate PDF Report"
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -1743,23 +2389,46 @@ export default function Reports() {
             </svg>
             Print Report
           </button>
-          <div className="dropdown" ref={dropdownRef}>
-            <button className="hero-pill" type="button" onClick={() => setDeptOpen(v => !v)} aria-haspopup="listbox" aria-expanded={deptOpen} aria-controls="dept-menu">
-              <span>{department}</span>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style={{ transform: deptOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform .2s ease' }}>
-                <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-              </svg>
-            </button>
-            {deptOpen && (
-              <ul id="dept-menu" role="listbox" className="dropdown-menu">
-                {departments.map((d) => (
-                  <li key={d}>
-                    <button role="option" aria-selected={department === d} className={`menu-item ${department === d ? 'selected' : ''}`} onClick={() => { setDepartment(d); setDeptOpen(false) }}>
-                      {d}
-                    </button>
-                  </li>
-                ))}
-              </ul>
+          <div className="dropdowns-container" ref={dropdownRef}>
+            <div className="dropdown">
+              <button className="hero-pill" type="button" onClick={() => setDeptOpen(v => !v)} aria-haspopup="listbox" aria-expanded={deptOpen} aria-controls="dept-menu">
+                <span>{department}</span>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style={{ transform: deptOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform .2s ease' }}>
+                  <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                </svg>
+              </button>
+              {deptOpen && (
+                <ul id="dept-menu" role="listbox" className="dropdown-menu">
+                  {departments.map((d) => (
+                    <li key={d}>
+                      <button role="option" aria-selected={department === d} className={`menu-item ${department === d ? 'selected' : ''}`} onClick={() => { setDepartment(d); setDeptOpen(false) }}>
+                        {d}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            {department !== 'All Departments' && (
+              <div className="dropdown">
+                <button className="hero-pill" type="button" onClick={() => setOfficeOpen(v => !v)} aria-haspopup="listbox" aria-expanded={officeOpen} aria-controls="office-menu">
+                  <span>{office}</span>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style={{ transform: officeOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform .2s ease' }}>
+                    <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                  </svg>
+                </button>
+                {officeOpen && (
+                  <ul id="office-menu" role="listbox" className="dropdown-menu">
+                    {getFilteredOffices().map((o) => (
+                      <li key={o}>
+                        <button role="option" aria-selected={office === o} className={`menu-item ${office === o ? 'selected' : ''}`} onClick={() => { setOffice(o); setOfficeOpen(false) }}>
+                          {o}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
             )}
           </div>
         </div>
@@ -1767,9 +2436,9 @@ export default function Reports() {
 
       {/* Key Metrics Overview */}
       <section className="metrics-overview">
-        {department !== 'College of Computer and Multimedia Studies' && (
+        {department !== 'All Departments' && (
           <div className="panel-subtitle">
-            Showing data for {department} ({filteredDevices.length} devices)
+            Showing data for {department}{office !== 'All Offices' ? ` - ${office}` : ''} ({filteredDevices.length} devices)
           </div>
         )}
         <div className="metrics-grid">
@@ -2192,7 +2861,7 @@ export default function Reports() {
                 {/* Show message when no devices in office */}
                 {filteredDevices.length === 0 && (
                   <div className="no-devices">
-                    <p>No devices found in {department}</p>
+                    <p>No devices found in {department}{office !== 'All Offices' ? ` - ${office}` : ''}</p>
                   </div>
                 )}
               </div>
@@ -2482,12 +3151,80 @@ export default function Reports() {
         </div>
       )}
 
+      {/* Department Selection Modal for PDF */}
+      {isPdfDepartmentModalOpen && (
+        <div className="chart-modal-overlay" onClick={() => setIsPdfDepartmentModalOpen(false)}>
+          <div className="chart-modal-content office-selection-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="chart-modal-header">
+              <h3>Select Department for PDF Report</h3>
+              <button 
+                className="chart-modal-close" 
+                onClick={() => setIsPdfDepartmentModalOpen(false)}
+                aria-label="Close modal"
+              >
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </button>
+            </div>
+            <div className="chart-modal-body">
+              <div className="office-selection-grid">
+                <button 
+                  className="office-option"
+                  onClick={() => {
+                    setSelectedPdfDepartment('All Departments')
+                    setIsPdfDepartmentModalOpen(false)
+                    setIsDateRangeModalOpen(true)
+                  }}
+                >
+                  <div className="office-option-content">
+                    <h4>All Departments</h4>
+                    <p>Generate report for all devices across all departments</p>
+                    <div className="office-stats">
+                      <span>{devices.length} devices</span>
+                    </div>
+                  </div>
+                </button>
+                
+                {departments.filter(dept => dept !== 'All Departments').map((department) => {
+                  const departmentDevices = devices.filter(device => {
+                    if (device.office_info && device.office_info.department) {
+                      return device.office_info.department.toLowerCase() === department.toLowerCase()
+                    }
+                    return false
+                  })
+                  return (
+                    <button 
+                      key={department}
+                      className="office-option"
+                      onClick={() => {
+                        setSelectedPdfDepartment(department)
+                        setIsPdfDepartmentModalOpen(false)
+                        setIsPdfOfficeModalOpen(true)
+                      }}
+                    >
+                      <div className="office-option-content">
+                        <h4>{department}</h4>
+                        <p>Generate report for devices in this department</p>
+                        <div className="office-stats">
+                          <span>{departmentDevices.length} devices</span>
+                        </div>
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Office Selection Modal for PDF */}
       {isPdfOfficeModalOpen && (
         <div className="chart-modal-overlay" onClick={() => setIsPdfOfficeModalOpen(false)}>
           <div className="chart-modal-content office-selection-modal" onClick={(e) => e.stopPropagation()}>
             <div className="chart-modal-header">
-              <h3>Select Office for PDF Report</h3>
+              <h3>Select Office for {selectedPdfDepartment}</h3>
               <button 
                 className="chart-modal-close" 
                 onClick={() => setIsPdfOfficeModalOpen(false)}
@@ -2503,26 +3240,43 @@ export default function Reports() {
                 <button 
                   className="office-option"
                   onClick={() => {
-                    generatePDFReport('All Offices')
+                    setSelectedPdfOffice('All Offices')
+                    setSelectedOffice('All Offices')
+                    setIsPdfOfficeModalOpen(false)
+                    setIsDateRangeModalOpen(true)
                   }}
                 >
                   <div className="office-option-content">
                     <h4>All Offices</h4>
-                    <p>Generate report for all devices across all offices</p>
+                    <p>Generate report for all devices in {selectedPdfDepartment}</p>
                     <div className="office-stats">
-                      <span>{devices.length} devices</span>
+                      <span>{devices.filter(device => {
+                        if (device.office_info && device.office_info.department) {
+                          return device.office_info.department.toLowerCase() === selectedPdfDepartment.toLowerCase()
+                        }
+                        return false
+                      }).length} devices</span>
                     </div>
                   </div>
                 </button>
                 
-                {departments.filter(dept => dept !== 'College of Computer and Multimedia Studies').map((office) => {
-                  const officeDevices = devices.filter(device => device.officeRoom === office)
+                {getFilteredOfficesForPdf(selectedPdfDepartment).filter(office => office !== 'All Offices').map((office) => {
+                  const officeDevices = devices.filter(device => {
+                    if (device.office_info && device.office_info.department && device.office_info.office) {
+                      return device.office_info.department.toLowerCase() === selectedPdfDepartment.toLowerCase() &&
+                             device.office_info.office.toLowerCase() === office.toLowerCase()
+                    }
+                    return false
+                  })
                   return (
                     <button 
                       key={office}
                       className="office-option"
                       onClick={() => {
-                        generatePDFReport(office)
+                        setSelectedPdfOffice(office)
+                        setSelectedOffice(office)
+                        setIsPdfOfficeModalOpen(false)
+                        setIsDateRangeModalOpen(true)
                       }}
                     >
                       <div className="office-option-content">
@@ -2535,6 +3289,235 @@ export default function Reports() {
                     </button>
                   )
                 })}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Date Range Selection Modal */}
+      {isDateRangeModalOpen && (
+        <div className="chart-modal-overlay" onClick={() => setIsDateRangeModalOpen(false)}>
+          <div className="chart-modal-content date-range-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="chart-modal-header">
+              <h3>Select Date Range for {selectedPdfDepartment}{selectedPdfOffice && selectedPdfOffice !== 'All Offices' ? ` - ${selectedPdfOffice}` : ''}</h3>
+              <button 
+                className="chart-modal-close" 
+                onClick={() => setIsDateRangeModalOpen(false)}
+                aria-label="Close modal"
+              >
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </button>
+            </div>
+            <div className="chart-modal-body">
+              <div className="date-range-container">
+                <div className="date-input-group">
+                  <label htmlFor="start-date">Start Date:</label>
+                  <input
+                    id="start-date"
+                    type="date"
+                    value={selectedStartDate}
+                    onChange={(e) => setSelectedStartDate(e.target.value)}
+                    className="date-input"
+                  />
+                </div>
+                <div className="date-input-group">
+                  <label htmlFor="end-date">End Date:</label>
+                  <input
+                    id="end-date"
+                    type="date"
+                    value={selectedEndDate}
+                    onChange={(e) => setSelectedEndDate(e.target.value)}
+                    className="date-input"
+                    min={selectedStartDate}
+                  />
+                </div>
+                <div className="date-range-actions">
+                  <button 
+                    className="btn-secondary"
+                    onClick={() => setIsDateRangeModalOpen(false)}
+                  >
+                    Cancel
+                  </button>
+                  <button 
+                    className="btn-primary"
+                    onClick={() => handleDateRangeConfirm()}
+                    disabled={!selectedStartDate || !selectedEndDate || isLoadingPreview}
+                  >
+                    {isLoadingPreview ? 'Loading...' : 'Preview Report'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* PDF Preview Modal */}
+      {isPdfPreviewModalOpen && (
+        <div className="chart-modal-overlay" onClick={() => setIsPdfPreviewModalOpen(false)}>
+          <div className="chart-modal-content pdf-preview-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="chart-modal-header">
+              <h3>PDF Report Preview - {selectedPdfDepartment}{selectedOffice && selectedOffice !== 'All Offices' ? ` - ${selectedOffice}` : ''}</h3>
+              <button 
+                className="chart-modal-close" 
+                onClick={() => setIsPdfPreviewModalOpen(false)}
+                aria-label="Close modal"
+              >
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </button>
+            </div>
+            <div className="chart-modal-body">
+              <div className="pdf-preview-container">
+                <div className="pdf-preview-content">
+                  {/* PDF Header */}
+                  <div className="pdf-preview-header">
+                    <div style={{ textAlign: 'center', marginBottom: '16px' }}>
+                      {/* Only show department name if not "All Departments" */}
+                      {selectedPdfDepartment !== 'All Departments' && (
+                        <p style={{ margin: '4px 0', fontSize: '14px', fontWeight: '500' }}>{selectedPdfDepartment}</p>
+                      )}
+                      <p style={{ margin: '4px 0', fontSize: '14px', fontWeight: '500' }}>Camarines Norte State College</p>
+                      <p style={{ margin: '4px 0', fontSize: '14px', fontWeight: '500' }}>Daet, Camarines Norte</p>
+                    </div>
+                    <h2 style={{ textAlign: 'center', marginTop: '16px' }}>EcoPlug Performance Summary Report</h2>
+                    <div className="pdf-preview-separator"></div>
+                    
+                    <div className="pdf-preview-details" style={{ fontSize: '12px', lineHeight: '1.8' }}>
+                      <p><strong>Date Range:</strong> {formatDate(selectedStartDate)} to {formatDate(selectedEndDate)}</p>
+                      {selectedPdfDepartment !== 'All Departments' && (
+                        <p><strong>Department:</strong> {selectedPdfDepartment}</p>
+                      )}
+                      <p><strong>Offices:</strong> {selectedOffice}</p>
+                      <p><strong>No. of EcoPlug:</strong> {previewData?.deviceCount || 0}</p>
+                      <p><strong>Electricity Rate:</strong> PHP {currentRate.toFixed(4)} per kWh</p>
+                    </div>
+                  </div>
+
+                  {previewData?.deviceTableData?.length === 0 && (
+                    <div className="no-data-message">
+                      <p>⚠️ No data found for the selected date range. Please check:</p>
+                      <ul>
+                        <li>Date range is correct</li>
+                        <li>Devices have data for this period</li>
+                        <li>Database connection is working</li>
+                      </ul>
+                    </div>
+                  )}
+
+                  {/* I. Outlet Performance Breakdown */}
+                  <div className="pdf-preview-table">
+                    <h3>I. Outlet Performance Breakdown</h3>
+                    <div className="table-preview">
+                      <div className="table-header">
+                        <div className="table-cell">Outlet</div>
+                        <div className="table-cell">Appliance</div>
+                        <div className="table-cell">Power Limit (Wh)</div>
+                        <div className="table-cell">Total Power Usage (Wh)</div>
+                        <div className="table-cell">Total No. of Hours (hrs)</div>
+                        <div className="table-cell">Monthly Cost (PHP)</div>
+                        <div className="table-cell">Share of Total (%)</div>
+                      </div>
+                      {previewData?.deviceTableData?.slice(0, 5).map((device: any, index: number) => {
+                        const totalEnergy = previewData.totalEnergy || 0
+                        const sharePercentage = totalEnergy > 0 ? ((device.monthlyEnergy / (totalEnergy * 1000)) * 100).toFixed(3) : '0.000'
+                        return (
+                          <div key={index} className="table-row">
+                            <div className="table-cell">{device.outletId}</div>
+                            <div className="table-cell">{device.appliance}</div>
+                            <div className="table-cell">{device.powerLimit.toFixed(3)}</div>
+                            <div className="table-cell">{device.monthlyEnergy.toFixed(3)}</div>
+                            <div className="table-cell">{device.totalHours.toFixed(3)}</div>
+                            <div className="table-cell">PHP {(Math.floor(device.monthlyCost * 100) / 100).toFixed(2)}</div>
+                            <div className="table-cell">{sharePercentage}</div>
+                          </div>
+                        )
+                      })}
+                      {previewData?.deviceTableData?.length > 5 && (
+                        <div className="table-row more-devices">
+                          <div className="table-cell" style={{ gridColumn: '1 / -1' }}>
+                            ... and {previewData.deviceTableData.length - 5} more devices
+                          </div>
+                        </div>
+                      )}
+                      {/* Summary rows */}
+                      {previewData?.deviceTableData?.length > 0 && (
+                        <>
+                          <div className="table-row" style={{ fontWeight: 'bold', background: '#f8fafc' }}>
+                            <div className="table-cell" style={{ gridColumn: '1 / -1' }}>
+                              Total Usage: {previewData.totalEnergy.toFixed(3)} kWh ({previewData.deviceTableData.reduce((sum: number, d: any) => sum + d.totalHours, 0).toFixed(3)} hours)
+                            </div>
+                          </div>
+                          <div className="table-row" style={{ fontWeight: 'bold', background: '#f8fafc' }}>
+                            <div className="table-cell" style={{ gridColumn: '1 / -1' }}>
+                              Estimated Cost: PHP {previewData.estimatedCost.toFixed(2)}
+                            </div>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* II. Power Saving Recommendation Preview */}
+                  <div className="pdf-preview-table">
+                    <h3>II. Power Saving Recommendation</h3>
+                    <div className="table-preview">
+                      <div className="table-header">
+                        <div className="table-cell">Outlet</div>
+                        <div className="table-cell">Appliance</div>
+                        <div className="table-cell">Avg. Daily Power Usage (Wh)</div>
+                        <div className="table-cell">Power Limit</div>
+                        <div className="table-cell">Total Power Usage (Wh)</div>
+                        <div className="table-cell">Recommended Power Limit</div>
+                      </div>
+                      {previewData?.deviceTableData?.slice(0, 3).map((device: any, index: number) => {
+                        const daysInMonth = Math.ceil((new Date(selectedEndDate).getTime() - new Date(selectedStartDate).getTime()) / (1000 * 60 * 60 * 24))
+                        const avgDailyPower = daysInMonth > 0 ? (device.monthlyEnergy / daysInMonth).toFixed(3) : '0.000'
+                        // Use total power usage (monthlyEnergy) as recommended limit - same as PDF
+                        const recommendedLimit = device.monthlyEnergy.toFixed(3)
+                        return (
+                          <div key={index} className="table-row">
+                            <div className="table-cell">{device.outletId}</div>
+                            <div className="table-cell">{device.appliance}</div>
+                            <div className="table-cell">{avgDailyPower}</div>
+                            <div className="table-cell">{device.powerLimit.toFixed(3)}</div>
+                            <div className="table-cell">{device.monthlyEnergy.toFixed(3)}</div>
+                            <div className="table-cell">{recommendedLimit}</div>
+                          </div>
+                        )
+                      })}
+                      {previewData?.deviceTableData?.length > 3 && (
+                        <div className="table-row more-devices">
+                          <div className="table-cell" style={{ gridColumn: '1 / -1' }}>
+                            ... and {previewData.deviceTableData.length - 3} more devices
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="preview-actions">
+                  <button 
+                    className="btn-secondary"
+                    onClick={() => {
+                      setIsPdfPreviewModalOpen(false)
+                      setIsDateRangeModalOpen(true)
+                    }}
+                  >
+                    Back to Date Selection
+                  </button>
+                  <button 
+                    className="btn-primary"
+                    onClick={() => handleGeneratePDF()}
+                  >
+                    Generate PDF
+                  </button>
+                </div>
               </div>
             </div>
           </div>

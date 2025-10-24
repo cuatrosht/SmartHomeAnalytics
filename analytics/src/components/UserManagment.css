@@ -275,11 +275,54 @@
   border-color: #9ca3af;
 }
 
+.um-add-btn {
+  background-color: #3b82f6;
+  color: white;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 0.375rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+
+.um-add-btn:hover {
+  background-color: #2563eb;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(59, 130, 246, 0.3);
+}
+
 .um-table-container {
   overflow-x: auto;
   border-radius: 0.5rem;
   box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
   background: white;
+  position: relative;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 #f1f5f9;
+}
+
+.um-table-container::-webkit-scrollbar {
+  height: 8px;
+}
+
+.um-table-container::-webkit-scrollbar-track {
+  background: #f1f5f9;
+  border-radius: 4px;
+}
+
+.um-table-container::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+
+.um-table-container::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
 }
 
 .um-table tbody tr {
@@ -296,9 +339,11 @@
   background-color: white;
   border-collapse: collapse;
   width: 100%;
+  min-width: 800px;
   border-radius: 0.5rem;
   overflow: hidden;
   box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
+  table-layout: auto;
 }
 
 .um-table th {
@@ -347,6 +392,8 @@
   gap: 0.5rem;
   justify-content: center;
   margin: 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
 }
 
 .um-edit-btn,
@@ -360,6 +407,33 @@
   justify-content: center;
   cursor: pointer;
   transition: all 0.2s;
+  flex-shrink: 0;
+  position: relative;
+}
+
+.um-edit-btn:active,
+.um-delete-btn:active {
+  transform: scale(0.95);
+}
+
+/* Touch-friendly enhancements for mobile */
+@media (max-width: 768px) {
+  .um-edit-btn,
+  .um-delete-btn {
+    min-width: 44px;
+    min-height: 44px;
+    touch-action: manipulation;
+  }
+}
+
+/* Enhanced touch targets for very small screens */
+@media (max-width: 480px) {
+  .um-edit-btn,
+  .um-delete-btn {
+    min-width: 40px;
+    min-height: 40px;
+    touch-action: manipulation;
+  }
 }
 
 .um-edit-btn {
@@ -390,6 +464,10 @@
   text-align: left;
   width: 200px;
   min-width: 180px;
+  max-width: 250px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .um-table th:last-child {
@@ -406,7 +484,129 @@
   font-weight: 400;
 }
 
-/* Responsive design */
+/* Large Desktop (1400px+) */
+@media (min-width: 1400px) {
+  .um-content {
+    max-width: 1400px;
+    margin: 2rem auto;
+  }
+
+  .um-table {
+    font-size: 1rem;
+    min-width: 1000px;
+  }
+
+  .um-table th,
+  .um-table td {
+    padding: 1.25rem 1.5rem;
+  }
+
+  .um-table th:first-child,
+  .um-table td:first-child {
+    width: 250px;
+    min-width: 200px;
+    max-width: 300px;
+  }
+
+  .um-actions {
+    gap: 0.75rem;
+  }
+
+  .um-edit-btn,
+  .um-delete-btn {
+    width: 2.25rem;
+    height: 2.25rem;
+    border-radius: 0.375rem;
+  }
+}
+
+/* Enhanced Responsive Design */
+@media (max-width: 1200px) {
+  .um-content {
+    margin: 0.75rem;
+    padding: 1.5rem;
+  }
+  
+  .um-table-container {
+    overflow-x: auto;
+    border-radius: 0.375rem;
+  }
+  
+  .um-table {
+    min-width: 900px;
+    font-size: 0.9rem;
+  }
+
+  .um-table th,
+  .um-table td {
+    padding: 0.875rem 1rem;
+  }
+
+  .um-table th:first-child,
+  .um-table td:first-child {
+    width: 180px;
+    min-width: 160px;
+    max-width: 220px;
+  }
+
+  .um-actions {
+    gap: 0.625rem;
+  }
+
+  .um-edit-btn,
+  .um-delete-btn {
+    width: 2.125rem;
+    height: 2.125rem;
+    border-radius: 0.3125rem;
+  }
+}
+
+@media (max-width: 1024px) {
+  .um-header {
+    padding: 1.5rem 2rem;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .um-header-left {
+    flex: 1;
+  }
+
+  .um-header-right {
+    flex-shrink: 0;
+  }
+
+  .um-content {
+    margin: 1rem;
+    padding: 1.5rem;
+  }
+
+  .um-content-header {
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .um-controls {
+    flex-direction: row;
+    gap: 1rem;
+    align-items: center;
+  }
+
+  .um-search input {
+    width: 250px;
+  }
+
+  .um-table-container {
+    overflow-x: auto;
+  }
+
+  .um-table {
+    min-width: 800px;
+  }
+}
+
 @media (max-width: 768px) {
   .um-content {
     margin: 0.5rem;
@@ -421,14 +621,24 @@
   
   .um-controls {
     justify-content: space-between;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 0.75rem;
   }
   
   .um-search input {
     width: 200px;
+    flex: 1;
+    min-width: 150px;
   }
   
   .um-table-container {
     font-size: 0.75rem;
+    overflow-x: auto;
+  }
+  
+  .um-table {
+    min-width: 700px;
   }
   
   .um-table th,
@@ -610,34 +820,233 @@
   outline: none;
   background-color: #f8fafc;
 }
-.um-modal select:hover {
+  .um-modal select:hover {
   border-color: #9ca3af;
   background-color: #f9fafb;
 }
 
-/* Responsive Design */
+/* Edit Modal Specific Responsive Styles */
+@media (max-width: 768px) {
+  .um-modal select {
+    padding: 0.65rem 2.5rem 0.65rem 0.875rem;
+    font-size: 0.875rem;
+  }
+  
+  .um-modal-label {
+    font-size: 0.9rem;
+    margin: 14px 0 6px 0;
+  }
+}
+
+@media (max-width: 480px) {
+  .um-modal select {
+    padding: 0.6rem 2.5rem 0.6rem 0.75rem;
+    font-size: 0.8rem;
+    margin-bottom: 1rem;
+  }
+  
+  .um-modal-label {
+    font-size: 0.85rem;
+    margin: 12px 0 6px 0;
+  }
+  
+  .um-modal-body p {
+    font-size: 0.85rem;
+    margin-bottom: 0.5rem;
+    line-height: 1.5;
+    word-wrap: break-word;
+  }
+  
+  .um-modal-body strong {
+    display: inline-block;
+    word-break: break-word;
+  }
+}
+
+@media (max-width: 375px) {
+  .um-modal {
+    margin: 8px;
+    max-width: calc(100vw - 16px);
+    border-radius: 10px;
+  }
+  
+  .um-modal select {
+    padding: 0.55rem 2.5rem 0.55rem 0.65rem;
+    font-size: 0.75rem;
+    margin-bottom: 0.75rem;
+    border-radius: 0.375rem;
+  }
+  
+  .um-modal-label {
+    font-size: 0.8rem;
+    margin: 10px 0 5px 0;
+  }
+  
+  .um-modal-body {
+    padding: 14px 16px;
+    font-size: 0.8rem;
+  }
+  
+  .um-modal-body p {
+    font-size: 0.8rem;
+    margin-bottom: 0.4rem;
+  }
+  
+  .um-modal-header {
+    padding: 14px;
+  }
+  
+  .um-modal-header h3 {
+    font-size: 0.95rem;
+  }
+  
+  .um-modal-icon {
+    width: 36px;
+    height: 36px;
+    font-size: 1.8rem;
+    margin-bottom: 8px;
+  }
+  
+  .um-modal-actions {
+    padding: 10px 16px 14px 16px;
+    gap: 0.5rem;
+    flex-direction: column;
+  }
+  
+  .um-modal-btn {
+    padding: 0.55rem 1rem;
+    font-size: 0.8rem;
+    width: 100%;
+  }
+  
+  .um-modal-close {
+    width: 30px;
+    height: 30px;
+    top: 12px;
+    right: 12px;
+    font-size: 1.25rem;
+  }
+}
+
+@media (max-width: 320px) {
+  .um-modal {
+    margin: 6px;
+    max-width: calc(100vw - 12px);
+    border-radius: 8px;
+  }
+  
+  .um-modal select {
+    padding: 0.5rem 2rem 0.5rem 0.6rem;
+    font-size: 0.7rem;
+    margin-bottom: 0.6rem;
+    border-radius: 0.3rem;
+  }
+  
+  .um-modal-label {
+    font-size: 0.75rem;
+    margin: 8px 0 4px 0;
+  }
+  
+  .um-modal-body {
+    padding: 12px 14px;
+    font-size: 0.75rem;
+  }
+  
+  .um-modal-body p {
+    font-size: 0.75rem;
+    margin-bottom: 0.3rem;
+  }
+  
+  .um-modal-header {
+    padding: 12px;
+  }
+  
+  .um-modal-header h3 {
+    font-size: 0.9rem;
+  }
+  
+  .um-modal-icon {
+    width: 32px;
+    height: 32px;
+    font-size: 1.6rem;
+    margin-bottom: 6px;
+  }
+  
+  .um-modal-actions {
+    padding: 8px 14px 12px 14px;
+    gap: 0.4rem;
+    flex-direction: column;
+  }
+  
+  .um-modal-btn {
+    padding: 0.5rem 0.875rem;
+    font-size: 0.75rem;
+    width: 100%;
+  }
+  
+  .um-modal-close {
+    width: 28px;
+    height: 28px;
+    top: 10px;
+    right: 10px;
+    font-size: 1.1rem;
+  }
+}
+
+/* Enhanced Tablet Design */
 @media (max-width: 1024px) {
   .um-header {
-    padding: 20px 24px;
-    flex-direction: column;
-    gap: 16px;
-    align-items: stretch;
+    padding: 1.5rem 2rem;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
   }
 
   .um-header-left {
-    justify-content: center;
+    flex: 1;
+    justify-content: flex-start;
+  }
+
+  .um-header-right {
+    flex-shrink: 0;
   }
 
   .um-search input {
-    width: 100%;
+    width: 250px;
   }
 
   .um-table-container {
     overflow-x: auto;
+    border-radius: 0.375rem;
+    margin: 0 -0.5rem;
   }
 
   .um-table {
     min-width: 800px;
+    font-size: 0.875rem;
+  }
+
+  .um-table th,
+  .um-table td {
+    padding: 0.75rem 0.875rem;
+  }
+
+  .um-table th:first-child,
+  .um-table td:first-child {
+    width: 160px;
+    min-width: 140px;
+    max-width: 200px;
+  }
+
+  .um-actions {
+    gap: 0.5rem;
+  }
+
+  .um-edit-btn,
+  .um-delete-btn {
+    width: 2rem;
+    height: 2rem;
+    border-radius: 0.25rem;
   }
 }
 
@@ -649,7 +1058,21 @@
   }
   
   .um-header {
-    padding: 16px 20px;
+    padding: 1rem 1.25rem;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+  }
+
+  .um-header-left {
+    justify-content: flex-start;
+    flex: 1;
+  }
+
+  .um-header-right {
+    justify-content: flex-end;
+    flex-shrink: 0;
   }
 
   .um-content-header h2 {
@@ -664,10 +1087,17 @@
   
   .um-controls {
     justify-content: space-between;
-    flex-direction: column;
+    flex-direction: row;
+    flex-wrap: wrap;
     gap: 0.75rem;
+    align-items: center;
   }
   
+  .um-search {
+    flex: 1;
+    min-width: 200px;
+  }
+
   .um-search input {
     width: 100%;
     font-size: 0.8rem;
@@ -675,6 +1105,14 @@
 
   .um-table-container {
     font-size: 0.75rem;
+    overflow-x: auto;
+    border-radius: 0.25rem;
+    margin: 0 -0.25rem;
+  }
+
+  .um-table {
+    min-width: 700px;
+    font-size: 0.8rem;
   }
   
   .um-table th,
@@ -683,54 +1121,49 @@
     font-size: 0.8rem;
   }
 
+  .um-table th:first-child,
+  .um-table td:first-child {
+    width: 140px;
+    min-width: 120px;
+    max-width: 180px;
+  }
+
   .um-actions {
     flex-direction: column;
-    gap: 4px;
+    gap: 0.375rem;
+    align-items: center;
   }
 
-  .action-btn {
-    width: 28px;
-    height: 28px;
-  }
-
-  /* Modal Responsive */
-  .um-modal {
-    margin: 20px;
-    max-width: calc(100vw - 40px);
-    border-radius: 12px;
-  }
-  
-  .um-modal-header {
-    padding: 18px 20px 14px 20px;
-  }
-  
-  .um-modal-header h3 {
-    font-size: 1.1rem;
-  }
-  
-  .um-modal-body {
-    padding: 18px 20px;
-    font-size: 0.95rem;
-  }
-  
-  .um-modal-actions {
-    padding: 14px 20px 18px 20px;
-    gap: 0.8rem;
-  }
-
-  .um-modal-btn {
-    padding: 0.6rem 1.5rem;
-    font-size: 0.9rem;
+  .um-edit-btn,
+  .um-delete-btn {
+    width: 1.875rem;
+    height: 1.875rem;
+    border-radius: 0.25rem;
   }
 }
 
 @media (max-width: 480px) {
   .um-header {
-    padding: 12px;
+    padding: 0.75rem;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
   }
   
   .um-user-info {
     font-size: 0.9rem;
+    text-align: left;
+  }
+
+  .um-header-left {
+    justify-content: flex-start;
+    flex: 1;
+  }
+
+  .um-header-right {
+    justify-content: flex-end;
+    flex-shrink: 0;
   }
   
   .um-content {
@@ -740,14 +1173,36 @@
 
   .um-content-header h2 {
     font-size: 1.1rem;
+    text-align: center;
+  }
+  
+  .um-content-header {
+    flex-direction: column;
+    gap: 0.75rem;
+    align-items: center;
+  }
+
+  .um-controls {
+    flex-direction: column;
+    gap: 0.75rem;
+    width: 100%;
+    align-items: stretch;
+  }
+
+  .um-search {
+    width: 100%;
   }
   
   .um-table-container {
-    padding: 0 8px 8px 8px;
+    padding: 0 4px 4px 4px;
+    overflow-x: auto;
+    border-radius: 0.25rem;
+    margin: 0 -0.125rem;
   }
   
   .um-table {
     min-width: 400px;
+    font-size: 0.7rem;
   }
   
   .um-table th,
@@ -755,38 +1210,31 @@
     padding: 0.5rem 0.25rem;
     font-size: 0.7rem;
   }
+
+  .um-table th:first-child,
+  .um-table td:first-child {
+    width: 120px;
+    min-width: 100px;
+    max-width: 150px;
+  }
+
+  .um-actions {
+    flex-direction: column;
+    gap: 0.25rem;
+    align-items: center;
+  }
+
+  .um-edit-btn,
+  .um-delete-btn {
+    width: 1.75rem;
+    height: 1.75rem;
+    border-radius: 0.1875rem;
+  }
   
   .um-search input {
     padding: 0.4rem 0.6rem 0.4rem 2rem;
     font-size: 0.75rem;
-  }
-  
-  .um-modal {
-    margin: 10px;
-    max-width: calc(100vw - 20px);
-  }
-  
-  .um-modal-body {
-    padding: 16px;
-    font-size: 0.9rem;
-  }
-
-  .um-modal-header {
-    padding: 16px;
-  }
-
-  .um-modal-header h3 {
-    font-size: 1rem;
-  }
-
-  .um-modal-actions {
-    padding: 12px 16px 16px 16px;
-    gap: 0.6rem;
-  }
-
-  .um-modal-btn {
-    padding: 0.5rem 1.2rem;
-    font-size: 0.85rem;
+    width: 100%;
   }
 
   .um-dropdown-btn {
@@ -802,12 +1250,106 @@
 }
 
 @media (max-width: 600px) {
-  .um-modal {
-    max-width: 98vw;
-    padding: 0;
+  .um-header {
+    padding: 0.5rem;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.5rem;
   }
-  .um-modal-header, .um-modal-body, .um-modal-actions {
-    padding-left: 10px;
-    padding-right: 10px;
+
+  .um-header-left {
+    justify-content: flex-start;
+    flex: 1;
+  }
+
+  .um-header-right {
+    justify-content: flex-end;
+    flex-shrink: 0;
+  }
+
+  .um-user-info {
+    font-size: 0.85rem;
+  }
+
+  .um-dropdown-btn {
+    min-width: 100px;
+    font-size: 0.75rem;
+    padding: 0.375rem 0.75rem;
+  }
+
+  .um-table-container {
+    margin: 0 -0.25rem;
+    border-radius: 0.125rem;
+  }
+
+  .um-table {
+    min-width: 350px;
+    font-size: 0.65rem;
+  }
+
+  .um-table th,
+  .um-table td {
+    padding: 0.375rem 0.125rem;
+    font-size: 0.65rem;
+  }
+
+  .um-table th:first-child,
+  .um-table td:first-child {
+    width: 100px;
+    min-width: 80px;
+    max-width: 120px;
+  }
+
+  .um-actions {
+    flex-direction: column;
+    gap: 0.1875rem;
+    align-items: center;
+  }
+
+  .um-edit-btn,
+  .um-delete-btn {
+    width: 1.625rem;
+    height: 1.625rem;
+    border-radius: 0.125rem;
+  }
+}
+
+/* Table-specific responsive utilities */
+@media (max-width: 320px) {
+  .um-table-container {
+    margin: 0 -0.5rem;
+    border-radius: 0;
+  }
+
+  .um-table {
+    min-width: 300px;
+    font-size: 0.6rem;
+  }
+
+  .um-table th,
+  .um-table td {
+    padding: 0.25rem 0.125rem;
+    font-size: 0.6rem;
+  }
+
+  .um-table th:first-child,
+  .um-table td:first-child {
+    width: 80px;
+    min-width: 60px;
+    max-width: 100px;
+  }
+
+  .um-actions {
+    flex-direction: column;
+    gap: 0.125rem;
+    align-items: center;
+  }
+
+  .um-edit-btn,
+  .um-delete-btn {
+    width: 1.5rem;
+    height: 1.5rem;
+    border-radius: 0.125rem;
   }
 }

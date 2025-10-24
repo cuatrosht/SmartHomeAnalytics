@@ -12,6 +12,21 @@ const formatNumber = (num: number, decimals: number = 3): string => {
   })
 }
 
+// Helper function to format office name with proper capitalization
+const formatOfficeName = (officeName: string): string => {
+  return officeName
+    .split(/[\s-]+/) // Split by spaces or hyphens
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(' ')
+}
+
+const formatDepartmentName = (departmentName: string): string => {
+  return departmentName
+    .split(/[\s-]+/) // Split by spaces or hyphens
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(' ')
+}
+
 // Function to calculate monthly energy for a device
 const calculateMonthlyEnergy = (outlet: any): string => {
   try {
@@ -160,9 +175,9 @@ const checkCombinedMonthlyLimit = async (devicesData: any, combinedLimitInfo: an
           const controlRef = ref(realtimeDb, `devices/${firebaseKey}/control`)
           await update(controlRef, { device: 'off' })
           
-          // Turn off main status to prevent immediate re-activation
-          const mainStatusRef = ref(realtimeDb, `devices/${firebaseKey}/relay_control`)
-          await update(mainStatusRef, { main_status: 'OFF' })
+          // Turn off status to prevent immediate re-activation
+          const statusRef = ref(realtimeDb, `devices/${firebaseKey}`)
+          await update(statusRef, { status: 'OFF' })
           
           console.log(`✅ TURNED OFF: ${outletKey} (${firebaseKey}) due to monthly limit`)
           return { outletKey, success: true }
@@ -227,9 +242,9 @@ const removeDeviceFromCombinedGroup = async (outletKey: string): Promise<{
       const deviceControlRef = ref(realtimeDb, `devices/${outletKey}/control`)
       await update(deviceControlRef, { device: 'off' })
       
-      // Also set main_status to OFF to prevent automatic turn-on
-      const deviceMainStatusRef = ref(realtimeDb, `devices/${outletKey}/relay_control`)
-      await update(deviceMainStatusRef, { main_status: 'OFF' })
+      // Also set status to OFF to prevent automatic turn-on
+      const deviceStatusRef = ref(realtimeDb, `devices/${outletKey}`)
+      await update(deviceStatusRef, { status: 'OFF' })
       
       console.log(`🔒 SetUp: Turned OFF ${outletKey} after removing from combined group (now subject to individual daily limits)`)
     } catch (error) {
@@ -361,6 +376,7 @@ interface Device {
   enablePowerScheduling: boolean
   limit: string
   powerUsage: string
+  currentAmpere: string
   todayUsage: string
   monthUsage?: string
   status: 'Active' | 'Inactive' | 'Warning' | 'Idle'
@@ -399,6 +415,7 @@ interface FirebaseDeviceData {
   office_info?: {
     assigned_date: string
     office: string
+    department?: string
     appliance?: string
     enable_power_scheduling?: boolean
   }
@@ -427,6 +444,7 @@ interface AddDeviceModalProps {
   onClose: () => void
   onSave: (deviceData: {
     deviceType: string
+    department: string
     office: string
     outletName: string
     powerLimit: string
@@ -444,7 +462,8 @@ function StyledSelect({
   placeholder,
   options,
   onChange,
-  error
+  error,
+  disabled
 }: {
   id: string
   value: string
@@ -452,6 +471,7 @@ function StyledSelect({
   options: { value: string; label: string; disabled?: boolean }[]
   onChange: (v: string) => void
   error?: boolean
+  disabled?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement | null>(null)
@@ -473,14 +493,15 @@ function StyledSelect({
   const selected = options.find(o => o.value === value)
 
   return (
-    <div className={`styled-select${open ? ' open' : ''}`} ref={ref}>
+    <div className={`styled-select${open ? ' open' : ''}${disabled ? ' disabled' : ''}`} ref={ref}>
       <button
         type="button"
         id={id}
-        className={`styled-select-btn${error ? ' error' : ''}`}
+        className={`styled-select-btn${error ? ' error' : ''}${disabled ? ' disabled' : ''}`}
         aria-haspopup="listbox"
         aria-expanded={open}
-        onClick={() => setOpen(v => !v)}
+        onClick={() => !disabled && setOpen(v => !v)}
+        disabled={disabled}
       >
         <span className={`styled-select-label ${selected ? '' : 'placeholder'}`}>
           {selected?.label ?? placeholder}
@@ -959,6 +980,8 @@ function EditDeviceModal({
     outletName: '',
     powerLimit: '',
     status: 'Active' as Device['status'],
+    department: '',
+    office: '',
     officeRoom: '',
     enabled: true
   })
@@ -967,6 +990,26 @@ function EditDeviceModal({
   const [enablePowerLimit, setEnablePowerLimit] = useState(true)
 
   const [errors, setErrors] = useState<Record<string, string>>({})
+  const [departments, setDepartments] = useState<Array<{value: string, label: string}>>([])
+  const [officesData, setOfficesData] = useState<any>({})
+
+  // Function to get filtered offices based on selected department
+  const getFilteredOffices = () => {
+    if (!formData.department || !officesData) return []
+    
+    const filteredOffices: Array<{value: string, label: string}> = []
+    
+    Object.values(officesData).forEach((office: any) => {
+      if (office.department && office.department.toLowerCase().replace(/\s+/g, '-') === formData.department) {
+        filteredOffices.push({
+          value: office.office.toLowerCase().replace(/\s+/g, '-'),
+          label: office.office
+        })
+      }
+    })
+    
+    return filteredOffices
+  }
 
   // Auto-set power limit to "No Limit" when only scheduling is enabled
   // Auto-set device control to OFF when power limit is disabled
@@ -981,14 +1024,68 @@ function EditDeviceModal({
     }
   }, [enableScheduling, enablePowerLimit])
 
+  // Fetch departments and offices from database
+  useEffect(() => {
+    if (isOpen) {
+      const fetchDepartmentsAndOffices = async () => {
+        try {
+          const officesRef = ref(realtimeDb, 'offices')
+          const snapshot = await get(officesRef)
+          
+          if (snapshot.exists()) {
+            const officesData = snapshot.val()
+            setOfficesData(officesData)
+            
+            const departmentsSet = new Set<string>()
+            
+            // Extract unique departments
+            Object.values(officesData).forEach((office: any) => {
+              if (office.department) {
+                departmentsSet.add(office.department)
+              }
+            })
+            
+            // Convert departments set to array
+            const departmentsList = Array.from(departmentsSet).map(dept => ({
+              value: dept.toLowerCase().replace(/\s+/g, '-'),
+              label: dept
+            }))
+            
+            setDepartments(departmentsList)
+          }
+        } catch (error) {
+          console.error('Error fetching departments and offices:', error)
+        }
+      }
+      
+      fetchDepartmentsAndOffices()
+    }
+  }, [isOpen])
+
   // Initialize form data when device changes
   useEffect(() => {
     if (device) {
       const powerLimitValue = device.limit.replace(' Wh', '').replace(' W', '').replace(' kW', '')
+      // Find the department and office for the existing device
+      let existingDepartment = ''
+      let existingOffice = ''
+      
+      if (device.officeRoom && device.officeRoom !== '—' && officesData) {
+        // Look for the office in the offices data to find its department
+        Object.values(officesData).forEach((office: any) => {
+          if (office.office === device.officeRoom) {
+            existingDepartment = office.department?.toLowerCase().replace(/\s+/g, '-') || ''
+            existingOffice = office.office.toLowerCase().replace(/\s+/g, '-')
+          }
+        })
+      }
+
       setFormData({
         outletName: device.outletName,
         powerLimit: powerLimitValue,
         status: device.status,
+        department: existingDepartment,
+        office: existingOffice,
         officeRoom: device.officeRoom === '—' ? '' : device.officeRoom,
         enabled: device.status === 'Active' || device.status === 'Warning' // Set enabled based on current status
       })
@@ -1010,18 +1107,27 @@ function EditDeviceModal({
         isNoLimit,
         deviceEnablePowerScheduling: device.enablePowerScheduling,
         enablePowerLimit: hasPowerLimit,
-        enableScheduling: device.enablePowerScheduling || isNoLimit
+        enableScheduling: device.enablePowerScheduling || isNoLimit,
+        existingDepartment,
+        existingOffice,
+        deviceOfficeRoom: device.officeRoom,
+        officesDataAvailable: !!officesData
       })
       
       setErrors({})
     }
-  }, [device])
+  }, [device, officesData])
 
   const handleInputChange = (field: string, value: string) => {
     setFormData(prev => ({ ...prev, [field]: value }))
     // Clear error when user starts typing
     if (errors[field]) {
       setErrors(prev => ({ ...prev, [field]: '' }))
+    }
+    
+    // Clear office field when department changes
+    if (field === 'department') {
+      setFormData(prev => ({ ...prev, office: '' }))
     }
   }
 
@@ -1042,6 +1148,10 @@ function EditDeviceModal({
 
   const validateForm = async () => {
     const newErrors: Record<string, string> = {}
+    
+    // Validate department and office
+    if (!formData.department) newErrors.department = 'Department is required'
+    if (!formData.office) newErrors.office = 'Office is required'
     
     // Check if this device is part of the combined limit group
     const deviceOutletName = device?.outletName || ''
@@ -1248,22 +1358,32 @@ function EditDeviceModal({
 
         // Update office information with scheduling settings
         const officeRef = ref(realtimeDb, `devices/${outletKey}/office_info`)
-        if (formData.officeRoom.trim()) {
-          // Map display names back to database values
-          const officeMapping: Record<string, string> = {
-            'Computer Laboratory 1': 'computer-lab-1',
-            'Computer Laboratory 2': 'computer-lab-2',
-            'Computer Laboratory 3': 'computer-lab-3',
-            "Dean's Office": 'deans-office',
-            'Faculty Office': 'faculty-office'
+        if (formData.office.trim()) {
+          // Find the office name from the offices data
+          let officeName = ''
+          if (officesData) {
+            Object.values(officesData).forEach((office: any) => {
+              if (office.office.toLowerCase().replace(/\s+/g, '-') === formData.office) {
+                officeName = office.office
+              }
+            })
           }
           
-          const officeValue = officeMapping[formData.officeRoom] || formData.officeRoom
           console.log('Edit modal: Updating office info at path:', `devices/${outletKey}/office_info`)
           console.log('Edit modal: Scheduling settings:', { enableScheduling, enablePowerLimit })
           
+          // Get the department name from the selected department and format it properly
+          const selectedDepartment = formatDepartmentName(formData.department)
+          
+          console.log('Edit Modal: Saving office_info with:', {
+            office: officeName,
+            department: selectedDepartment,
+            enable_power_scheduling: enableScheduling
+          })
+          
           const officeUpdate = await update(officeRef, {
-            office: officeValue,
+            office: officeName,
+            department: selectedDepartment,
             assigned_date: new Date().toISOString(),
             enable_power_scheduling: enableScheduling // ✅ Update scheduling setting
           })
@@ -1319,12 +1439,22 @@ function EditDeviceModal({
         )
         
         // Create updated device object
+        // Find the office name for display
+        let displayOfficeName = '—'
+        if (formData.office && officesData) {
+          Object.values(officesData).forEach((office: any) => {
+            if (office.office.toLowerCase().replace(/\s+/g, '-') === formData.office) {
+              displayOfficeName = office.office
+            }
+          })
+        }
+        
         const updatedDevice: Device & { enableScheduling: boolean; enablePowerLimit: boolean } = {
           ...device,
           outletName: formData.outletName || device.outletName,
           limit: formData.powerLimit === 'No Limit' ? 'No Limit' : `${powerLimitToUse.toFixed(3)} Wh`,
           status: formData.enabled ? 'Active' : 'Inactive',
-          officeRoom: formData.officeRoom || '—',
+          officeRoom: displayOfficeName,
           enableScheduling,
           enablePowerLimit
         }
@@ -1486,23 +1616,36 @@ function EditDeviceModal({
               )}
             </div>
 
-            <div className="form-group">
-              <label htmlFor="editOfficeRoom">
-                Change office/room
+            <div className={`form-group ${errors.department ? 'error' : ''}`}>
+              <label htmlFor="editDepartment">
+                Select Department <span className="required">*</span>
               </label>
-              <select
-                id="editOfficeRoom"
-                value={formData.officeRoom}
-                onChange={(e) => handleInputChange('officeRoom', e.target.value)}
-              >
-                <option value="">— No office assigned —</option>
-                <option value="Computer Laboratory 1">Computer Laboratory 1</option>
-                <option value="Computer Laboratory 2">Computer Laboratory 2</option>
-                <option value="Computer Laboratory 3">Computer Laboratory 3</option>
-                <option value="Dean's Office">Dean's Office</option>
-                <option value="Faculty Office">Faculty Office</option>
-              </select>
-              <div className="field-hint">Select "— No office assigned —" to clear the assignment</div>
+              <StyledSelect
+                id="editDepartment"
+                value={formData.department}
+                placeholder="Choose department"
+                options={departments}
+                onChange={(v) => handleInputChange('department', v)}
+                error={!!errors.department}
+              />
+              {errors.department && <span className="error-message">{errors.department}</span>}
+            </div>
+
+            <div className={`form-group ${errors.office ? 'error' : ''}`}>
+              <label htmlFor="editOffice">
+                Select Office <span className="required">*</span>
+              </label>
+              <StyledSelect
+                id="editOffice"
+                value={formData.office}
+                placeholder={formData.department ? "Choose office" : "Select department first"}
+                options={formData.department ? getFilteredOffices() : []}
+                onChange={(v) => handleInputChange('office', v)}
+                error={!!errors.office}
+                disabled={!formData.department}
+              />
+              <div className="field-hint">You can change the office assignment for any selected device</div>
+              {errors.office && <span className="error-message">{errors.office}</span>}
             </div>
 
             {/* Device Control */}
@@ -2239,6 +2382,7 @@ function CombinedLimitSuccessModal({
 function AddDeviceModal({ isOpen, onClose, onSave }: AddDeviceModalProps) {
   const [formData, setFormData] = useState({
     deviceType: '',
+    department: '',
     office: '',
     outletName: '',
     powerLimit: '',
@@ -2287,6 +2431,26 @@ function AddDeviceModal({ isOpen, onClose, onSave }: AddDeviceModalProps) {
   const [showSuccess, setShowSuccess] = useState(false)
   const [availableOutlets, setAvailableOutlets] = useState<string[]>([])
   const [allOutlets, setAllOutlets] = useState<any>({})
+  const [departments, setDepartments] = useState<Array<{value: string, label: string}>>([])
+  const [officesData, setOfficesData] = useState<any>({})
+
+  // Function to get filtered offices based on selected department
+  const getFilteredOffices = () => {
+    if (!formData.department || !officesData) return []
+    
+    const filteredOffices: Array<{value: string, label: string}> = []
+    
+    Object.values(officesData).forEach((office: any) => {
+      if (office.department && office.department.toLowerCase().replace(/\s+/g, '-') === formData.department) {
+        filteredOffices.push({
+          value: office.office.toLowerCase().replace(/\s+/g, '-'),
+          label: office.office
+        })
+      }
+    })
+    
+    return filteredOffices
+  }
 
   // Fetch all outlets to determine which ones are available
   useEffect(() => {
@@ -2308,11 +2472,54 @@ function AddDeviceModal({ isOpen, onClose, onSave }: AddDeviceModalProps) {
     }
   }, [isOpen])
 
+  // Fetch departments and offices from database
+  useEffect(() => {
+    if (isOpen) {
+      const fetchDepartmentsAndOffices = async () => {
+        try {
+          const officesRef = ref(realtimeDb, 'offices')
+          const snapshot = await get(officesRef)
+          
+          if (snapshot.exists()) {
+            const officesData = snapshot.val()
+            setOfficesData(officesData)
+            
+            const departmentsSet = new Set<string>()
+            
+            // Extract unique departments
+            Object.values(officesData).forEach((office: any) => {
+              if (office.department) {
+                departmentsSet.add(office.department)
+              }
+            })
+            
+            // Convert departments set to array
+            const departmentsList = Array.from(departmentsSet).map(dept => ({
+              value: dept.toLowerCase().replace(/\s+/g, '-'),
+              label: dept
+            }))
+            
+            setDepartments(departmentsList)
+          }
+        } catch (error) {
+          console.error('Error fetching departments and offices:', error)
+        }
+      }
+      
+      fetchDepartmentsAndOffices()
+    }
+  }, [isOpen])
+
   const handleInputChange = (field: string, value: string) => {
     setFormData(prev => ({ ...prev, [field]: value }))
     // Clear error when user starts typing
     if (errors[field]) {
       setErrors(prev => ({ ...prev, [field]: '' }))
+    }
+    
+    // Clear office field when department changes
+    if (field === 'department') {
+      setFormData(prev => ({ ...prev, office: '' }))
     }
     
     // Auto-update outlet name and populate existing data when device type changes
@@ -2328,12 +2535,30 @@ function AddDeviceModal({ isOpen, onClose, onSave }: AddDeviceModalProps) {
         existingPowerLimit = (powerLimitRaw * 1000).toFixed(0) // Convert from kW to W
       }
       
+      // Find the department for the existing office
+      let existingDepartment = ''
+      if (outletData?.office_info?.office && officesData) {
+        // Look for the office in the offices data to find its department
+        Object.values(officesData).forEach((office: any) => {
+          if (office.office === outletData.office_info.office) {
+            existingDepartment = office.department?.toLowerCase().replace(/\s+/g, '-') || ''
+          }
+        })
+      }
+
+      // Convert office name to dropdown format (lowercase with hyphens)
+      let existingOffice = ''
+      if (outletData?.office_info?.office) {
+        existingOffice = outletData.office_info.office.toLowerCase().replace(/\s+/g, '-')
+      }
+
       setFormData(prev => ({ 
         ...prev, 
         [field]: value,
         outletName: value,
-        // Auto-populate office, appliance, and power limit from existing data if available
-        office: outletData?.office_info?.office || prev.office,
+        // Auto-populate department, office, appliance, and power limit from existing data if available
+        department: existingDepartment || prev.department,
+        office: existingOffice || prev.office,
         appliance: outletData?.office_info?.appliance || prev.appliance,
         powerLimit: existingPowerLimit || prev.powerLimit
       }))
@@ -2353,6 +2578,9 @@ function AddDeviceModal({ isOpen, onClose, onSave }: AddDeviceModalProps) {
         setEnablePowerLimit(true)
         setDeviceControl('on')
       }
+      
+      // If we found an existing department, the office dropdown will be automatically enabled
+      // and filtered to show only offices from that department
     }
   }
 
@@ -2374,6 +2602,7 @@ function AddDeviceModal({ isOpen, onClose, onSave }: AddDeviceModalProps) {
     const newErrors: Record<string, string> = {}
     
     if (!formData.deviceType) newErrors.deviceType = 'Device type is required'
+    if (!formData.department) newErrors.department = 'Department is required'
     if (!formData.office) newErrors.office = 'Office is required'
     if (enablePowerLimit && (!formData.powerLimit || (formData.powerLimit !== 'No Limit' && parseFloat(formData.powerLimit) <= 0))) {
       newErrors.powerLimit = 'Power limit must be greater than 0 Wh'
@@ -2419,8 +2648,29 @@ function AddDeviceModal({ isOpen, onClose, onSave }: AddDeviceModalProps) {
         console.log('Updating office info at path:', `devices/${formData.deviceType}/office_info`)
         console.log('Add device: Scheduling settings:', { enableScheduling, enablePowerLimit })
         
+        // Get the department name from the selected department and format it properly
+        const selectedDepartment = formatDepartmentName(formData.department)
+        
+        // Get the original office name from the database (not formatted)
+        let originalOfficeName = formData.office
+        if (officesData) {
+          Object.values(officesData).forEach((office: any) => {
+            if (office.office.toLowerCase().replace(/\s+/g, '-') === formData.office) {
+              originalOfficeName = office.office
+            }
+          })
+        }
+        
+        console.log('Add Device: Saving office_info with:', {
+          office: originalOfficeName,
+          department: selectedDepartment,
+          appliance: formData.appliance,
+          enable_power_scheduling: enableScheduling
+        })
+        
         const officeUpdate = await update(officeRef, {
-          office: formData.office,
+          office: originalOfficeName,
+          department: selectedDepartment,
           assigned_date: new Date().toISOString(),
           appliance: formData.appliance,
           enable_power_scheduling: enableScheduling // ✅ Update scheduling setting
@@ -2436,14 +2686,14 @@ function AddDeviceModal({ isOpen, onClose, onSave }: AddDeviceModalProps) {
         })
         console.log('Device control update result:', controlUpdate)
 
-        // Update relay control main status
-        const relayControlRef = ref(realtimeDb, `devices/${formData.deviceType}/relay_control`)
-        console.log('Updating relay control at path:', `devices/${formData.deviceType}/relay_control`)
+        // Update device status
+        const statusRef = ref(realtimeDb, `devices/${formData.deviceType}`)
+        console.log('Updating device status at path:', `devices/${formData.deviceType}`)
         
-        const relayControlUpdate = await update(relayControlRef, {
-          main_status: deviceControl === 'on' ? 'ON' : 'OFF'
+        const statusUpdate = await update(statusRef, {
+          status: deviceControl === 'on' ? 'ON' : 'OFF'
         })
-        console.log('Relay control update result:', relayControlUpdate)
+        console.log('Status update result:', statusUpdate)
 
         // Handle schedule data based on enableScheduling flag
         const scheduleRef = ref(realtimeDb, `devices/${formData.deviceType}/schedule`)
@@ -2477,6 +2727,7 @@ function AddDeviceModal({ isOpen, onClose, onSave }: AddDeviceModalProps) {
         // Add "Wh" suffix to power limit for local state
         const deviceDataWithUnit = {
           ...formData,
+          office: originalOfficeName,
           powerLimit: formData.powerLimit === 'No Limit' ? 'No Limit' : `${formData.powerLimit} W`,
           enableScheduling,
           enablePowerLimit,
@@ -2486,6 +2737,7 @@ function AddDeviceModal({ isOpen, onClose, onSave }: AddDeviceModalProps) {
         onSave(deviceDataWithUnit)
         setFormData({
           deviceType: '',
+          department: '',
           office: '',
           outletName: '',
           powerLimit: '',
@@ -2508,6 +2760,7 @@ function AddDeviceModal({ isOpen, onClose, onSave }: AddDeviceModalProps) {
   const handleClose = () => {
     setFormData({
       deviceType: '',
+      department: '',
       office: '',
       outletName: '',
       powerLimit: '',
@@ -2573,6 +2826,21 @@ function AddDeviceModal({ isOpen, onClose, onSave }: AddDeviceModalProps) {
                   {errors.deviceType && <span className="error-message">{errors.deviceType}</span>}
                 </div>
 
+                <div className={`form-group ${errors.department ? 'error' : ''}`}>
+                  <label htmlFor="department">
+                    Select Department <span className="required">*</span>
+                  </label>
+                  <StyledSelect
+                    id="department"
+                    value={formData.department}
+                    placeholder="Choose department"
+                    options={departments}
+                    onChange={(v) => handleInputChange('department', v)}
+                    error={!!errors.department}
+                  />
+                  {errors.department && <span className="error-message">{errors.department}</span>}
+                </div>
+
                 <div className={`form-group ${errors.office ? 'error' : ''}`}>
                   <label htmlFor="office">
                     Select office <span className="required">*</span>
@@ -2580,16 +2848,11 @@ function AddDeviceModal({ isOpen, onClose, onSave }: AddDeviceModalProps) {
                   <StyledSelect
                     id="office"
                     value={formData.office}
-                    placeholder="Choose office"
-                    options={[
-                      { value: 'computer-lab-1', label: 'Computer Laboratory 1' },
-                      { value: 'computer-lab-2', label: 'Computer Laboratory 2' },
-                      { value: 'computer-lab-3', label: 'Computer Laboratory 3' },
-                      { value: 'deans-office', label: "Dean's Office" },
-                      { value: 'faculty-office', label: 'Faculty Office' }
-                    ]}
+                    placeholder={formData.department ? "Choose office" : "Select department first"}
+                    options={formData.department ? getFilteredOffices() : []}
                     onChange={(v) => handleInputChange('office', v)}
                     error={!!errors.office}
+                    disabled={!formData.department}
                   />
                   <div className="field-hint">
                     You can change the office assignment for any selected device
@@ -3207,8 +3470,8 @@ export default function SetUp() {
               return isWithinTimeRange && isCorrectDay
             }
 
-            // Use schedule-aware status logic with main status consideration
-            const mainStatus = outlet.relay_control?.main_status || 'ON'
+            // Use schedule-aware status logic with status consideration
+            const outletStatus = outlet.status || 'ON'
             
             // Debug: Log the control state reading
             console.log(`SetUp: Outlet ${outletKey} control object:`, outlet.control)
@@ -3295,6 +3558,10 @@ export default function SetUp() {
               console.log(`SetUp: Schedule has frequency:`, !!outlet.schedule.frequency)
             }
 
+            // Get current (ampere) from sensor_data - no decimal places
+            const currentAmpere = outlet.sensor_data?.current || 0
+            const currentAmpereDisplay = `${Math.round(currentAmpere)} A`
+
             const deviceData: Device = {
               id: String(deviceId).padStart(3, '0'),
               outletName: outletKey, // Use the actual outlet key from Firebase
@@ -3303,6 +3570,7 @@ export default function SetUp() {
               enablePowerScheduling: outlet.office_info?.enable_power_scheduling || false,
               limit: powerLimit === "No Limit" ? "No Limit" : `${(powerLimit * 1000).toFixed(3)} Wh`,
               powerUsage: powerUsageDisplay, // Use the new display format
+              currentAmpere: currentAmpereDisplay,
               todayUsage: todayEnergyDisplay, // Use the new display format
               monthUsage: calculateMonthlyEnergy(outlet), // Calculate monthly energy
               status: deviceStatus,
@@ -3413,11 +3681,18 @@ export default function SetUp() {
                 (deviceData.schedule.timeRange || deviceData.schedule.startTime)) {
               
               const currentControlState = deviceData.control?.device || 'off'
+              const currentStatus = deviceData.status || 'ON'
               const currentMainStatus = deviceData.relay_control?.main_status || 'ON'
               
-              // RESPECT manual override - if main_status is OFF, don't override it
-              if (currentMainStatus === 'OFF') {
-                console.log(`SetUp: Device ${outletKey} has main_status = 'OFF' - respecting manual override, skipping schedule check`)
+              // RESPECT manual override - if status is OFF, don't override it (device is manually disabled)
+              if (currentStatus === 'OFF') {
+                console.log(`SetUp: Device ${outletKey} has status = 'OFF' - respecting manual override, skipping schedule check`)
+                continue
+              }
+              
+              // RESPECT bypass mode - if main_status is ON, don't override it (device is in bypass mode)
+              if (currentMainStatus === 'ON') {
+                console.log(`SetUp: Device ${outletKey} has main_status = 'ON' - respecting bypass mode, skipping schedule check`)
                 continue
               }
               
@@ -3510,10 +3785,23 @@ export default function SetUp() {
           for (const [outletKey, outletData] of Object.entries(devicesData)) {
             const deviceData = outletData as FirebaseDeviceData
             const currentControlState = deviceData.control?.device || 'off'
+            const currentStatus = deviceData.status || 'ON'
             const currentMainStatus = deviceData.relay_control?.main_status || 'ON'
             
             // Skip if device is already off
             if (currentControlState === 'off') {
+              continue
+            }
+            
+            // Check if status is 'OFF' - if so, skip automatic power limit enforcement (device is manually disabled)
+            if (currentStatus === 'OFF') {
+              console.log(`SetUp: Device ${outletKey} status is OFF - skipping automatic power limit enforcement (device manually disabled)`)
+              continue
+            }
+            
+            // Check if main_status is 'ON' - if so, skip automatic power limit enforcement (device is in bypass mode)
+            if (currentMainStatus === 'ON') {
+              console.log(`SetUp: Device ${outletKey} main_status is ON - respecting bypass mode, skipping automatic power limit enforcement`)
               continue
             }
             
@@ -3525,7 +3813,19 @@ export default function SetUp() {
             // Only check individual daily limit if device is NOT in combined group
             // For devices in combined groups, the monthly limit check handles the power limit enforcement
             if (!isInCombinedGroup) {
-              console.log(`SetUp: Device ${outletKey} main status is ${currentMainStatus} - checking individual power limits`)
+              console.log(`SetUp: Device ${outletKey} status is ${currentStatus} - checking individual power limits`)
+              
+              // Check if status is 'OFF' - if so, skip individual power limit enforcement (device is manually disabled)
+              if (currentStatus === 'OFF') {
+                console.log(`SetUp: Device ${outletKey} status is OFF - skipping individual power limit enforcement (device manually disabled)`)
+                continue
+              }
+              
+              // Check if main_status is 'ON' - if so, skip individual power limit enforcement (device is in bypass mode)
+              if (currentMainStatus === 'ON') {
+                console.log(`SetUp: Device ${outletKey} main_status is ON - respecting bypass mode, skipping individual power limit enforcement`)
+                continue
+              }
               
               // Check power limit (daily energy limit) - Copy from ActiveDevice.tsx
               const powerLimit = deviceData.relay_control?.auto_cutoff?.power_limit || 0
@@ -3557,9 +3857,9 @@ export default function SetUp() {
                     device: 'off'
                   })
                   
-                  // Also turn off main status to prevent immediate re-activation
-                  await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
-                    main_status: 'OFF'
+                  // Also turn off status to prevent immediate re-activation
+                  await update(ref(realtimeDb, `devices/${outletKey}`), {
+                    status: 'OFF'
                   })
                   
                   console.log(`SetUp: Device ${outletKey} turned OFF due to power limit exceeded`)
@@ -3567,6 +3867,18 @@ export default function SetUp() {
               }
             } else {
               console.log(`SetUp: Device ${outletKey} is in combined group - skipping individual daily limit check (monthly limit takes precedence)`)
+              
+              // For devices in combined groups, also check if status is 'OFF'
+              if (currentStatus === 'OFF') {
+                console.log(`SetUp: Device ${outletKey} status is OFF - skipping combined group power limit enforcement (device manually disabled)`)
+                continue
+              }
+              
+              // For devices in combined groups, also check if main_status is 'ON' (bypass mode)
+              if (currentMainStatus === 'ON') {
+                console.log(`SetUp: Device ${outletKey} main_status is ON - respecting bypass mode, skipping combined group power limit enforcement`)
+                continue
+              }
             }
           }
         }
@@ -3629,9 +3941,9 @@ export default function SetUp() {
           
           if (deviceData.schedule) {
             const currentControlState = deviceData.control?.device || 'off'
-            const currentMainStatus = deviceData.relay_control?.main_status || 'ON'
+            const currentStatus = deviceData.status || 'ON'
             
-            console.log(`Current state: control=${currentControlState}, main_status=${currentMainStatus}`)
+            console.log(`Current state: control=${currentControlState}, status=${currentStatus}`)
             
             // Check if device is in combined group for test function
             const outletDisplayName = outletKey.replace('_', ' ')
@@ -3997,8 +4309,8 @@ export default function SetUp() {
           Object.keys(devicesData).forEach(outletKey => {
             const device = devicesData[outletKey]
             const controlState = device.control?.device || 'off'
-            const mainStatus = device.relay_control?.main_status || 'ON'
-            console.log(`${outletKey}: control=${controlState}, main_status=${mainStatus}`)
+            const deviceStatus = device.status || 'ON'
+            console.log(`${outletKey}: control=${controlState}, status=${deviceStatus}`)
           })
         }
       }, 5000)
@@ -4196,15 +4508,14 @@ export default function SetUp() {
     // const monthlyLimitInterval = setInterval(checkMonthlyLimits, 3000) // 3 seconds - HIGHEST PRIORITY
     
     // 2. Schedule check - SECOND PRIORITY (every 10 seconds, but respects monthly limits)
-    // DISABLED: Schedule checking is now centralized in Schedule.tsx to prevent conflicts
-    // const scheduleInterval = setInterval(checkScheduleAndUpdateDevices, 10000) // 10 seconds
+    const scheduleInterval = setInterval(checkScheduleAndUpdateDevices, 10000) // 10 seconds
     
     // 3. Power limit check - THIRD PRIORITY (every 5 seconds, but respects monthly limits)
     const powerLimitInterval = setInterval(checkPowerLimitsAndTurnOffDevices, 5000) // 5 seconds
     
     // Cleanup intervals on unmount
     return () => {
-      // clearInterval(scheduleInterval) // Disabled
+      clearInterval(scheduleInterval)
       clearInterval(powerLimitInterval)
       // clearInterval(monthlyLimitInterval) // Disabled
       
@@ -4843,9 +5154,9 @@ export default function SetUp() {
               const controlRef = ref(realtimeDb, `devices/${outletKey}/control`)
               await update(controlRef, { device: 'off' })
               
-              // Also set main_status to OFF to prevent automatic turn-on
-              const relayControlRef = ref(realtimeDb, `devices/${outletKey}/relay_control`)
-              await update(relayControlRef, { main_status: 'OFF' })
+              // Also set status to OFF to prevent automatic turn-on
+              const statusRef = ref(realtimeDb, `devices/${outletKey}`)
+              await update(statusRef, { status: 'OFF' })
               
               console.log(`🔒 SetUp: Successfully turned OFF ${outletKey} after removal from combined group (now subject to individual daily limits)`)
             } catch (error) {
@@ -4880,9 +5191,9 @@ export default function SetUp() {
           })
           
           // Also update relay_control for consistency
-          const relayControlRef = ref(realtimeDb, `devices/${outletKey}/relay_control`)
-          await update(relayControlRef, {
-            main_status: data.deviceControl === 'on' ? 'ON' : 'OFF'
+          const statusRef = ref(realtimeDb, `devices/${outletKey}`)
+          await update(statusRef, {
+            status: data.deviceControl === 'on' ? 'ON' : 'OFF'
           })
           
           console.log(`Updated device control for ${outletKey} to ${data.deviceControl}`)
@@ -5126,9 +5437,9 @@ export default function SetUp() {
                 device: 'off'
               })
               
-              // Also turn off main status to prevent immediate re-activation
-              await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
-                main_status: 'OFF'
+              // Also turn off status to prevent immediate re-activation
+              await update(ref(realtimeDb, `devices/${outletKey}`), {
+                status: 'OFF'
               })
               
               console.log(`SetUp: Device ${outletKey} turned OFF due to combined power limit exceeded`)
@@ -5203,11 +5514,11 @@ export default function SetUp() {
             const officeValue = outlet.office_info?.office || ''
             const officeInfo = officeValue ? (officeNames[officeValue] || officeValue) : '—'
             
-            // Convert status to match Device interface with main status consideration
-            const mainStatus = outlet.relay_control?.main_status || 'ON'
+            // Convert status to match Device interface with status consideration
+            const outletStatusValue = outlet.status || 'ON'
             let deviceStatus: 'Active' | 'Inactive' | 'Warning' = 'Inactive'
             
-            if (mainStatus === 'OFF') {
+            if (outletStatusValue === 'OFF') {
               deviceStatus = 'Inactive'
             } else if (status === 'ON') {
               if (powerLimit >= 0 && (powerUsage * 1000) >= (powerLimit * 1000)) {
@@ -5219,6 +5530,10 @@ export default function SetUp() {
               }
             }
 
+            // Get current (ampere) from sensor_data - no decimal places
+            const currentAmpere = outlet.sensor_data?.current || 0
+            const currentAmpereDisplay = `${Math.round(currentAmpere)} A`
+
             const deviceData: Device = {
               id: String(deviceId).padStart(3, '0'),
               outletName: outletKey,
@@ -5227,6 +5542,7 @@ export default function SetUp() {
               enablePowerScheduling: outlet.office_info?.enable_power_scheduling || false,
               limit: `${(powerLimit * 1000).toFixed(3)} Wh`,
               powerUsage: powerUsageDisplay, // Use the new display format
+              currentAmpere: currentAmpereDisplay,
               todayUsage: todayEnergyDisplay, // Use the new display format
               monthUsage: calculateMonthlyEnergy(outlet), // Calculate monthly energy
               status: deviceStatus
@@ -5396,8 +5712,8 @@ export default function SetUp() {
           </div>
         </div>
 
-        <div className="devices-table-container">
-          <table className="devices-table">
+        <div className="setup-table-container">
+          <table className="setup-table">
             <thead>
               <tr>
                 <th>ID</th>
@@ -5406,6 +5722,7 @@ export default function SetUp() {
                 <th>APPLIANCES</th>
                 <th>LIMIT</th>
                 <th>CURRENT POWER USAGE</th>
+                <th>CURRENT (A)</th>
                 <th>TODAY'S ENERGY</th>
                 <th>MONTH ENERGY</th>
                 <th>STATUS</th>
@@ -5457,6 +5774,7 @@ export default function SetUp() {
                   <td className="power-usage">
                     {device.powerUsage}
                   </td>
+                  <td className="current-ampere">{device.currentAmpere}</td>
                   <td className="today-usage">{device.todayUsage}</td>
                   <td className="month-usage">{device.monthUsage || '0.000 W'}</td>
                   <td className="status-cell">

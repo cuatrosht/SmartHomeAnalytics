@@ -1256,3 +1256,336 @@
     padding: 2px 4px;
   }
 }
+
+/* Date Range Modal Styles */
+.chart-modal-content.date-range-modal {
+  max-width: 500px;
+  width: 90%;
+}
+
+.reports-container .date-range-container {
+  padding: 20px;
+}
+
+.reports-container .date-input-group {
+  margin-bottom: 20px;
+}
+
+.reports-container .date-input-group label {
+  display: block;
+  margin-bottom: 8px;
+  font-weight: 600;
+  color: #374151;
+  font-size: 14px;
+}
+
+.reports-container .date-input {
+  width: 100%;
+  padding: 12px;
+  border: 2px solid #e5e7eb;
+  border-radius: 8px;
+  font-size: 14px;
+  transition: border-color 0.2s ease;
+}
+
+.reports-container .date-input:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.reports-container .date-range-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+  margin-top: 24px;
+}
+
+/* PDF Preview Modal Styles */
+.chart-modal-content.pdf-preview-modal {
+  max-width: 950px;
+  width: 95%;
+}
+
+.reports-container .pdf-preview-container {
+  padding: 20px;
+}
+
+.reports-container .preview-info {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 24px;
+}
+
+.reports-container .preview-info h4 {
+  margin: 0 0 16px 0;
+  color: #1e293b;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.reports-container .preview-info p {
+  margin: 8px 0;
+  color: #475569;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.reports-container .preview-info strong {
+  color: #1e293b;
+  font-weight: 600;
+}
+
+.reports-container .preview-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+}
+
+/* Reports Component Button Styles - Scoped to avoid conflicts */
+.reports-container .btn-primary {
+  background: #3b82f6;
+  color: white;
+  border: none;
+  padding: 12px 24px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.reports-container .btn-primary:hover {
+  background: #2563eb;
+}
+
+.reports-container .btn-primary:disabled {
+  background: #9ca3af;
+  cursor: not-allowed;
+}
+
+.reports-container .btn-secondary {
+  background: #f3f4f6;
+  color: #374151;
+  border: 1px solid #d1d5db;
+  padding: 12px 24px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.reports-container .btn-secondary:hover {
+  background: #e5e7eb;
+  border-color: #9ca3af;
+}
+
+/* PDF Preview Content Styles - Scoped to Reports component */
+.reports-container .pdf-preview-content {
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 0;
+  font-family: 'Arial', sans-serif;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+.reports-container .pdf-preview-header {
+  background: #f8fafc;
+  padding: 24px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.reports-container .pdf-preview-header h2 {
+  margin: 0 0 16px 0;
+  font-size: 20px;
+  font-weight: bold;
+  color: #1e293b;
+  text-align: center;
+}
+
+.reports-container .pdf-preview-separator {
+  height: 1px;
+  background: #cbd5e1;
+  margin: 16px 0;
+}
+
+.reports-container .pdf-preview-details {
+  font-size: 12px;
+  color: #475569;
+  line-height: 1.5;
+}
+
+.reports-container .pdf-preview-details p {
+  margin: 4px 0;
+}
+
+.reports-container .pdf-preview-summary {
+  padding: 20px 24px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.reports-container .pdf-preview-summary h3 {
+  margin: 0 0 16px 0;
+  font-size: 16px;
+  font-weight: bold;
+  color: #1e293b;
+}
+
+.reports-container .summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 16px;
+}
+
+.reports-container .summary-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.reports-container .summary-label {
+  font-size: 12px;
+  color: #64748b;
+  font-weight: 500;
+}
+
+.reports-container .summary-value {
+  font-size: 16px;
+  font-weight: bold;
+  color: #1e293b;
+}
+
+.reports-container .pdf-preview-table {
+  padding: 20px 24px;
+}
+
+.reports-container .pdf-preview-table h3 {
+  margin: 0 0 16px 0;
+  font-size: 16px;
+  font-weight: bold;
+  color: #1e293b;
+}
+
+.reports-container .table-preview {
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.reports-container .table-header {
+  display: grid;
+  grid-template-columns: 0.8fr 1.2fr 1fr 1.2fr 1fr 1fr 0.8fr;
+  background: #e0f2fe;
+  font-weight: bold;
+  font-size: 11px;
+}
+
+.reports-container .table-row {
+  display: grid;
+  grid-template-columns: 0.8fr 1.2fr 1fr 1.2fr 1fr 1fr 0.8fr;
+  border-bottom: 1px solid #f1f5f9;
+  font-size: 11px;
+}
+
+.reports-container .table-row:last-child {
+  border-bottom: none;
+}
+
+.reports-container .table-row.more-devices {
+  background: #f8fafc;
+  font-style: italic;
+  color: #64748b;
+}
+
+.reports-container .table-cell {
+  padding: 8px 12px;
+  border-right: 1px solid #e5e7eb;
+  display: flex;
+  align-items: center;
+  min-height: 32px;
+}
+
+.reports-container .table-cell:last-child {
+  border-right: none;
+}
+
+.reports-container .table-header .table-cell {
+  background: #e0f2fe;
+  font-weight: bold;
+  color: #1e293b;
+}
+
+.reports-container .table-row:nth-child(even) {
+  background: #f8fafc;
+}
+
+.reports-container .table-row:hover {
+  background: #f1f5f9;
+}
+
+/* Power Saving Recommendation Table (6 columns) */
+.reports-container .pdf-preview-table:last-of-type .table-header {
+  grid-template-columns: 0.8fr 1fr 1.2fr 1fr 1.2fr 1.2fr;
+}
+
+.reports-container .pdf-preview-table:last-of-type .table-row {
+  grid-template-columns: 0.8fr 1fr 1.2fr 1fr 1.2fr 1.2fr;
+}
+
+/* Responsive adjustments for PDF preview - Scoped to Reports component */
+@media (max-width: 768px) {
+  .reports-container .pdf-preview-content {
+    max-height: 60vh;
+  }
+  
+  .reports-container .summary-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .reports-container .table-header,
+  .reports-container .table-row {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+  
+  .reports-container .table-cell {
+    border-right: none;
+    border-bottom: 1px solid #e5e7eb;
+    padding: 4px 8px;
+  }
+  
+  .reports-container .table-cell:last-child {
+    border-bottom: none;
+  }
+}
+
+/* No Data Message - Scoped to Reports component */
+.reports-container .no-data-message {
+  background: #fef3c7;
+  border: 1px solid #f59e0b;
+  border-radius: 6px;
+  padding: 16px;
+  margin-top: 16px;
+}
+
+.reports-container .no-data-message p {
+  margin: 0 0 8px 0;
+  color: #92400e;
+  font-weight: 600;
+}
+
+.reports-container .no-data-message ul {
+  margin: 8px 0 0 0;
+  padding-left: 20px;
+  color: #92400e;
+}
+
+.reports-container .no-data-message li {
+  margin: 4px 0;
+  font-size: 12px;
+}

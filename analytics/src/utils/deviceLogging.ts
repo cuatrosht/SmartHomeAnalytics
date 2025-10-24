@@ -46,7 +46,7 @@ export const logDeviceActivity = async (
           const parsedUser = JSON.parse(userData);
           currentUser = parsedUser.displayName || parsedUser.email || 'Unknown User';
           currentUserId = parsedUser.uid || '';
-          currentUserRole = parsedUser.role || 'faculty';
+          currentUserRole = parsedUser.role || 'Coordinator';
         } else {
           currentUser = 'Unknown User';
           currentUserRole = 'unknown';

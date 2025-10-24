@@ -245,6 +245,7 @@ interface DeviceData {
   appliances: string
   officeRoom: string
   powerUsage: string
+  currentAmpere: string
   status: 'Active' | 'Inactive' | 'Blocked' | 'Idle'
   todaysUsage: string
   limit: string
@@ -1705,6 +1706,10 @@ export default function Schedule() {
             //   resetAutoTurnoffFunction(outletKey, setAutoTurnoffTimers)
             // }
 
+            // Get current (ampere) from sensor_data - no decimal places
+            const currentAmpere = outletData.sensor_data?.current || 0
+            const currentAmpereDisplay = `${Math.round(currentAmpere)} A`
+
             // Create device object
             const device: DeviceData = {
               id: String(index + 1).padStart(3, '0'),
@@ -1712,6 +1717,7 @@ export default function Schedule() {
               appliances: officeInfo?.appliance || 'Unassigned',
               officeRoom: formatOfficeName(officeInfo?.office || 'Unassigned'),
               powerUsage: powerUsageDisplay,
+              currentAmpere: currentAmpereDisplay,
               limit: powerLimitDisplay,
               status: deviceStatus,
               todaysUsage: todayEnergyDisplay,
@@ -1867,6 +1873,10 @@ export default function Schedule() {
           //   resetAutoTurnoffFunction(outletKey, setAutoTurnoffTimers)
           // }
 
+          // Get current (ampere) from sensor_data - no decimal places
+          const currentAmpere = outletData.sensor_data?.current || 0
+          const currentAmpereDisplay = `${Math.round(currentAmpere)} A`
+
           // Create device object
           const device: DeviceData = {
             id: String(index + 1).padStart(3, '0'),
@@ -1874,6 +1884,7 @@ export default function Schedule() {
             appliances: officeInfo?.appliance || 'Unassigned',
             officeRoom: formatOfficeName(officeInfo?.office || 'Unassigned'),
             powerUsage: powerUsageDisplay,
+            currentAmpere: currentAmpereDisplay,
             limit: powerLimitDisplay,
             status: deviceStatus,
             todaysUsage: todayEnergyDisplay,
@@ -2049,9 +2060,9 @@ export default function Schedule() {
               const currentControlState = deviceData.control?.device || 'off'
               const currentMainStatus = deviceData.relay_control?.main_status || 'ON'
               
-              // RESPECT manual override - if main_status is OFF, don't override it
-              if (currentMainStatus === 'OFF') {
-                console.log(`Schedule: Device ${outletKey} has main_status = 'OFF' - respecting manual override, skipping schedule check`)
+              // RESPECT bypass mode - if main_status is ON, don't override it (device is in bypass mode)
+              if (currentMainStatus === 'ON') {
+                console.log(`Schedule: Device ${outletKey} has main_status = 'ON' - respecting bypass mode, skipping schedule check`)
                 continue
               }
               
@@ -2656,6 +2667,7 @@ export default function Schedule() {
                 <th>OFFICE/ ROOM</th>
                 <th>LIMIT</th>
                 <th>POWER USAGE</th>
+                <th>CURRENT (A)</th>
                 <th>STATUS</th>
                 <th>TODAY'S USAGE</th>
                 <th>SCHEDULE</th>
@@ -2705,6 +2717,7 @@ export default function Schedule() {
                     })()}
                   </td>
                   <td className="power-usage">{device.powerUsage}</td>
+                  <td className="current-ampere">{device.currentAmpere}</td>
                   <td>
                     <div className="status-container">
                       {getStatusBadge(device.status)}

@@ -114,7 +114,7 @@ const removeDeviceFromCombinedGroup = async (outletKey: string): Promise<{
 }
 
 interface SignUpProps {
-  onSuccess?: (userName: string, userRole: 'faculty' | 'admin') => void
+  onSuccess?: (userName: string, userRole: 'Coordinator' | 'admin') => void
   onNavigateToLogin?: () => void
 }
 
@@ -125,9 +125,9 @@ export default function SignUp({ onSuccess, onNavigateToLogin }: SignUpProps) {
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [loading, setLoading] = useState(false)
-  const [userRole, setUserRole] = useState<'faculty' | 'admin'>('faculty')
+  const [userRole, setUserRole] = useState<'Coordinator' | 'admin'>('Coordinator')
   const [showRoleModal, setShowRoleModal] = useState(false)
-  const [hasExistingAdmin, setHasExistingAdmin] = useState(false)
+  const [hasExistingGSO, setHasExistingGSO] = useState(false)
 
   type ModalVariant = 'success' | 'error'
   const [modalOpen, setModalOpen] = useState(false)
@@ -145,23 +145,23 @@ export default function SignUp({ onSuccess, onNavigateToLogin }: SignUpProps) {
   })
   const successTimer = useRef<number | null>(null)
 
-  // Function to check if there's an existing admin
-  const checkExistingAdmin = async () => {
+  // Function to check if there's an existing GSO
+  const checkExistingGSO = async () => {
     try {
       const usersRef = ref(realtimeDb, 'users')
       const snapshot = await get(usersRef)
-      
+
       if (snapshot.exists()) {
         const users = snapshot.val()
-        const hasAdmin = Object.values(users).some((user: any) => user.role === 'admin')
-        setHasExistingAdmin(hasAdmin)
-        console.log('Existing admin check:', hasAdmin)
+        const hasGSO = Object.values(users).some((user: any) => user.role === 'admin')
+        setHasExistingGSO(hasGSO)
+        console.log('Existing GSO check:', hasGSO)
       } else {
-        setHasExistingAdmin(false)
+        setHasExistingGSO(false)
       }
     } catch (error) {
-      console.error('Error checking for existing admin:', error)
-      setHasExistingAdmin(false)
+      console.error('Error checking for existing GSO:', error)
+      setHasExistingGSO(false)
     }
   }
 
@@ -306,17 +306,17 @@ export default function SignUp({ onSuccess, onNavigateToLogin }: SignUpProps) {
     return isWithinTimeRange && isCorrectDay
   }
 
-  // Check for existing admin on component mount
+  // Check for existing GSO on component mount
   useEffect(() => {
-    checkExistingAdmin()
+    checkExistingGSO()
   }, [])
 
-  // Force userRole to 'faculty' if admin already exists
+  // Force userRole to 'Coordinator' if GSO already exists
   useEffect(() => {
-    if (hasExistingAdmin && userRole === 'admin') {
-      setUserRole('faculty')
+    if (hasExistingGSO && userRole === 'admin') {
+      setUserRole('Coordinator')
     }
-  }, [hasExistingAdmin, userRole])
+  }, [hasExistingGSO, userRole])
 
   // Fetch combined limit info
   useEffect(() => {
@@ -381,9 +381,11 @@ export default function SignUp({ onSuccess, onNavigateToLogin }: SignUpProps) {
               const currentControlState = deviceData.control?.device || 'off'
               const currentMainStatus = deviceData.relay_control?.main_status || 'ON'
               
-              // Always check schedule - main_status is just a manual override flag
-              // The real control is through control.device which we will update based on schedule
-              console.log(`SignUp: Device ${outletKey} main status is ${currentMainStatus} - checking schedule anyway`)
+              // RESPECT bypass mode - if main_status is ON, don't override it (device is in bypass mode)
+              if (currentMainStatus === 'ON') {
+                console.log(`SignUp: Device ${outletKey} has main_status = 'ON' - respecting bypass mode, skipping schedule check`)
+                continue
+              }
               
               // Check if device should be active based on current time and schedule
               // Skip individual limit check if device is in combined group (combined limit takes precedence)
@@ -457,6 +459,12 @@ export default function SignUp({ onSuccess, onNavigateToLogin }: SignUpProps) {
               continue
             }
             
+            // Check if main_status is 'ON' - if so, skip automatic power limit enforcement (device is in bypass mode)
+            if (currentMainStatus === 'ON') {
+              console.log(`SignUp: Device ${outletKey} main_status is ON - respecting bypass mode, skipping automatic power limit enforcement`)
+              continue
+            }
+            
             // Check if device is in a combined group
             const outletDisplayName = outletKey.replace('_', ' ')
             const isInCombinedGroup = combinedLimitInfo?.enabled && 
@@ -503,7 +511,34 @@ export default function SignUp({ onSuccess, onNavigateToLogin }: SignUpProps) {
                 }
               }
             } else {
-              console.log(`SignUp: Device ${outletKey} is in combined group - skipping individual daily limit check (monthly limit takes precedence)`)
+              console.log(`SignUp: Device ${outletKey} is in combined group - checking combined group power limits`)
+              
+              // For devices in combined groups, check combined monthly limit
+              if (combinedLimitInfo?.enabled && combinedLimitInfo?.selectedOutlets?.length > 0) {
+                const totalMonthlyEnergy = calculateCombinedMonthlyEnergy(devicesData, combinedLimitInfo.selectedOutlets)
+                const combinedLimitkW = combinedLimitInfo.combinedLimit / 1000 // Convert to kW
+                
+                console.log(`SignUp: Combined group limit check for ${outletKey}:`, {
+                  totalMonthlyEnergy: `${(totalMonthlyEnergy * 1000).toFixed(0)}W`,
+                  combinedLimit: `${combinedLimitInfo.combinedLimit}W`,
+                  exceedsLimit: totalMonthlyEnergy >= combinedLimitkW
+                })
+                
+                if (totalMonthlyEnergy >= combinedLimitkW) {
+                  console.log(`SignUp: Combined monthly limit exceeded - turning off ${outletKey}`)
+                  
+                  await update(ref(realtimeDb, `devices/${outletKey}/control`), {
+                    device: 'off'
+                  })
+                  
+                  // Also turn off main status to prevent immediate re-activation
+                  await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
+                    main_status: 'OFF'
+                  })
+                  
+                  console.log(`SignUp: Device ${outletKey} turned OFF due to combined monthly limit exceeded`)
+                }
+              }
             }
           }
         }
@@ -512,9 +547,62 @@ export default function SignUp({ onSuccess, onNavigateToLogin }: SignUpProps) {
       }
     }
     
-    // Run both functions immediately
+    // Monthly limit check for combined groups
+    const checkMonthlyLimitAndTurnOffDevices = async () => {
+      try {
+        if (!combinedLimitInfo?.enabled || combinedLimitInfo?.selectedOutlets?.length === 0) {
+          return
+        }
+
+        const devicesRef = ref(realtimeDb, 'devices')
+        const snapshot = await get(devicesRef)
+        
+        if (snapshot.exists()) {
+          const devicesData = snapshot.val()
+          
+          // Calculate total monthly energy for combined group
+          const totalMonthlyEnergy = calculateCombinedMonthlyEnergy(devicesData, combinedLimitInfo.selectedOutlets)
+          const combinedLimitWatts = combinedLimitInfo.combinedLimit
+          const combinedLimitkW = combinedLimitWatts / 1000 // Convert to kW
+          
+          console.log(`SignUp: Monthly limit check - Total: ${(totalMonthlyEnergy * 1000).toFixed(0)}W / Limit: ${combinedLimitWatts}W`)
+          
+          if (totalMonthlyEnergy >= combinedLimitkW) {
+            console.log(`SignUp: Monthly limit exceeded! Turning off all devices in combined group.`)
+            
+            // Turn off all devices in the combined group
+            for (const outletKey of combinedLimitInfo.selectedOutlets) {
+              const firebaseKey = outletKey.replace(' ', '_')
+              
+              try {
+                // Turn off device control
+                const controlRef = ref(realtimeDb, `devices/${firebaseKey}/control`)
+                await update(controlRef, { device: 'off' })
+                
+                // Turn off main status to prevent immediate re-activation
+                const mainStatusRef = ref(realtimeDb, `devices/${firebaseKey}/relay_control`)
+                await update(mainStatusRef, { main_status: 'OFF' })
+                
+                console.log(`✅ TURNED OFF: ${outletKey} (${firebaseKey}) due to monthly limit`)
+              } catch (error) {
+                console.error(`❌ FAILED to turn off ${outletKey}:`, error)
+              }
+            }
+          }
+        }
+      } catch (error) {
+        console.error('SignUp: Error in monthly limit check:', error)
+      }
+    }
+
+    // Re-enable schedule checking with bypass support
     checkScheduleAndUpdateDevices()
+    
+    // Run power limit check
     checkPowerLimitsAndTurnOffDevices()
+    
+    // Run monthly limit check
+    checkMonthlyLimitAndTurnOffDevices()
     
     // Add manual test function for debugging
     ;(window as any).testSignUpSchedule = checkScheduleAndUpdateDevices
@@ -532,18 +620,19 @@ export default function SignUp({ onSuccess, onNavigateToLogin }: SignUpProps) {
     }
     
     // Set up intervals for automatic checking
-    // DISABLED: Schedule checking is now centralized in Schedule.tsx to prevent conflicts
-    // const scheduleInterval = setInterval(checkScheduleAndUpdateDevices, 10000) // 10 seconds (more frequent for short schedules)
+    const scheduleInterval = setInterval(checkScheduleAndUpdateDevices, 10000) // 10 seconds (more frequent for short schedules)
     const powerLimitInterval = setInterval(checkPowerLimitsAndTurnOffDevices, 30000) // 30 seconds (more frequent for power limits)
+    const monthlyLimitInterval = setInterval(checkMonthlyLimitAndTurnOffDevices, 60000) // 1 minute for monthly limit check
     
     // Cleanup intervals on unmount
     return () => {
-      // clearInterval(scheduleInterval) // Disabled
+      clearInterval(scheduleInterval)
       clearInterval(powerLimitInterval)
+      clearInterval(monthlyLimitInterval)
     }
   }, []);
 
-  const scheduleSuccessRedirect = (userName?: string, role?: 'faculty' | 'admin') => {
+  const scheduleSuccessRedirect = (userName?: string, role?: 'Coordinator' | 'admin') => {
     if (onSuccess) {
       const displayName = userName || `${firstName} ${lastName}`.trim() || 'User'
       const finalRole = role || userRole
@@ -582,9 +671,9 @@ export default function SignUp({ onSuccess, onNavigateToLogin }: SignUpProps) {
     
     if (!validateForm()) return
 
-    // Prevent admin signup if admin already exists
-    if (userRole === 'admin' && hasExistingAdmin) {
-      openModal('error', 'Admin Account Exists', 'An admin account already exists. Only one admin is allowed per system.')
+    // Prevent GSO signup if GSO already exists
+    if (userRole === 'admin' && hasExistingGSO) {
+      openModal('error', 'GSO Account Exists', 'A GSO account already exists. Only one GSO is allowed per system.')
       return
     }
 
@@ -666,12 +755,12 @@ export default function SignUp({ onSuccess, onNavigateToLogin }: SignUpProps) {
     setShowRoleModal(true)
   }
 
-  const handleGoogleWithRole = async (selectedRole: 'faculty' | 'admin') => {
+  const handleGoogleWithRole = async (selectedRole: 'Coordinator' | 'admin') => {
     setShowRoleModal(false)
     
-    // Prevent admin signup if admin already exists
-    if (selectedRole === 'admin' && hasExistingAdmin) {
-      openModal('error', 'Admin Account Exists', 'An admin account already exists. Only one admin is allowed per system.')
+    // Prevent GSO signup if GSO already exists
+    if (selectedRole === 'admin' && hasExistingGSO) {
+      openModal('error', 'GSO Account Exists', 'A GSO account already exists. Only one GSO is allowed per system.')
       return
     }
     
@@ -928,34 +1017,34 @@ export default function SignUp({ onSuccess, onNavigateToLogin }: SignUpProps) {
                 <input
                   type="radio"
                   name="userRole"
-                  value="faculty"
-                  checked={userRole === 'faculty'}
-                  onChange={(e) => setUserRole(e.target.value as 'faculty' | 'admin')}
+                  value="Coordinator"
+                  checked={userRole === 'Coordinator'}
+                  onChange={(e) => setUserRole(e.target.value as 'Coordinator' | 'admin')}
                 />
                 <span className="role-label">
                   <span className="role-icon">👨‍🏫</span>
                   <div>
-                    <span className="role-title">Faculty</span>
+                    <span className="role-title">Coordinator</span>
                     <span className="role-description">Standard access to dashboard features</span>
                   </div>
                 </span>
               </label>
-              <label className={`role-option ${hasExistingAdmin ? 'disabled' : ''}`}>
+              <label className={`role-option ${hasExistingGSO ? 'disabled' : ''}`}>
                 <input
                   type="radio"
                   name="userRole"
                   value="admin"
                   checked={userRole === 'admin'}
-                  onChange={(e) => setUserRole(e.target.value as 'faculty' | 'admin')}
-                  disabled={hasExistingAdmin}
+                  onChange={(e) => setUserRole(e.target.value as 'Coordinator' | 'admin')}
+                  disabled={hasExistingGSO}
                 />
                 <span className="role-label">
                   <span className="role-icon">👑</span>
                   <div>
-                    <span className="role-title">Admin</span>
+                    <span className="role-title">GSO</span>
                     <span className="role-description">
-                      {hasExistingAdmin 
-                        ? 'Admin account already exists. Only one admin is allowed.' 
+                      {hasExistingGSO 
+                        ? 'GSO account already exists. Only one GSO is allowed.' 
                         : 'Full access to all features and user management'
                       }
                     </span>
@@ -1065,26 +1154,26 @@ export default function SignUp({ onSuccess, onNavigateToLogin }: SignUpProps) {
             <div className="role-modal-options">
               <button 
                 className="role-modal-option"
-                onClick={() => handleGoogleWithRole('faculty')}
+                onClick={() => handleGoogleWithRole('Coordinator')}
               >
                 <span className="role-icon">👨‍🏫</span>
                 <div>
-                  <span className="role-title">Faculty Account</span>
+                  <span className="role-title">Coordinator Account</span>
                   <span className="role-description">Standard access to dashboard features</span>
                 </div>
               </button>
               
               <button 
-                className={`role-modal-option ${hasExistingAdmin ? 'disabled' : ''}`}
-                onClick={() => !hasExistingAdmin && handleGoogleWithRole('admin')}
-                disabled={hasExistingAdmin}
+                className={`role-modal-option ${hasExistingGSO ? 'disabled' : ''}`}
+                onClick={() => !hasExistingGSO && handleGoogleWithRole('admin')}
+                disabled={hasExistingGSO}
               >
                 <span className="role-icon">👑</span>
                 <div>
-                  <span className="role-title">Admin Account</span>
+                  <span className="role-title">GSO Account</span>
                   <span className="role-description">
-                    {hasExistingAdmin 
-                      ? 'Admin account already exists. Only one admin is allowed.' 
+                    {hasExistingGSO 
+                      ? 'GSO account already exists. Only one GSO is allowed.' 
                       : 'Full access to all features and user management'
                     }
                   </span>

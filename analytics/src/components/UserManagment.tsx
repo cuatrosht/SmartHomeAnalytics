@@ -163,14 +163,15 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
   const [deviceLogsSearchTerm, setDeviceLogsSearchTerm] = useState('');
   const [deviceLogsFilter, setDeviceLogsFilter] = useState<'all' | 'day' | 'week' | 'month' | 'year'>('all');
   const [modalOpen, setModalOpen] = useState(false);
-  const [modalType, setModalType] = useState<'edit' | 'delete' | 'feedback' | null>(null);
+  const [modalType, setModalType] = useState<'edit' | 'delete' | 'feedback' | 'addOffice' | 'editOffice' | 'deleteOffice' | null>(null);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
-  const [editRole, setEditRole] = useState<'admin' | 'faculty'>('faculty');
+  const [editRole, setEditRole] = useState<'admin' | 'Coordinator'>('Coordinator');
   const [feedback, setFeedback] = useState<{ success: boolean; message: string } | null>(null);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [selectedOption, setSelectedOption] = useState(
     currentView === 'userLogs' ? 'UserLogs' : 
     currentView === 'deviceLogs' ? 'Device Logs' : 
+    currentView === 'offices' ? 'Offices' :
     'UserManagement'
   );
   const [combinedLimitInfo, setCombinedLimitInfo] = useState<{
@@ -182,6 +183,12 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
     selectedOutlets: [],
     combinedLimit: 0
   });
+  const [offices, setOffices] = useState<Array<{id: string, department: string, office: string}>>([]);
+  const [newOffice, setNewOffice] = useState({ department: '', office: '' });
+  const [editOffice, setEditOffice] = useState({ id: '', department: '', office: '' });
+  const [selectedOffice, setSelectedOffice] = useState<{id: string, department: string, office: string} | null>(null);
+  const [existingDepartments, setExistingDepartments] = useState<string[]>([]);
+  const [departmentDropdownOpen, setDepartmentDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -193,7 +200,7 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
           id: uid,
           name: user.displayName || ((user.firstName || '') + ' ' + (user.lastName || '')).trim() || user.email || uid,
           email: user.email || '',
-          role: user.role || 'faculty',
+          role: user.role || 'Coordinator',
         }));
         setUsers(userList);
       } else {
@@ -238,9 +245,11 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
               const currentControlState = deviceData.control?.device || 'off'
               const currentMainStatus = deviceData.relay_control?.main_status || 'ON'
               
-              // Always check schedule - main_status is just a manual override flag
-              // The real control is through control.device which we will update based on schedule
-              console.log(`UserManagement: Device ${outletKey} main status is ${currentMainStatus} - checking schedule anyway`)
+              // RESPECT bypass mode - if main_status is ON, don't override it (device is in bypass mode)
+              if (currentMainStatus === 'ON') {
+                console.log(`UserManagement: Device ${outletKey} has main_status = 'ON' - respecting bypass mode, skipping schedule check`)
+                continue
+              }
               
               // Check if device should be active based on current time and schedule
               // Skip individual limit check if device is in combined group (combined limit takes precedence)
@@ -314,6 +323,12 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
               continue
             }
             
+            // Check if main_status is 'ON' - if so, skip automatic power limit enforcement (device is in bypass mode)
+            if (currentMainStatus === 'ON') {
+              console.log(`UserManagement: Device ${outletKey} main_status is ON - respecting bypass mode, skipping automatic power limit enforcement`)
+              continue
+            }
+            
             // Check if device is in a combined group
             const outletDisplayName = outletKey.replace('_', ' ')
             const isInCombinedGroup = combinedLimitInfo?.enabled && 
@@ -360,7 +375,34 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
                 }
               }
             } else {
-              console.log(`UserManagement: Device ${outletKey} is in combined group - skipping individual daily limit check (monthly limit takes precedence)`)
+              console.log(`UserManagement: Device ${outletKey} is in combined group - checking combined group power limits`)
+              
+              // For devices in combined groups, check combined monthly limit
+              if (combinedLimitInfo?.enabled && combinedLimitInfo?.selectedOutlets?.length > 0) {
+                const totalMonthlyEnergy = calculateCombinedMonthlyEnergy(devicesData, combinedLimitInfo.selectedOutlets)
+                const combinedLimitkW = combinedLimitInfo.combinedLimit / 1000 // Convert to kW
+                
+                console.log(`UserManagement: Combined group limit check for ${outletKey}:`, {
+                  totalMonthlyEnergy: `${(totalMonthlyEnergy * 1000).toFixed(0)}W`,
+                  combinedLimit: `${combinedLimitInfo.combinedLimit}W`,
+                  exceedsLimit: totalMonthlyEnergy >= combinedLimitkW
+                })
+                
+                if (totalMonthlyEnergy >= combinedLimitkW) {
+                  console.log(`UserManagement: Combined monthly limit exceeded - turning off ${outletKey}`)
+                  
+                  await update(ref(realtimeDb, `devices/${outletKey}/control`), {
+                    device: 'off'
+                  })
+                  
+                  // Also turn off main status to prevent immediate re-activation
+                  await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
+                    main_status: 'OFF'
+                  })
+                  
+                  console.log(`UserManagement: Device ${outletKey} turned OFF due to combined monthly limit exceeded`)
+                }
+              }
             }
           }
         }
@@ -369,11 +411,62 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
       }
     }
     
-    // DISABLED: Schedule check to prevent conflicts with centralized Schedule.tsx
-    // checkScheduleAndUpdateDevices()
+    // Monthly limit check for combined groups
+    const checkMonthlyLimitAndTurnOffDevices = async () => {
+      try {
+        if (!combinedLimitInfo?.enabled || combinedLimitInfo?.selectedOutlets?.length === 0) {
+          return
+        }
+
+        const devicesRef = ref(realtimeDb, 'devices')
+        const snapshot = await get(devicesRef)
+        
+        if (snapshot.exists()) {
+          const devicesData = snapshot.val()
+          
+          // Calculate total monthly energy for combined group
+          const totalMonthlyEnergy = calculateCombinedMonthlyEnergy(devicesData, combinedLimitInfo.selectedOutlets)
+          const combinedLimitWatts = combinedLimitInfo.combinedLimit
+          const combinedLimitkW = combinedLimitWatts / 1000 // Convert to kW
+          
+          console.log(`UserManagement: Monthly limit check - Total: ${(totalMonthlyEnergy * 1000).toFixed(0)}W / Limit: ${combinedLimitWatts}W`)
+          
+          if (totalMonthlyEnergy >= combinedLimitkW) {
+            console.log(`UserManagement: Monthly limit exceeded! Turning off all devices in combined group.`)
+            
+            // Turn off all devices in the combined group
+            for (const outletKey of combinedLimitInfo.selectedOutlets) {
+              const firebaseKey = outletKey.replace(' ', '_')
+              
+              try {
+                // Turn off device control
+                const controlRef = ref(realtimeDb, `devices/${firebaseKey}/control`)
+                await update(controlRef, { device: 'off' })
+                
+                // Turn off main status to prevent immediate re-activation
+                const mainStatusRef = ref(realtimeDb, `devices/${firebaseKey}/relay_control`)
+                await update(mainStatusRef, { main_status: 'OFF' })
+                
+                console.log(`✅ TURNED OFF: ${outletKey} (${firebaseKey}) due to monthly limit`)
+              } catch (error) {
+                console.error(`❌ FAILED to turn off ${outletKey}:`, error)
+              }
+            }
+          }
+        }
+      } catch (error) {
+        console.error('UserManagement: Error in monthly limit check:', error)
+      }
+    }
+
+    // Re-enable schedule checking with bypass support
+    checkScheduleAndUpdateDevices()
     
-    // Only run power limit check (no conflicts with schedule)
+    // Run power limit check
     checkPowerLimitsAndTurnOffDevices()
+    
+    // Run monthly limit check
+    checkMonthlyLimitAndTurnOffDevices()
     
     // Add manual test function for debugging
     ;(window as any).testUserManagementSchedule = checkScheduleAndUpdateDevices
@@ -391,14 +484,15 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
     }
     
     // Set up intervals for automatic checking
-    // DISABLED: Schedule checking is now centralized in Schedule.tsx to prevent conflicts
-    // const scheduleInterval = setInterval(checkScheduleAndUpdateDevices, 10000) // 10 seconds (more frequent for short schedules)
+    const scheduleInterval = setInterval(checkScheduleAndUpdateDevices, 10000) // 10 seconds (more frequent for short schedules)
     const powerLimitInterval = setInterval(checkPowerLimitsAndTurnOffDevices, 30000) // 30 seconds (more frequent for power limits)
+    const monthlyLimitInterval = setInterval(checkMonthlyLimitAndTurnOffDevices, 60000) // 1 minute for monthly limit check
     
     // Cleanup intervals on unmount
     return () => {
-      // clearInterval(scheduleInterval) // Disabled
+      clearInterval(scheduleInterval)
       clearInterval(powerLimitInterval)
+      clearInterval(monthlyLimitInterval)
     }
   }, []);
 
@@ -468,6 +562,8 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
         setDropdownOpen(false);
       }
+      // Close department dropdown when clicking outside
+      setDepartmentDropdownOpen(false);
     };
 
     if (dropdownOpen) {
@@ -485,6 +581,8 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
       setSelectedOption('UserLogs');
     } else if (currentView === 'deviceLogs') {
       setSelectedOption('Device Logs');
+    } else if (currentView === 'offices') {
+      setSelectedOption('Offices');
     } else if (currentView === 'users') {
       setSelectedOption('UserManagement');
     }
@@ -518,6 +616,31 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
     
     fetchCombinedLimitInfo()
   }, [])
+
+  // Fetch offices from database
+  useEffect(() => {
+    const officesRef = ref(realtimeDb, 'offices');
+    const handleOfficesValue = (snapshot: any) => {
+      const data = snapshot.val();
+      if (data) {
+        const officesList = Object.entries(data).map(([id, office]: any) => ({
+          id,
+          department: office.department || '',
+          office: office.office || ''
+        }));
+        setOffices(officesList);
+        
+        // Extract unique departments for dropdown
+        const departments = [...new Set(officesList.map(o => o.department))].filter(d => d);
+        setExistingDepartments(departments);
+      } else {
+        setOffices([]);
+        setExistingDepartments([]);
+      }
+    };
+    onValue(officesRef, handleOfficesValue);
+    return () => off(officesRef, 'value', handleOfficesValue);
+  }, []);
 
   const filteredUsers = users.filter(user =>
     user.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -724,7 +847,7 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
 
   const openEditModal = (user: User) => {
     setSelectedUser(user);
-    setEditRole((user.role as 'admin' | 'faculty') || 'faculty');
+    setEditRole((user.role as 'admin' | 'Coordinator') || 'Coordinator');
     setModalType('edit');
     setModalOpen(true);
   };
@@ -739,7 +862,11 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
     setModalOpen(false);
     setModalType(null);
     setSelectedUser(null);
+    setSelectedOffice(null);
     setFeedback(null);
+    setNewOffice({ department: '', office: '' });
+    setEditOffice({ id: '', department: '', office: '' });
+    setDepartmentDropdownOpen(false);
   };
 
   const handleEdit = (userId: string) => {
@@ -781,6 +908,121 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
     }
   };
 
+  const handleAddOffice = async () => {
+    if (!newOffice.department.trim() || !newOffice.office.trim()) {
+      setFeedback({ success: false, message: 'Please fill in both department and office fields.' });
+      setModalType('feedback');
+      return;
+    }
+
+    // Check for duplicate office name across ALL departments
+    const trimmedDepartment = newOffice.department.trim();
+    const trimmedOffice = newOffice.office.trim();
+    
+    const duplicateOffice = offices.find(office => 
+      office.office.toLowerCase() === trimmedOffice.toLowerCase()
+    );
+
+    if (duplicateOffice) {
+      setFeedback({ success: false, message: `Office "${trimmedOffice}" already exists in the "${duplicateOffice.department}" department. Please choose a different office name.` });
+      setModalType('feedback');
+      return;
+    }
+
+    try {
+      const newOfficeRef = ref(realtimeDb, 'offices');
+      const newOfficeData = {
+        department: trimmedDepartment,
+        office: trimmedOffice,
+        createdAt: new Date().toISOString()
+      };
+      
+      await update(newOfficeRef, {
+        [Date.now().toString()]: newOfficeData
+      });
+      
+      setFeedback({ success: true, message: 'Office added successfully.' });
+      setModalType('feedback');
+      setNewOffice({ department: '', office: '' });
+    } catch (error) {
+      console.error('Error adding office:', error);
+      setFeedback({ success: false, message: 'Failed to add office.' });
+      setModalType('feedback');
+    }
+  };
+
+  const handleEditOffice = async () => {
+    if (!editOffice.department.trim() || !editOffice.office.trim()) {
+      setFeedback({ success: false, message: 'Please fill in both department and office fields.' });
+      setModalType('feedback');
+      return;
+    }
+
+    // Check for duplicate office name across ALL departments (excluding current office)
+    const trimmedDepartment = editOffice.department.trim();
+    const trimmedOffice = editOffice.office.trim();
+    
+    const duplicateOffice = offices.find(office => 
+      office.id !== editOffice.id && // Exclude the current office being edited
+      office.office.toLowerCase() === trimmedOffice.toLowerCase()
+    );
+
+    if (duplicateOffice) {
+      setFeedback({ success: false, message: `Office "${trimmedOffice}" already exists in the "${duplicateOffice.department}" department. Please choose a different office name.` });
+      setModalType('feedback');
+      return;
+    }
+
+    try {
+      const officeRef = ref(realtimeDb, `offices/${editOffice.id}`);
+      const updatedOfficeData = {
+        department: trimmedDepartment,
+        office: trimmedOffice,
+        updatedAt: new Date().toISOString()
+      };
+      
+      await update(officeRef, updatedOfficeData);
+      
+      setFeedback({ success: true, message: 'Office updated successfully.' });
+      setModalType('feedback');
+      setEditOffice({ id: '', department: '', office: '' });
+    } catch (error) {
+      console.error('Error updating office:', error);
+      setFeedback({ success: false, message: 'Failed to update office.' });
+      setModalType('feedback');
+    }
+  };
+
+  const handleDeleteOffice = async () => {
+    if (!selectedOffice) return;
+    
+    try {
+      const officeRef = ref(realtimeDb, `offices/${selectedOffice.id}`);
+      await remove(officeRef);
+      
+      setFeedback({ success: true, message: 'Office deleted successfully.' });
+      setModalType('feedback');
+      setSelectedOffice(null);
+    } catch (error) {
+      console.error('Error deleting office:', error);
+      setFeedback({ success: false, message: 'Failed to delete office.' });
+      setModalType('feedback');
+    }
+  };
+
+  const openEditOfficeModal = (office: {id: string, department: string, office: string}) => {
+    setSelectedOffice(office);
+    setEditOffice({ id: office.id, department: office.department, office: office.office });
+    setModalType('editOffice');
+    setModalOpen(true);
+  };
+
+  const openDeleteOfficeModal = (office: {id: string, department: string, office: string}) => {
+    setSelectedOffice(office);
+    setModalType('deleteOffice');
+    setModalOpen(true);
+  };
+
   const handleDropdownSelect = (option: string) => {
     setSelectedOption(option);
     setDropdownOpen(false);
@@ -790,6 +1032,8 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
       onNavigate('userLogs');
     } else if (option === 'Device Logs' && onNavigate) {
       onNavigate('deviceLogs');
+    } else if (option === 'Offices' && onNavigate) {
+      onNavigate('offices');
     } else if (option === 'UserManagement' && onNavigate) {
       onNavigate('users');
     }
@@ -811,6 +1055,7 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
             <span>
               {currentView === 'userLogs' ? 'User Logs' : 
                currentView === 'deviceLogs' ? 'Device Logs' : 
+               currentView === 'offices' ? 'Offices' :
                'User Management'}
             </span>
           </div>
@@ -847,6 +1092,12 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
                 >
                   Device Logs
                 </button>
+                <button 
+                  className={`um-dropdown-item ${selectedOption === 'Offices' ? 'active' : ''}`}
+                  onClick={() => handleDropdownSelect('Offices')}
+                >
+                  Offices
+                </button>
               </div>
             )}
           </div>
@@ -854,7 +1105,102 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
       </div>
 
       <div className="um-content">
-        {currentView === 'userLogs' ? (
+        {currentView === 'offices' ? (
+          <>
+            <div className="um-content-header">
+              <h2>Offices</h2>
+              <div className="um-controls">
+                <div className="um-search">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <circle cx="11" cy="11" r="8" stroke="currentColor" strokeWidth="2"/>
+                    <path d="m21 21-4.35-4.35" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                  <input 
+                    type="text" 
+                    placeholder="Search offices..." 
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                  />
+                </div>
+                <button 
+                  className="um-add-btn"
+                  onClick={() => {
+                    setNewOffice({ department: '', office: '' });
+                    setModalType('addOffice');
+                    setModalOpen(true);
+                  }}
+                  title="Add new office"
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                  Add Office
+                </button>
+                <button className="um-filter-btn">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M3 6h18M7 12h10M10 18h4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            <div className="um-table-container">
+              <table className="um-table">
+                <thead>
+                  <tr>
+                    <th>No</th>
+                    <th>Department</th>
+                    <th>Office</th>
+                    <th style={{ textAlign: 'center' }}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {offices.length > 0 ? (
+                    offices.map((office, index) => (
+                      <tr key={office.id}>
+                        <td>{index + 1}</td>
+                        <td>{office.department}</td>
+                        <td>{office.office}</td>
+                        <td>
+                          <div className="um-actions">
+                            <button
+                              className="action-btn edit-btn"
+                              onClick={() => openEditOfficeModal(office)}
+                              aria-label="Edit office"
+                              title="Edit office"
+                            >
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                                <path d="m18.5 2.5 3 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                              </svg>
+                            </button>
+                            <button
+                              className="action-btn delete-btn"
+                              onClick={() => openDeleteOfficeModal(office)}
+                              aria-label="Delete office"
+                              title="Delete office"
+                            >
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                                <path d="M10 11v6M14 11v6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                              </svg>
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan={4} style={{ textAlign: 'center', padding: '2rem', color: '#6b7280' }}>
+                        No offices found
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </>
+        ) : currentView === 'userLogs' ? (
           <>
             <div className="um-content-header">
               <h2>User Logs</h2>
@@ -1040,7 +1386,7 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
                       <td>{idx + 1}</td>
                       <td>{user.name}</td>
                       <td>{user.email}</td>
-                      <td>{user.role.charAt(0).toUpperCase() + user.role.slice(1)}</td>
+                      <td>{user.role === 'admin' ? 'GSO' : user.role.charAt(0).toUpperCase() + user.role.slice(1)}</td>
                       <td>
                         <div className="um-actions">
                           <button
@@ -1094,10 +1440,10 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
               <select
                 id="edit-role"
                 value={editRole}
-                onChange={e => setEditRole(e.target.value as 'admin' | 'faculty')}
+                onChange={e => setEditRole(e.target.value as 'admin' | 'Coordinator')}
               >
-                <option value="admin">Admin</option>
-                <option value="faculty">Faculty</option>
+                <option value="admin">GSO</option>
+                <option value="Coordinator">Coordinator</option>
               </select>
             </div>
             <div className="um-modal-actions">
@@ -1124,6 +1470,543 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
             </div>
             <div className="um-modal-actions">
               <button className="um-modal-btn delete" onClick={handleConfirmDelete}>Delete</button>
+              <button className="um-modal-btn cancel" onClick={closeModal}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add Office Modal */}
+      {modalOpen && modalType === 'addOffice' && (
+        <div className="um-modal-overlay">
+          <div className="um-modal" style={{
+            maxWidth: '500px',
+            width: '90%',
+            borderRadius: '16px',
+            boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
+            border: '1px solid rgba(255, 255, 255, 0.1)',
+            backdropFilter: 'blur(8px)',
+            background: 'linear-gradient(145deg, #ffffff 0%, #f8fafc 100%)'
+          }}>
+            <div className="um-modal-header" style={{
+              background: 'linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%)',
+              color: 'white',
+              padding: '2rem 2rem 1.5rem 2rem',
+              borderRadius: '16px 16px 0 0',
+              textAlign: 'center',
+              position: 'relative',
+              overflow: 'hidden'
+            }}>
+              <div style={{
+                position: 'absolute',
+                top: '-50%',
+                right: '-20%',
+                width: '120px',
+                height: '120px',
+                background: 'rgba(255, 255, 255, 0.1)',
+                borderRadius: '50%',
+                zIndex: 0
+              }}></div>
+              <div style={{
+                position: 'absolute',
+                bottom: '-30%',
+                left: '-10%',
+                width: '80px',
+                height: '80px',
+                background: 'rgba(255, 255, 255, 0.05)',
+                borderRadius: '50%',
+                zIndex: 0
+              }}></div>
+              <div style={{ position: 'relative', zIndex: 1 }}>
+                <div style={{
+                  width: '64px',
+                  height: '64px',
+                  background: 'rgba(255, 255, 255, 0.2)',
+                  borderRadius: '50%',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  margin: '0 auto 1rem auto',
+                  backdropFilter: 'blur(10px)',
+                  border: '2px solid rgba(255, 255, 255, 0.3)'
+                }}>
+                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M12 5v14M5 12h14"/>
+                  </svg>
+                </div>
+                <h3 style={{
+                  margin: 0,
+                  fontSize: '1.5rem',
+                  fontWeight: '700',
+                  letterSpacing: '-0.025em'
+                }}>Add New Office</h3>
+                <p style={{
+                  margin: '0.5rem 0 0 0',
+                  fontSize: '0.875rem',
+                  opacity: 0.9,
+                  fontWeight: '400'
+                }}>Create a new office entry for your organization</p>
+              </div>
+            </div>
+            
+            <div className="um-modal-body" style={{
+              padding: '2rem',
+              background: 'white'
+            }}>
+              <div style={{ marginBottom: '1.5rem' }}>
+                <label htmlFor="department" style={{
+                  display: 'block',
+                  fontSize: '0.875rem',
+                  fontWeight: '600',
+                  color: '#374151',
+                  marginBottom: '0.5rem',
+                  letterSpacing: '0.025em',
+                  textAlign: 'left'
+                }}>Department</label>
+                <div style={{ position: 'relative' }}>
+                  <input
+                    id="department"
+                    type="text"
+                    value={newOffice.department}
+                    onChange={(e) => {
+                      setNewOffice({ ...newOffice, department: e.target.value });
+                      setDepartmentDropdownOpen(true);
+                    }}
+                    placeholder="Enter or select department"
+                    style={{
+                      width: '100%',
+                      padding: '0.875rem 1rem',
+                      border: '2px solid #e5e7eb',
+                      borderRadius: '12px',
+                      fontSize: '0.875rem',
+                      fontWeight: '500',
+                      background: '#fafafa',
+                      transition: 'all 0.2s ease',
+                      outline: 'none',
+                      boxSizing: 'border-box'
+                    }}
+                    onFocus={(e) => {
+                      e.target.style.borderColor = '#3b82f6';
+                      e.target.style.background = 'white';
+                      e.target.style.boxShadow = '0 0 0 3px rgba(59, 130, 246, 0.1)';
+                      setDepartmentDropdownOpen(true);
+                    }}
+                    onBlur={(e) => {
+                      e.target.style.borderColor = '#e5e7eb';
+                      e.target.style.background = '#fafafa';
+                      e.target.style.boxShadow = 'none';
+                    }}
+                  />
+                  {departmentDropdownOpen && existingDepartments.length > 0 && (
+                    <div style={{
+                      position: 'absolute',
+                      top: '100%',
+                      left: 0,
+                      right: 0,
+                      background: 'white',
+                      border: '2px solid #e5e7eb',
+                      borderRadius: '12px',
+                      boxShadow: '0 10px 25px rgba(0, 0, 0, 0.15)',
+                      zIndex: 1000,
+                      maxHeight: '200px',
+                      overflowY: 'auto',
+                      marginTop: '4px'
+                    }}>
+                      {existingDepartments
+                        .filter(dept => dept.toLowerCase().includes(newOffice.department.toLowerCase()))
+                        .map((dept, index) => (
+                          <div
+                            key={index}
+                            onClick={() => {
+                              setNewOffice({ ...newOffice, department: dept });
+                              setDepartmentDropdownOpen(false);
+                            }}
+                            style={{
+                              padding: '0.75rem 1rem',
+                              cursor: 'pointer',
+                              borderBottom: '1px solid #f3f4f6',
+                              fontSize: '0.875rem',
+                              fontWeight: '500',
+                              color: '#374151',
+                              transition: 'all 0.15s ease'
+                            }}
+                            onMouseEnter={(e) => {
+                              e.currentTarget.style.backgroundColor = '#f8fafc';
+                              e.currentTarget.style.color = '#1f2937';
+                            }}
+                            onMouseLeave={(e) => {
+                              e.currentTarget.style.backgroundColor = 'white';
+                              e.currentTarget.style.color = '#374151';
+                            }}
+                          >
+                            {dept}
+                          </div>
+                        ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+              
+              <div>
+                <label htmlFor="office" style={{
+                  display: 'block',
+                  fontSize: '0.875rem',
+                  fontWeight: '600',
+                  color: '#374151',
+                  marginBottom: '0.5rem',
+                  letterSpacing: '0.025em',
+                  textAlign: 'left'
+                }}>Office Name</label>
+                <input
+                  id="office"
+                  type="text"
+                  value={newOffice.office}
+                  onChange={(e) => setNewOffice({ ...newOffice, office: e.target.value })}
+                  placeholder="Enter office name"
+                  style={{
+                    width: '100%',
+                    padding: '0.875rem 1rem',
+                    border: '2px solid #e5e7eb',
+                    borderRadius: '12px',
+                    fontSize: '0.875rem',
+                    fontWeight: '500',
+                    background: '#fafafa',
+                    transition: 'all 0.2s ease',
+                    outline: 'none',
+                    boxSizing: 'border-box'
+                  }}
+                  onFocus={(e) => {
+                    e.target.style.borderColor = '#3b82f6';
+                    e.target.style.background = 'white';
+                    e.target.style.boxShadow = '0 0 0 3px rgba(59, 130, 246, 0.1)';
+                  }}
+                  onBlur={(e) => {
+                    e.target.style.borderColor = '#e5e7eb';
+                    e.target.style.background = '#fafafa';
+                    e.target.style.boxShadow = 'none';
+                  }}
+                />
+              </div>
+            </div>
+            
+            <div className="um-modal-actions" style={{
+              padding: '1rem 2rem 1.5rem 2rem',
+              background: 'linear-gradient(145deg, #f8fafc 0%, #ffffff 100%)',
+              borderRadius: '0 0 16px 16px',
+              display: 'flex',
+              gap: '0.75rem',
+              justifyContent: 'flex-end'
+            }}>
+              <button 
+                className="um-modal-btn cancel" 
+                onClick={closeModal}
+                style={{
+                  background: 'white',
+                  color: '#6b7280',
+                  border: '2px solid #e5e7eb',
+                  padding: '0.75rem 1.5rem',
+                  borderRadius: '10px',
+                  fontSize: '0.875rem',
+                  fontWeight: '600',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s ease',
+                  minWidth: '100px'
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.borderColor = '#d1d5db';
+                  e.currentTarget.style.color = '#374151';
+                  e.currentTarget.style.transform = 'translateY(-1px)';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.borderColor = '#e5e7eb';
+                  e.currentTarget.style.color = '#6b7280';
+                  e.currentTarget.style.transform = 'translateY(0)';
+                }}
+              >
+                Cancel
+              </button>
+              <button 
+                className="um-modal-btn" 
+                onClick={handleAddOffice}
+                style={{
+                  background: 'linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%)',
+                  color: 'white',
+                  border: 'none',
+                  padding: '0.75rem 1.5rem',
+                  borderRadius: '10px',
+                  fontSize: '0.875rem',
+                  fontWeight: '600',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s ease',
+                  minWidth: '100px',
+                  boxShadow: '0 4px 12px rgba(59, 130, 246, 0.3)'
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.transform = 'translateY(-2px)';
+                  e.currentTarget.style.boxShadow = '0 8px 20px rgba(59, 130, 246, 0.4)';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.transform = 'translateY(0)';
+                  e.currentTarget.style.boxShadow = '0 4px 12px rgba(59, 130, 246, 0.3)';
+                }}
+              >
+                Save Office
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Office Modal */}
+      {modalOpen && modalType === 'editOffice' && selectedOffice && (
+        <div className="um-modal-overlay">
+          <div className="um-modal" style={{
+            maxWidth: '500px',
+            width: '90%',
+            borderRadius: '16px',
+            boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
+            border: '1px solid rgba(255, 255, 255, 0.1)',
+            backdropFilter: 'blur(8px)',
+            background: 'linear-gradient(145deg, #ffffff 0%, #f8fafc 100%)'
+          }}>
+            <div className="um-modal-header" style={{
+              background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+              color: 'white',
+              padding: '2rem 2rem 1.5rem 2rem',
+              borderRadius: '16px 16px 0 0',
+              textAlign: 'center',
+              position: 'relative',
+              overflow: 'hidden'
+            }}>
+              <div style={{
+                position: 'absolute',
+                top: '-50%',
+                right: '-20%',
+                width: '120px',
+                height: '120px',
+                background: 'rgba(255, 255, 255, 0.1)',
+                borderRadius: '50%',
+                zIndex: 0
+              }}></div>
+              <div style={{
+                position: 'absolute',
+                bottom: '-30%',
+                left: '-10%',
+                width: '80px',
+                height: '80px',
+                background: 'rgba(255, 255, 255, 0.05)',
+                borderRadius: '50%',
+                zIndex: 0
+              }}></div>
+              <div style={{ position: 'relative', zIndex: 1 }}>
+                <div style={{
+                  width: '64px',
+                  height: '64px',
+                  background: 'rgba(255, 255, 255, 0.2)',
+                  borderRadius: '50%',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  margin: '0 auto 1rem auto',
+                  backdropFilter: 'blur(10px)',
+                  border: '2px solid rgba(255, 255, 255, 0.3)'
+                }}>
+                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                    <path d="m18.5 2.5 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                  </svg>
+                </div>
+                <h3 style={{
+                  margin: 0,
+                  fontSize: '1.5rem',
+                  fontWeight: '700',
+                  letterSpacing: '-0.025em'
+                }}>Edit Office</h3>
+                <p style={{
+                  margin: '0.5rem 0 0 0',
+                  fontSize: '0.875rem',
+                  opacity: 0.9,
+                  fontWeight: '400'
+                }}>Update office information</p>
+              </div>
+            </div>
+            
+            <div className="um-modal-body" style={{
+              padding: '2rem',
+              background: 'white'
+            }}>
+              <div style={{ marginBottom: '1.5rem' }}>
+                <label htmlFor="edit-department" style={{
+                  display: 'block',
+                  fontSize: '0.875rem',
+                  fontWeight: '600',
+                  color: '#374151',
+                  marginBottom: '0.5rem',
+                  letterSpacing: '0.025em',
+                  textAlign: 'left'
+                }}>Department</label>
+                <input
+                  id="edit-department"
+                  type="text"
+                  value={editOffice.department}
+                  onChange={(e) => setEditOffice({ ...editOffice, department: e.target.value })}
+                  placeholder="Enter department"
+                  style={{
+                    width: '100%',
+                    padding: '0.875rem 1rem',
+                    border: '2px solid #e5e7eb',
+                    borderRadius: '12px',
+                    fontSize: '0.875rem',
+                    fontWeight: '500',
+                    background: '#fafafa',
+                    transition: 'all 0.2s ease',
+                    outline: 'none',
+                    boxSizing: 'border-box'
+                  }}
+                  onFocus={(e) => {
+                    e.target.style.borderColor = '#10b981';
+                    e.target.style.background = 'white';
+                    e.target.style.boxShadow = '0 0 0 3px rgba(16, 185, 129, 0.1)';
+                  }}
+                  onBlur={(e) => {
+                    e.target.style.borderColor = '#e5e7eb';
+                    e.target.style.background = '#fafafa';
+                    e.target.style.boxShadow = 'none';
+                  }}
+                />
+              </div>
+              
+              <div>
+                <label htmlFor="edit-office" style={{
+                  display: 'block',
+                  fontSize: '0.875rem',
+                  fontWeight: '600',
+                  color: '#374151',
+                  marginBottom: '0.5rem',
+                  letterSpacing: '0.025em',
+                  textAlign: 'left'
+                }}>Office Name</label>
+                <input
+                  id="edit-office"
+                  type="text"
+                  value={editOffice.office}
+                  onChange={(e) => setEditOffice({ ...editOffice, office: e.target.value })}
+                  placeholder="Enter office name"
+                  style={{
+                    width: '100%',
+                    padding: '0.875rem 1rem',
+                    border: '2px solid #e5e7eb',
+                    borderRadius: '12px',
+                    fontSize: '0.875rem',
+                    fontWeight: '500',
+                    background: '#fafafa',
+                    transition: 'all 0.2s ease',
+                    outline: 'none',
+                    boxSizing: 'border-box'
+                  }}
+                  onFocus={(e) => {
+                    e.target.style.borderColor = '#10b981';
+                    e.target.style.background = 'white';
+                    e.target.style.boxShadow = '0 0 0 3px rgba(16, 185, 129, 0.1)';
+                  }}
+                  onBlur={(e) => {
+                    e.target.style.borderColor = '#e5e7eb';
+                    e.target.style.background = '#fafafa';
+                    e.target.style.boxShadow = 'none';
+                  }}
+                />
+              </div>
+            </div>
+            
+            <div className="um-modal-actions" style={{
+              padding: '1rem 2rem 1.5rem 2rem',
+              background: 'linear-gradient(145deg, #f8fafc 0%, #ffffff 100%)',
+              borderRadius: '0 0 16px 16px',
+              display: 'flex',
+              gap: '0.75rem',
+              justifyContent: 'flex-end'
+            }}>
+              <button 
+                className="um-modal-btn cancel" 
+                onClick={closeModal}
+                style={{
+                  background: 'white',
+                  color: '#6b7280',
+                  border: '2px solid #e5e7eb',
+                  padding: '0.75rem 1.5rem',
+                  borderRadius: '10px',
+                  fontSize: '0.875rem',
+                  fontWeight: '600',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s ease',
+                  minWidth: '100px'
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.borderColor = '#d1d5db';
+                  e.currentTarget.style.color = '#374151';
+                  e.currentTarget.style.transform = 'translateY(-1px)';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.borderColor = '#e5e7eb';
+                  e.currentTarget.style.color = '#6b7280';
+                  e.currentTarget.style.transform = 'translateY(0)';
+                }}
+              >
+                Cancel
+              </button>
+              <button 
+                className="um-modal-btn" 
+                onClick={handleEditOffice}
+                style={{
+                  background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+                  color: 'white',
+                  border: 'none',
+                  padding: '0.75rem 1.5rem',
+                  borderRadius: '10px',
+                  fontSize: '0.875rem',
+                  fontWeight: '600',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s ease',
+                  minWidth: '100px',
+                  boxShadow: '0 4px 12px rgba(16, 185, 129, 0.3)'
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.transform = 'translateY(-2px)';
+                  e.currentTarget.style.boxShadow = '0 8px 20px rgba(16, 185, 129, 0.4)';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.transform = 'translateY(0)';
+                  e.currentTarget.style.boxShadow = '0 4px 12px rgba(16, 185, 129, 0.3)';
+                }}
+              >
+                Update Office
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Office Modal */}
+      {modalOpen && modalType === 'deleteOffice' && selectedOffice && (
+        <div className="um-modal-overlay">
+          <div className="um-modal">
+            <div className="um-modal-header delete">
+              <span className="um-modal-icon" aria-hidden="true">
+                <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/>
+                  <path d="M10 11v6M14 11v6"/>
+                </svg>
+              </span>
+              <h3 className="um-modal-title">Delete Office</h3>
+            </div>
+            <div className="um-modal-body">
+              <p>Are you sure you want to delete <strong>{selectedOffice.department} - {selectedOffice.office}</strong>?</p>
+              <p style={{ color: '#ef4444', fontSize: '0.875rem', marginTop: '0.5rem' }}>
+                This action cannot be undone.
+              </p>
+            </div>
+            <div className="um-modal-actions">
+              <button className="um-modal-btn delete" onClick={handleDeleteOffice}>Delete</button>
               <button className="um-modal-btn cancel" onClick={closeModal}>Cancel</button>
             </div>
           </div>

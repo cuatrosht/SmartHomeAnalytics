@@ -15,6 +15,39 @@ import { ref, onValue, off, get, update } from 'firebase/database'
 import { realtimeDb } from '../firebase/config'
 import './Dashboard.css'
 
+// Function to format numbers with commas and decimals
+const formatNumber = (num: number, decimals: number = 3): string => {
+  return num.toFixed(decimals).replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+}
+
+// Function to calculate monthly energy for a device
+const calculateMonthlyEnergy = (outlet: any): string => {
+  try {
+    const now = new Date()
+    const currentYear = now.getFullYear()
+    const currentMonth = now.getMonth() + 1
+    
+    // Get all days in the current month
+    const daysInMonth = new Date(currentYear, currentMonth, 0).getDate()
+    let totalMonthlyEnergy = 0
+    
+    // Sum up energy for all days in the current month
+    for (let day = 1; day <= daysInMonth; day++) {
+      const dateKey = `day_${currentYear}_${String(currentMonth).padStart(2, '0')}_${String(day).padStart(2, '0')}`
+      const dayData = outlet.daily_logs?.[dateKey]
+      if (dayData && dayData.total_energy) {
+        totalMonthlyEnergy += dayData.total_energy // Already in kW from database
+      }
+    }
+    
+    // Convert to watts and format
+    return `${formatNumber(totalMonthlyEnergy * 1000)} Wh`
+  } catch (error) {
+    console.error('Error calculating monthly energy:', error)
+    return '0.000 Wh'
+  }
+}
+
 // Function to calculate total monthly energy for combined limit group
 const calculateCombinedMonthlyEnergy = (devicesData: any, selectedOutlets: string[]): number => {
   try {
@@ -250,8 +283,16 @@ interface DeviceData {
   peak_power: number
   total_energy: number
   lifetime_energy: number
+  monthUsage?: string // Add monthly usage
   officeRoom: string // Add office information
   appliances: string // Add appliance information
+  office_info?: {
+    assigned_date: string
+    office: string
+    department?: string
+    appliance?: string
+    enable_power_scheduling?: boolean
+  }
 }
 
 export default function Dashboard({ onNavigate }: DashboardProps) {
@@ -402,14 +443,20 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
   const [deptOpen, setDeptOpen] = useState(false)
   const [filterOpen, setFilterOpen] = useState(false)
   const [filterOpen2, setFilterOpen2] = useState(false)
+  const [filterOpen3, setFilterOpen3] = useState(false)
   const [selectedFilter1, setSelectedFilter1] = useState('Day')
   const [selectedFilter2, setSelectedFilter2] = useState('Day')
+  const [selectedFilter3, setSelectedFilter3] = useState('Day')
   const [timeSegment, setTimeSegment] = useState('Week')
-  const [department, setDepartment] = useState('College of Computer and Multimedia Studies')
+  const [department, setDepartment] = useState('All Departments')
+  const [office, setOffice] = useState('All Offices')
   const [devices, setDevices] = useState<DeviceData[]>([])
   const [totalPower, setTotalPower] = useState(0)
   const [totalEnergy, setTotalEnergy] = useState(0)
   const [monthlyEnergy, setMonthlyEnergy] = useState(0)
+  const [officesData, setOfficesData] = useState<any>({})
+  const [offices, setOffices] = useState<string[]>([])
+  const [officeOpen, setOfficeOpen] = useState(false)
 
   // Idle detection state
   const [deviceActivity, setDeviceActivity] = useState<Record<string, {
@@ -431,6 +478,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
   const [filteredDevices, setFilteredDevices] = useState<DeviceData[]>([])
   const [filteredDevicesRank, setFilteredDevicesRank] = useState<DeviceData[]>([])
   const [overallConsumptionDevices, setOverallConsumptionDevices] = useState<DeviceData[]>([])
+  const [officeRankingData, setOfficeRankingData] = useState<any[]>([])
   const dropdownRef = useRef<HTMLDivElement | null>(null)
 
   // Philippine electricity rate (per kWh) - automatically updated
@@ -1149,6 +1197,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
               peak_power: todayLogs?.peak_power || 0,
               total_energy: todayLogs?.total_energy || 0,
               lifetime_energy: lifetimeEnergyKw, // Use the raw kW value for calculations
+              monthUsage: calculateMonthlyEnergy(outlet), // Calculate monthly energy
               officeRoom: officeInfo,
               appliances: outlet.office_info?.appliance || 'Unassigned'
             }
@@ -1209,9 +1258,11 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
               const currentControlState = deviceData.control?.device || 'off'
               const currentMainStatus = deviceData.relay_control?.main_status || 'ON'
               
-              // Always check schedule - main_status is just a manual override flag
-              // The real control is through control.device which we will update based on schedule
-              console.log(`Dashboard: Device ${outletKey} main status is ${currentMainStatus} - checking schedule anyway`)
+              // RESPECT bypass mode - if main_status is ON, don't override it (device is in bypass mode)
+              if (currentMainStatus === 'ON') {
+                console.log(`Dashboard: Device ${outletKey} has main_status = 'ON' - respecting bypass mode, skipping schedule check`)
+                continue
+              }
               
               // Check if device should be active based on current time and schedule
               // Skip individual limit check if device is in combined group (combined limit takes precedence)
@@ -1285,6 +1336,12 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
               continue
             }
             
+            // Check if main_status is 'ON' - if so, skip automatic power limit enforcement (device is in bypass mode)
+            if (currentMainStatus === 'ON') {
+              console.log(`Dashboard: Device ${outletKey} main_status is ON - respecting bypass mode, skipping automatic power limit enforcement`)
+              continue
+            }
+            
             // Check if device is in a combined group
             const outletDisplayName = outletKey.replace('_', ' ')
             const isInCombinedGroup = combinedLimitInfo?.enabled && 
@@ -1331,7 +1388,34 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                 }
               }
             } else {
-              console.log(`Dashboard: Device ${outletKey} is in combined group - skipping individual daily limit check (monthly limit takes precedence)`)
+              console.log(`Dashboard: Device ${outletKey} is in combined group - checking combined group power limits`)
+              
+              // For devices in combined groups, check combined monthly limit
+              if (combinedLimitInfo?.enabled && combinedLimitInfo?.selectedOutlets?.length > 0) {
+                const totalMonthlyEnergy = calculateCombinedMonthlyEnergy(devicesData, combinedLimitInfo.selectedOutlets)
+                const combinedLimitkW = combinedLimitInfo.combinedLimit / 1000 // Convert to kW
+                
+                console.log(`Dashboard: Combined group limit check for ${outletKey}:`, {
+                  totalMonthlyEnergy: `${(totalMonthlyEnergy * 1000).toFixed(0)}W`,
+                  combinedLimit: `${combinedLimitInfo.combinedLimit}W`,
+                  exceedsLimit: totalMonthlyEnergy >= combinedLimitkW
+                })
+                
+                if (totalMonthlyEnergy >= combinedLimitkW) {
+                  console.log(`Dashboard: Combined monthly limit exceeded - turning off ${outletKey}`)
+                  
+                  await update(ref(realtimeDb, `devices/${outletKey}/control`), {
+                    device: 'off'
+                  })
+                  
+                  // Also turn off main status to prevent immediate re-activation
+                  await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
+                    main_status: 'OFF'
+                  })
+                  
+                  console.log(`Dashboard: Device ${outletKey} turned OFF due to combined monthly limit exceeded`)
+                }
+              }
             }
           }
         }
@@ -1340,11 +1424,62 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
       }
     }
     
-    // DISABLED: Schedule check to prevent conflicts with centralized Schedule.tsx
-    // checkScheduleAndUpdateDevices()
+    // Monthly limit check for combined groups
+    const checkMonthlyLimitAndTurnOffDevices = async () => {
+      try {
+        if (!combinedLimitInfo?.enabled || combinedLimitInfo?.selectedOutlets?.length === 0) {
+          return
+        }
+
+        const devicesRef = ref(realtimeDb, 'devices')
+        const snapshot = await get(devicesRef)
+        
+        if (snapshot.exists()) {
+          const devicesData = snapshot.val()
+          
+          // Calculate total monthly energy for combined group
+          const totalMonthlyEnergy = calculateCombinedMonthlyEnergy(devicesData, combinedLimitInfo.selectedOutlets)
+          const combinedLimitWatts = combinedLimitInfo.combinedLimit
+          const combinedLimitkW = combinedLimitWatts / 1000 // Convert to kW
+          
+          console.log(`Dashboard: Monthly limit check - Total: ${(totalMonthlyEnergy * 1000).toFixed(0)}W / Limit: ${combinedLimitWatts}W`)
+          
+          if (totalMonthlyEnergy >= combinedLimitkW) {
+            console.log(`Dashboard: Monthly limit exceeded! Turning off all devices in combined group.`)
+            
+            // Turn off all devices in the combined group
+            for (const outletKey of combinedLimitInfo.selectedOutlets) {
+              const firebaseKey = outletKey.replace(' ', '_')
+              
+              try {
+                // Turn off device control
+                const controlRef = ref(realtimeDb, `devices/${firebaseKey}/control`)
+                await update(controlRef, { device: 'off' })
+                
+                // Turn off main status to prevent immediate re-activation
+                const mainStatusRef = ref(realtimeDb, `devices/${firebaseKey}/relay_control`)
+                await update(mainStatusRef, { main_status: 'OFF' })
+                
+                console.log(`✅ TURNED OFF: ${outletKey} (${firebaseKey}) due to monthly limit`)
+              } catch (error) {
+                console.error(`❌ FAILED to turn off ${outletKey}:`, error)
+              }
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Dashboard: Error in monthly limit check:', error)
+      }
+    }
+
+    // Re-enable schedule checking with bypass support
+    checkScheduleAndUpdateDevices()
     
-    // Only run power limit check (no conflicts with schedule)
+    // Run power limit check
     checkPowerLimitsAndTurnOffDevices()
+    
+    // Run monthly limit check
+    checkMonthlyLimitAndTurnOffDevices()
     
     // Add manual test function for debugging
     ;(window as any).testDashboardSchedule = checkScheduleAndUpdateDevices
@@ -1362,14 +1497,15 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     }
     
     // Set up intervals for automatic checking
-    // DISABLED: Schedule checking is now centralized in Schedule.tsx to prevent conflicts
-    // const scheduleInterval = setInterval(checkScheduleAndUpdateDevices, 10000) // 10 seconds (more frequent for short schedules)
+    const scheduleInterval = setInterval(checkScheduleAndUpdateDevices, 10000) // 10 seconds (more frequent for short schedules)
     const powerLimitInterval = setInterval(checkPowerLimitsAndTurnOffDevices, 30000) // 30 seconds (more frequent for power limits)
+    const monthlyLimitInterval = setInterval(checkMonthlyLimitAndTurnOffDevices, 60000) // 1 minute for monthly limit check
     
     // Cleanup intervals on unmount
     return () => {
-      // clearInterval(scheduleInterval) // Disabled
+      clearInterval(scheduleInterval)
       clearInterval(powerLimitInterval)
+      clearInterval(monthlyLimitInterval)
       
       // Cleanup auto-turnoff timers
       Object.values(autoTurnoffTimers).forEach(timer => {
@@ -1585,41 +1721,373 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     }
   })
 
-  const departments = [
-    'College of Computer and Multimedia Studies',
-    'Computer Laboratory 1',
-    'Computer Laboratory 2', 
-    'Computer Laboratory 3',
-    "Dean's Office",
-    'Faculty Office'
-  ]
+  const [departments, setDepartments] = useState<string[]>(['All Departments'])
 
-  // Filter devices based on selected department (for Overall Consumption metrics)
+  // Debug departments state
   useEffect(() => {
-    let filteredByOffice = devices
-    
-    // Filter by office selection
-    if (department !== 'College of Computer and Multimedia Studies') {
-      filteredByOffice = devices.filter(device => device.officeRoom === department)
+    console.log('Departments state updated:', departments)
+    console.log('Available departments for dropdown:', departments)
+  }, [departments])
+
+  // Function to get filtered offices based on selected department
+  const getFilteredOffices = () => {
+    if (department === 'All Departments') {
+      return ['All Offices', ...offices]
     }
     
-    // Set filtered devices for Overall Consumption metrics (department only)
-    const sorted = [...filteredByOffice].sort((a, b) => {
+    const filteredOffices: string[] = ['All Offices']
+    
+    Object.values(officesData).forEach((officeData: any) => {
+      if (officeData.department === department && officeData.office) {
+        filteredOffices.push(officeData.office)
+      }
+    })
+    
+    return filteredOffices
+  }
+
+  // Function to calculate office ranking data
+  const calculateOfficeRanking = async (devices: DeviceData[], period: string) => {
+    try {
+      const officeConsumptionMap = new Map<string, {
+        office: string
+        department: string
+        totalConsumption: number
+        totalMonthlyConsumption: number
+        deviceCount: number
+        outlets: string[]
+      }>()
+
+      // Group devices by office and calculate total consumption
+      for (const device of devices) {
+        let officeName = 'Unknown Office'
+        let departmentName = 'Unknown Department'
+        
+        if (device.office_info && device.office_info.office && device.office_info.department) {
+          officeName = device.office_info.office
+          departmentName = device.office_info.department
+        } else if (device.officeRoom && device.officeRoom !== '—') {
+          officeName = device.officeRoom
+          // Try to find department from officesData
+          const officeData = Object.values(officesData).find((data: any) => 
+            data.office === device.officeRoom
+          )
+          if (officeData && (officeData as any).department) {
+            departmentName = (officeData as any).department
+          }
+        }
+
+        const key = `${departmentName}|${officeName}`
+        
+        if (!officeConsumptionMap.has(key)) {
+          officeConsumptionMap.set(key, {
+            office: officeName,
+            department: departmentName,
+            totalConsumption: 0,
+            totalMonthlyConsumption: 0,
+            deviceCount: 0,
+            outlets: []
+          })
+        }
+
+        const officeData = officeConsumptionMap.get(key)!
+        // Use total_energy which contains time-period filtered data
+        officeData.totalConsumption += device.total_energy || 0
+        // Sum up monthly consumption (parse the string value)
+        const monthlyValue = parseFloat((device.monthUsage || '0 Wh').replace(/[^\d.]/g, '')) || 0
+        officeData.totalMonthlyConsumption += monthlyValue
+        officeData.deviceCount += 1
+        officeData.outlets.push(device.outletId.split('_')[1] || device.outletId)
+      }
+
+      // Convert to array and sort by consumption
+      const rankingData = Array.from(officeConsumptionMap.values())
+        .sort((a, b) => b.totalConsumption - a.totalConsumption)
+        .map((item, index) => ({
+          rank: index + 1,
+          office: item.office,
+          department: item.department,
+          outlets: item.outlets.join(', '),
+          consumption: item.totalConsumption * 1000, // Convert to Wh
+          monthConsumption: item.totalMonthlyConsumption, // Already in Wh
+          deviceCount: item.deviceCount
+        }))
+
+      setOfficeRankingData(rankingData)
+      
+      console.log('Office Ranking calculated:', {
+        period,
+        totalOffices: rankingData.length,
+        totalDevices: devices.length,
+        rankingData: rankingData.slice(0, 5), // Log top 5 for debugging
+        sampleDeviceData: devices.slice(0, 2).map(d => ({
+          outletId: d.outletId,
+          total_energy: d.total_energy,
+          office_info: d.office_info,
+          officeRoom: d.officeRoom
+        }))
+      })
+    } catch (error) {
+      console.error('Error calculating office ranking:', error)
+      setOfficeRankingData([])
+    }
+  }
+
+  // Fetch offices data from database
+  useEffect(() => {
+    const fetchOfficesData = async () => {
+      try {
+        console.log('Fetching offices data from database...')
+        const officesRef = ref(realtimeDb, 'offices')
+        const snapshot = await get(officesRef)
+        
+        console.log('Database snapshot exists:', snapshot.exists())
+        console.log('Database snapshot value:', snapshot.val())
+        
+        if (snapshot.exists()) {
+          const officesData = snapshot.val()
+          setOfficesData(officesData)
+          
+          // Extract unique departments and offices
+          const departmentsSet = new Set<string>()
+          const officesSet = new Set<string>()
+          
+          console.log('Processing offices data:', Object.keys(officesData))
+          
+          Object.values(officesData).forEach((office: any) => {
+            console.log('Processing office entry:', {
+              department: office.department,
+              office: office.office,
+              fullEntry: office
+            })
+            if (office.department) {
+              departmentsSet.add(office.department)
+            }
+            if (office.office) {
+              officesSet.add(office.office)
+            }
+          })
+          
+          // Update departments array with unique departments from database
+          const uniqueDepartments = Array.from(departmentsSet)
+          console.log('Fetched departments from database:', uniqueDepartments)
+          console.log('Setting departments to:', ['All Departments', ...uniqueDepartments])
+          setDepartments(['All Departments', ...uniqueDepartments])
+          
+          // Update offices array with unique offices from database
+          const uniqueOffices = Array.from(officesSet)
+          console.log('Fetched offices from database:', uniqueOffices)
+          setOffices(uniqueOffices)
+        } else {
+          console.log('No offices data found in database')
+          // Keep only 'All Departments' if no data exists
+          setDepartments(['All Departments'])
+        }
+      } catch (error) {
+        console.error('Error fetching offices data:', error)
+        // Keep only 'All Departments' on error
+        setDepartments(['All Departments'])
+      }
+    }
+    
+    fetchOfficesData()
+  }, [])
+
+  // Reset office selection when department changes
+  useEffect(() => {
+    setOffice('All Offices')
+  }, [department])
+
+  // Filter devices based on selected department and office (for Overall Consumption metrics)
+  useEffect(() => {
+    let filteredDevices = devices
+    
+    // Filter by department and office selection
+    if (department !== 'All Departments') {
+      if (office !== 'All Offices') {
+        // Filter by specific office within the selected department
+        filteredDevices = devices.filter(device => {
+          // Check if device has office_info with department and office
+          if (device.office_info && device.office_info.department && device.office_info.office) {
+            console.log('Device filtering check (office_info):', {
+              deviceOfficeRoom: device.officeRoom,
+              deviceOfficeInfo: device.office_info,
+              selectedOffice: office,
+              selectedDepartment: department,
+              officeMatch: device.office_info.office === office,
+              departmentMatch: device.office_info.department === department
+            })
+            
+            // Check if the device's office_info matches the selected department and office
+            return device.office_info.department === department && 
+                   device.office_info.office === office
+          } else if (officesData && device.officeRoom) {
+            // Fallback: Use officesData if office_info is not available
+            const deviceOfficeData = Object.values(officesData).find((officeData: any) => 
+              officeData.office === device.officeRoom
+            )
+            
+            console.log('Device filtering check (fallback):', {
+              deviceOfficeRoom: device.officeRoom,
+              selectedOffice: office,
+              selectedDepartment: department,
+              deviceOfficeData: deviceOfficeData,
+              officeMatch: deviceOfficeData && (deviceOfficeData as any).office === office,
+              departmentMatch: deviceOfficeData && (deviceOfficeData as any).department === department
+            })
+            
+            // Check if the office matches AND belongs to the selected department
+            return deviceOfficeData && 
+                   (deviceOfficeData as any).office === office && 
+                   (deviceOfficeData as any).department === department
+          }
+          return false
+        })
+      } else {
+        // Filter by department (all offices in that department)
+        filteredDevices = devices.filter(device => {
+          // Check if device has office_info with department
+          if (device.office_info && device.office_info.department) {
+            console.log('Department filtering check (office_info):', {
+              deviceOfficeRoom: device.officeRoom,
+              deviceOfficeInfo: device.office_info,
+              selectedDepartment: department,
+              departmentMatch: device.office_info.department === department
+            })
+            
+            // Check if the device's office_info department matches the selected department
+            return device.office_info.department === department
+          } else if (officesData && device.officeRoom) {
+            // Fallback: Use officesData if office_info is not available
+            const deviceOfficeData = Object.values(officesData).find((officeData: any) => 
+              officeData.office === device.officeRoom
+            )
+            
+            console.log('Department filtering check (fallback):', {
+              deviceOfficeRoom: device.officeRoom,
+              selectedDepartment: department,
+              deviceOfficeData: deviceOfficeData,
+              officeDepartment: deviceOfficeData ? (deviceOfficeData as any).department : 'NOT_FOUND',
+              matches: deviceOfficeData && (deviceOfficeData as any).department === department
+            })
+            
+            return deviceOfficeData && (deviceOfficeData as any).department === department
+          }
+          return false
+        })
+      }
+    }
+    
+    console.log('Dashboard filtering:', {
+      department,
+      office,
+      totalDevices: devices.length,
+      filteredDevices: filteredDevices.length,
+      officesData: Object.keys(officesData).length,
+      allDevicesWithOfficeInfo: devices.map(device => ({
+        outletId: device.outletId,
+        officeRoom: device.officeRoom,
+        office_info: device.office_info,
+        hasOfficeInfo: !!device.office_info,
+        hasDepartment: !!(device.office_info && device.office_info.department),
+        hasOffice: !!(device.office_info && device.office_info.office)
+      })),
+      filteredDeviceDetails: filteredDevices.map(device => ({
+        outletId: device.outletId,
+        officeRoom: device.officeRoom,
+        appliances: device.appliances,
+        office_info: device.office_info
+      }))
+    })
+    
+    // Set filtered devices for Overall Consumption metrics
+    const sorted = [...filteredDevices].sort((a, b) => {
       const outletNumA = parseInt(a.outletId.split('_')[1]) || 0
       const outletNumB = parseInt(b.outletId.split('_')[1]) || 0
       return outletNumA - outletNumB
     })
     setOverallConsumptionDevices(sorted)
-  }, [department, devices])
+  }, [department, office, devices, officesData])
 
   // Filter devices for Energy Consumption tables (department + time period)
   useEffect(() => {
     const updateEnergyConsumptionTables = async () => {
       let filteredByOffice = devices
       
-      // First filter by office selection
-      if (department !== 'College of Computer and Multimedia Studies') {
-        filteredByOffice = devices.filter(device => device.officeRoom === department)
+      // Filter by department and office selection
+      if (department !== 'All Departments') {
+        if (office !== 'All Offices') {
+          // Filter by specific office within the selected department
+          filteredByOffice = devices.filter(device => {
+            // Check if device has office_info with department and office
+            if (device.office_info && device.office_info.department && device.office_info.office) {
+              console.log('Energy consumption filtering check (office_info):', {
+                deviceOfficeRoom: device.officeRoom,
+                deviceOfficeInfo: device.office_info,
+                selectedOffice: office,
+                selectedDepartment: department,
+                officeMatch: device.office_info.office === office,
+                departmentMatch: device.office_info.department === department
+              })
+              
+              // Check if the device's office_info matches the selected department and office
+              return device.office_info.department === department && 
+                     device.office_info.office === office
+            } else if (officesData && device.officeRoom) {
+              // Fallback: Use officesData if office_info is not available
+              const deviceOfficeData = Object.values(officesData).find((officeData: any) => 
+                officeData.office === device.officeRoom
+              )
+              
+              console.log('Energy consumption filtering check (fallback):', {
+                deviceOfficeRoom: device.officeRoom,
+                selectedOffice: office,
+                selectedDepartment: department,
+                deviceOfficeData: deviceOfficeData,
+                officeMatch: deviceOfficeData && (deviceOfficeData as any).office === office,
+                departmentMatch: deviceOfficeData && (deviceOfficeData as any).department === department
+              })
+              
+              // Check if the office matches AND belongs to the selected department
+              return deviceOfficeData && 
+                     (deviceOfficeData as any).office === office && 
+                     (deviceOfficeData as any).department === department
+            }
+            return false
+          })
+        } else {
+          // Filter by department (all offices in that department)
+          filteredByOffice = devices.filter(device => {
+            // Check if device has office_info with department
+            if (device.office_info && device.office_info.department) {
+              console.log('Energy consumption department filtering (office_info):', {
+                deviceOfficeRoom: device.officeRoom,
+                deviceOfficeInfo: device.office_info,
+                selectedDepartment: department,
+                departmentMatch: device.office_info.department === department
+              })
+              
+              // Check if the device's office_info department matches the selected department
+              return device.office_info.department === department
+            } else if (officesData && device.officeRoom) {
+              // Fallback: Use officesData if office_info is not available
+              const deviceOfficeData = Object.values(officesData).find((officeData: any) => 
+                officeData.office === device.officeRoom
+              )
+              
+              console.log('Energy consumption department filtering (fallback):', {
+                deviceOfficeRoom: device.officeRoom,
+                selectedDepartment: department,
+                deviceOfficeData: deviceOfficeData,
+                officeDepartment: deviceOfficeData ? (deviceOfficeData as any).department : 'NOT_FOUND',
+                matches: deviceOfficeData && (deviceOfficeData as any).department === department
+              })
+              
+              return deviceOfficeData && (deviceOfficeData as any).department === department
+            }
+            return false
+          })
+        }
       }
       
       // Apply time period filtering for Per Device Consumption table
@@ -1654,11 +2122,28 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
           return b.total_energy - a.total_energy
         })
         setFilteredDevicesRank(sorted)
+        
+        console.log('Energy consumption filtering:', {
+          department,
+          office,
+          totalDevices: devices.length,
+          filteredByOffice: filteredByOffice.length,
+          filteredDevices: filteredDevices.length,
+          filteredDevicesRank: sorted.length
+        })
+      }
+
+      // Calculate office ranking with time period filtering
+      if (selectedFilter3 !== 'Day') {
+        const timeFilteredForRanking = await filterDevicesByPeriod(filteredByOffice, selectedFilter3)
+        await calculateOfficeRanking(timeFilteredForRanking, selectedFilter3)
+      } else {
+        await calculateOfficeRanking(filteredByOffice, selectedFilter3)
       }
     }
     
     updateEnergyConsumptionTables()
-  }, [department, devices, selectedFilter1, selectedFilter2])
+  }, [department, office, devices, officesData, selectedFilter1, selectedFilter2, selectedFilter3])
 
   // Calculate current month energy when overall consumption devices change (respects department filter only)
   useEffect(() => {
@@ -1718,9 +2203,17 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
   useEffect(() => {
     const onDocClick = (e: MouseEvent) => {
       if (!dropdownRef.current) return
-      if (!dropdownRef.current.contains(e.target as Node)) setDeptOpen(false)
+      if (!dropdownRef.current.contains(e.target as Node)) {
+        setDeptOpen(false)
+        setOfficeOpen(false)
+      }
     }
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setDeptOpen(false) }
+    const onKey = (e: KeyboardEvent) => { 
+      if (e.key === 'Escape') {
+        setDeptOpen(false)
+        setOfficeOpen(false)
+      }
+    }
     document.addEventListener('mousedown', onDocClick)
     document.addEventListener('keydown', onKey)
     return () => {
@@ -1762,23 +2255,46 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
             <p>Monitor and optimize your electricity consumption</p>
           </div>
         </div>
-        <div className="dropdown" ref={dropdownRef}>
-          <button className="hero-pill" type="button" onClick={() => setDeptOpen(v => !v)} aria-haspopup="listbox" aria-expanded={deptOpen} aria-controls="dept-menu">
-            <span>{department}</span>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style={{ transform: deptOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform .2s ease' }}>
-              <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-            </svg>
-          </button>
-          {deptOpen && (
-            <ul id="dept-menu" role="listbox" className="dropdown-menu">
-              {departments.map((d) => (
-                <li key={d}>
-                  <button role="option" aria-selected={department === d} className={`menu-item ${department === d ? 'selected' : ''}`} onClick={() => { setDepartment(d); setDeptOpen(false) }}>
-                    {d}
-                  </button>
-                </li>
-              ))}
-            </ul>
+        <div className="dropdowns-container" ref={dropdownRef}>
+          <div className="dropdown">
+            <button className="hero-pill" type="button" onClick={() => setDeptOpen(v => !v)} aria-haspopup="listbox" aria-expanded={deptOpen} aria-controls="dept-menu">
+              <span>{department}</span>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style={{ transform: deptOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform .2s ease' }}>
+                <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+              </svg>
+            </button>
+            {deptOpen && (
+              <ul id="dept-menu" role="listbox" className="dropdown-menu">
+                {departments.map((d) => (
+                  <li key={d}>
+                    <button role="option" aria-selected={department === d} className={`menu-item ${department === d ? 'selected' : ''}`} onClick={() => { setDepartment(d); setDeptOpen(false) }}>
+                      {d}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          {department !== 'All Departments' && (
+            <div className="dropdown">
+              <button className="hero-pill" type="button" onClick={() => setOfficeOpen(v => !v)} aria-haspopup="listbox" aria-expanded={officeOpen} aria-controls="office-menu">
+                <span>{office}</span>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style={{ transform: officeOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform .2s ease' }}>
+                  <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                </svg>
+              </button>
+              {officeOpen && (
+                <ul id="office-menu" role="listbox" className="dropdown-menu">
+                  {getFilteredOffices().map((o) => (
+                    <li key={o}>
+                      <button role="option" aria-selected={office === o} className={`menu-item ${office === o ? 'selected' : ''}`} onClick={() => { setOffice(o); setOfficeOpen(false) }}>
+                        {o}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           )}
         </div>
       </section>
@@ -1788,9 +2304,11 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
           <span className="bolt" aria-hidden="true">⚡</span>
           <h2>Overall Consumption</h2>
           <p className="panel-subtitle">
-            {department === 'College of Computer and Multimedia Studies' 
-              ? `Showing data for all offices (${overallConsumptionDevices.length} devices)`
-              : `Showing data for ${department} (${overallConsumptionDevices.length} devices)`
+            {department === 'All Departments' 
+              ? `Showing data for all departments (${overallConsumptionDevices.length} devices)`
+              : office === 'All Offices'
+                ? `Showing data for ${department} department (${overallConsumptionDevices.length} devices)`
+                : `Showing data for ${office} office (${overallConsumptionDevices.length} devices)`
             }
           </p>
         </header>
@@ -1953,7 +2471,8 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                     <th>ID</th>
                     <th>Outlet Number</th>
                     <th>Appliances</th>
-                    <th>Consumption</th>
+                    <th>Today Consumption</th>
+                    <th>Month Consumption</th>
                     <th>Office/ Room</th>
                     <th>Status</th>
                   </tr>
@@ -1966,6 +2485,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                         <td>{device.outletId.split('_')[1]}</td>
                         <td>{device.appliances}</td>
                         <td>{formatNumber(device.total_energy * 1000)} Wh</td>
+                        <td>{device.monthUsage || '0.000 Wh'}</td>
                         <td>{device.officeRoom}</td>
                         <td>
                           {getStatusBadge(device.status)}
@@ -1974,7 +2494,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                     ))
                   ) : (
                     <tr>
-                      <td colSpan={6} className="no-data-message">
+                      <td colSpan={7} className="no-data-message">
                          {`No data available for ${selectedFilter1.toLowerCase()} period`}
                       </td>
                     </tr>
@@ -2058,7 +2578,8 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                     <th>ID</th>
                     <th>Outlet number</th>
                     <th>Appliances</th>
-                    <th>Consumption</th>
+                    <th>Today Consumption</th>
+                    <th>Month Consumption</th>
                     <th>Office/ Room</th>
                     <th>Status</th>
                   </tr>
@@ -2073,6 +2594,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                         <td>{device.outletId.split('_')[1]}</td>
                         <td>{device.appliances}</td>
                         <td>{formatNumber(device.total_energy * 1000)} Wh</td>
+                        <td>{device.monthUsage || '0.000 Wh'}</td>
                         <td>{device.officeRoom}</td>
                         <td>
                           {getStatusBadge(device.status)}
@@ -2081,7 +2603,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                     ))
                   ) : (
                     <tr>
-                      <td colSpan={6} className="no-data-message">
+                      <td colSpan={7} className="no-data-message">
                          {`No data available for ${selectedFilter2.toLowerCase()} period`}
                       </td>
                     </tr>
@@ -2089,6 +2611,109 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                 </tbody>
               </table>
             </div>
+          </div>
+        </div>
+
+        <div className="table-panel">
+          <div className="table-header">
+            <div className="table-title">
+              <h3>Office Ranking</h3>
+            </div>
+            <div className="filter-container">
+              <button className="filter-dropdown-btn" type="button" onClick={() => setFilterOpen3(v => !v)}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+                <span>
+                  {selectedFilter3 === 'Day' ? getCurrentTimeLabel().day :
+                   selectedFilter3 === 'Week' ? getCurrentTimeLabel().week :
+                   selectedFilter3 === 'Month' ? getCurrentTimeLabel().month :
+                   selectedFilter3 === 'Year' ? getCurrentTimeLabel().year : 'Day'
+                  }
+                </span>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ transform: filterOpen3 ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform .2s ease' }}>
+                  <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                </svg>
+              </button>
+              {filterOpen3 && (
+                <div className="filter-dropdown-menu">
+                  <button 
+                    className={`filter-option ${selectedFilter3 === 'Day' ? 'active' : ''}`} 
+                    type="button"
+                    onClick={() => {
+                      setSelectedFilter3('Day')
+                      setFilterOpen3(false)
+                    }}
+                  >
+                    Day
+                  </button>
+                  <button 
+                    className={`filter-option ${selectedFilter3 === 'Week' ? 'active' : ''}`} 
+                    type="button"
+                    onClick={() => {
+                      setSelectedFilter3('Week')
+                      setFilterOpen3(false)
+                    }}
+                  >
+                    Week
+                  </button>
+                  <button 
+                    className={`filter-option ${selectedFilter3 === 'Month' ? 'active' : ''}`} 
+                    type="button"
+                    onClick={() => {
+                      setSelectedFilter3('Month')
+                      setFilterOpen3(false)
+                    }}
+                  >
+                    Month
+                  </button>
+                  <button 
+                    className={`filter-option ${selectedFilter3 === 'Year' ? 'active' : ''}`} 
+                    type="button"
+                    onClick={() => {
+                      setSelectedFilter3('Year')
+                      setFilterOpen3(false)
+                    }}
+                  >
+                    Year
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="table-container">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Rank</th>
+                  <th>Office</th>
+                  <th>Department</th>
+                  <th>Outlet</th>
+                  <th>Today Consumption</th>
+                  <th>Month Consumption</th>
+                </tr>
+              </thead>
+              <tbody>
+                {officeRankingData.length > 0 ? (
+                  officeRankingData.map((item) => (
+                    <tr key={`${item.department}-${item.office}`}>
+                      <td>{item.rank}</td>
+                      <td>{item.office}</td>
+                      <td>{item.department}</td>
+                      <td>{item.outlets}</td>
+                      <td>{formatNumber(item.consumption)} Wh</td>
+                      <td>{formatNumber(item.monthConsumption)} Wh</td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={6} className="no-data-message">
+                      {`No data available for ${selectedFilter3.toLowerCase()} period`}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
           </div>
         </div>
       </section>
@@ -2693,4 +3318,5 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     </div>
   )
 }
+
 

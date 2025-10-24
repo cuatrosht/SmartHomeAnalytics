@@ -1,8 +1,47 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, memo } from 'react'
 import { ref, onValue, off, update, get } from 'firebase/database'
 import { realtimeDb } from '../firebase/config'
 import { logDeviceControlActivity, logSystemActivity } from '../utils/deviceLogging'
 import './ActiveDevice.css'
+
+// Function to format schedule days to M, T, W, TH, F, SAT, SUN format
+const formatScheduleDays = (frequency: string): string => {
+  if (!frequency || frequency.toLowerCase() === 'daily') {
+    return 'Daily'
+  }
+  
+  // Map of day names to abbreviations
+  const dayAbbreviations: { [key: string]: string } = {
+    'monday': 'M',
+    'tuesday': 'T',
+    'wednesday': 'W',
+    'thursday': 'TH',
+    'friday': 'F',
+    'saturday': 'SAT',
+    'sunday': 'SUN',
+    'mon': 'M',
+    'tue': 'T',
+    'wed': 'W',
+    'thu': 'TH',
+    'fri': 'F',
+    'sat': 'SAT',
+    'sun': 'SUN',
+    'm': 'M',
+    't': 'T',
+    'w': 'W',
+    'th': 'TH',
+    'f': 'F',
+    's': 'SAT'
+  }
+  
+  // Split by comma and map to abbreviations
+  const days = frequency.split(',').map(day => {
+    const trimmedDay = day.trim().toLowerCase()
+    return dayAbbreviations[trimmedDay] || day.trim()
+  })
+  
+  return days.join(', ')
+}
 
 // Function to calculate total monthly energy for combined limit group
 const calculateCombinedMonthlyEnergy = (devicesData: any, selectedOutlets: string[]): number => {
@@ -69,6 +108,160 @@ const calculateCombinedMonthlyEnergy = (devicesData: any, selectedOutlets: strin
     return 0
   }
 }
+
+// Memoized Modal Components to prevent blinking during realtime updates
+const SuccessModal = memo(({ successModal, setModalOpen, setSuccessModal }: {
+  successModal: { isOpen: boolean; deviceName: string; action: string };
+  setModalOpen: (open: boolean) => void;
+  setSuccessModal: (modal: { isOpen: boolean; deviceName: string; action: string }) => void;
+}) => {
+  if (!successModal.isOpen) return null
+
+  return (
+    <div className="modal-overlay success-overlay" onClick={() => {
+      setModalOpen(false)
+      setSuccessModal({ isOpen: false, deviceName: '', action: '' })
+    }}>
+      <div className="active-device-success-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="active-device-success-icon">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="12" cy="12" r="10" fill="#10b981" stroke="#10b981" strokeWidth="2"/>
+            <path d="M9 12l2 2 4-4" stroke="#ffffff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        </div>
+        <h3>Device Updated Successfully!</h3>
+        <p>
+          The device <strong>"{successModal.deviceName}"</strong> has been {successModal.action}.
+        </p>
+        <button 
+          className="btn-primary" 
+          onClick={() => {
+            setModalOpen(false)
+            setSuccessModal({ isOpen: false, deviceName: '', action: '' })
+          }}
+        >
+          Continue
+        </button>
+      </div>
+    </div>
+  )
+})
+
+const BypassModal = memo(({ bypassModal, setModalOpen, setBypassModal, toggleDeviceStatus, userRole = 'Coordinator' }: {
+  bypassModal: { isOpen: boolean; device: any; reason: string };
+  setModalOpen: (open: boolean) => void;
+  setBypassModal: (modal: { isOpen: boolean; device: any; reason: string }) => void;
+  toggleDeviceStatus: (deviceId: string, bypassConfirmed: boolean) => void;
+  userRole?: 'Coordinator' | 'admin';
+}) => {
+  if (!bypassModal.isOpen || !bypassModal.device) return null
+
+  const device = bypassModal.device
+
+  const handleBypassConfirm = () => {
+    setModalOpen(false)
+    setBypassModal({ isOpen: false, device: null, reason: '' })
+    // Call toggle with bypass confirmed
+    toggleDeviceStatus(device.id, true)
+  }
+
+  const handleBypassCancel = () => {
+    setModalOpen(false)
+    setBypassModal({ isOpen: false, device: null, reason: '' })
+  }
+
+  return (
+    <div className="modal-overlay warning-overlay" onClick={handleBypassCancel}>
+      <div className="warning-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="warning-icon">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="12" cy="12" r="10" fill="#fef3c7" stroke="#f59e0b" strokeWidth="2"/>
+            <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" fill="#f59e0b"/>
+          </svg>
+        </div>
+        {userRole === 'admin' ? (
+          <>
+            <h3>Bypass Restrictions?</h3>
+            <p><strong>"{device.outletName}" has restrictions that prevent it from being turned ON.</strong></p>
+            <div className="warning-details">
+              <div className="warning-stat">
+                <span className="label">Device:</span>
+                <span className="value">{device.outletName}</span>
+              </div>
+              <div className="warning-stat">
+                <span className="label">Location:</span>
+                <span className="value">{device.officeRoom}</span>
+              </div>
+              <div className="warning-stat">
+                <span className="label">Restriction:</span>
+                <span className="value">{bypassModal.reason}</span>
+              </div>
+            </div>
+            <p className="warning-message">
+              Do you want to bypass these restrictions and turn ON this device anyway?
+            </p>
+          </>
+        ) : (
+          <>
+            <h3>Device Restrictions Active</h3>
+            <p><strong>"{device.outletName}" cannot be turned ON due to active restrictions.</strong></p>
+            <div className="warning-details">
+              <div className="warning-stat">
+                <span className="label">Device:</span>
+                <span className="value">{device.outletName}</span>
+              </div>
+              <div className="warning-stat">
+                <span className="label">Location:</span>
+                <span className="value">{device.officeRoom}</span>
+              </div>
+              <div className="warning-stat">
+                <span className="label">Restriction:</span>
+                <span className="value">{bypassModal.reason}</span>
+              </div>
+            </div>
+            <p className="warning-message">
+              As a Coordinator, you cannot bypass these restrictions. Only GSO can override device restrictions.
+            </p>
+          </>
+        )}
+        {userRole === 'admin' && (
+          <div className="bypass-info">
+            <div className="bypass-info-header">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="12" cy="12" r="10" fill="#dbeafe" stroke="#3b82f6" strokeWidth="2"/>
+                <path d="M12 16v-4m0-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" fill="#3b82f6"/>
+              </svg>
+              <span className="bypass-info-title">Important Notice</span>
+            </div>
+            <p className="bypass-info-text">
+              When you bypass restrictions and turn ON this device, the **main_status** will be set to ON. 
+              This will **enable manual override mode** for this device. 
+              The device will remain ON until manually turned off, and automatic systems will not interfere with it.
+            </p>
+          </div>
+        )}
+        <div className="modal-footer">
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={handleBypassCancel}
+          >
+            {userRole === 'admin' ? 'Cancel' : 'Close'}
+          </button>
+          {userRole === 'admin' && (
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={handleBypassConfirm}
+            >
+              Bypass & Turn ON
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+})
 
 // Auto-turnoff functions disabled to prevent interference with data uploads
 // const startAutoTurnoffTimer = (outletKey: string, setAutoTurnoffTimers: React.Dispatch<React.SetStateAction<Record<string, NodeJS.Timeout | null>>>) => {
@@ -143,6 +336,7 @@ interface Device {
   powerUsage: string
   status: 'Active' | 'Inactive' | 'Idle'
   todayUsage: string
+  currentAmpere: string
   schedule: {
     time: string
     days: string
@@ -203,9 +397,10 @@ interface FirebaseDeviceData {
 
 interface ActiveDeviceProps {
   onNavigate?: (key: string) => void
+  userRole?: 'Coordinator' | 'admin'
 }
 
-export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
+export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: ActiveDeviceProps) {
   // Helper function to format numbers with commas
   const formatNumber = (num: number, decimals: number = 3): string => {
     return num.toLocaleString('en-US', {
@@ -245,12 +440,6 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
         break
       case 'powerLimit':
         setPowerLimitModal({
-          isOpen: true,
-          device: data.device
-        })
-        break
-      case 'noPowerLimit':
-        setNoPowerLimitModal({
           isOpen: true,
           device: data.device
         })
@@ -322,13 +511,6 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
     totalCost: 0,
     dailyData: []
   })
-  const [noPowerLimitModal, setNoPowerLimitModal] = useState<{
-    isOpen: boolean;
-    device: Device | null;
-  }>({
-    isOpen: false,
-    device: null
-  })
   const [scheduleConflictModal, setScheduleConflictModal] = useState<{
     isOpen: boolean;
     device: Device | null;
@@ -352,6 +534,17 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
     enabled: false,
     selectedOutlets: [],
     combinedLimit: 0
+  })
+
+  // Bypass confirmation modal state
+  const [bypassModal, setBypassModal] = useState<{
+    isOpen: boolean;
+    device: Device | null;
+    reason: string;
+  }>({
+    isOpen: false,
+    device: null,
+    reason: ''
   })
 
   // Idle detection state
@@ -467,6 +660,7 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
       
       let filteredData: Array<{ date: string; energy: number; cost: number }> = []
       let totalEnergy = 0
+      let totalCost = 0
       
       // Filter data based on time segment
       Object.keys(dailyLogs).forEach(dateKey => {
@@ -482,7 +676,7 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
             includeData = logYear === currentYear && logMonth === currentMonth && logDay === currentDay
             break
           case 'Week':
-            // Last 7 days
+            // Last 7 days including today
             const logDate = new Date(logYear, logMonth - 1, logDay)
             const daysDiff = Math.floor((now.getTime() - logDate.getTime()) / (1000 * 60 * 60 * 24))
             includeData = daysDiff >= 0 && daysDiff < 7
@@ -498,23 +692,25 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
         if (includeData) {
           const dayData = dailyLogs[dateKey]
           const energy = dayData.total_energy || 0 // Energy in kW
-          const cost = energy * currentRate
+          // Calculate cost and truncate to 2 decimal places (no rounding)
+          const dailyCost = energy * currentRate
+          const truncatedCost = Math.floor(dailyCost * 100) / 100
           
           filteredData.push({
             date: `${logYear}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`,
             energy,
-            cost
+            cost: truncatedCost
           })
           
           totalEnergy += energy
+          totalCost += truncatedCost
         }
       })
       
       // Sort by date
       filteredData.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
       
-      const totalCost = totalEnergy * currentRate
-      
+      // totalCost is already sum of truncated daily costs
       return {
         totalEnergy,
         totalCost,
@@ -842,6 +1038,10 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
           // Get appliance from database or show "Unassigned"
           const applianceType = outlet.office_info?.appliance || 'Unassigned'
           
+          // Get current (ampere) from sensor_data - no decimal places
+          const currentAmpere = outlet.sensor_data?.current || 0
+          const currentAmpereDisplay = `${Math.round(currentAmpere)} A`
+          
           // Format schedule information
           let scheduleTime = 'No schedule'
           let scheduleDays = 'No schedule'
@@ -856,7 +1056,7 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
             }
             
             if (outlet.schedule.frequency) {
-              scheduleDays = outlet.schedule.frequency
+              scheduleDays = formatScheduleDays(outlet.schedule.frequency)
             }
           }
 
@@ -868,6 +1068,7 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
             powerUsage: powerUsageDisplay,
             status: deviceStatus,
             todayUsage: todayEnergyDisplay,
+            currentAmpere: currentAmpereDisplay,
             schedule: {
               time: scheduleTime,
               days: scheduleDays
@@ -956,9 +1157,13 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
               const currentControlState = deviceData.control?.device || 'off'
               const currentMainStatus = deviceData.relay_control?.main_status || 'ON'
               
-              // Always check schedule - main_status is just a manual override flag
-              // The real control is through control.device which we will update based on schedule
-              console.log(`ActiveDevice: Device ${outletKey} main status is ${currentMainStatus} - checking schedule anyway`)
+              // Check if main_status is 'ON' - if so, skip automatic scheduling (device is in bypass mode)
+              if (currentMainStatus === 'ON') {
+                console.log(`ActiveDevice: Device ${outletKey} main_status is ON - respecting bypass mode, skipping automatic schedule control`)
+                continue
+              }
+              
+              console.log(`ActiveDevice: Device ${outletKey} main status is ${currentMainStatus} - applying automatic schedule control`)
               
               // Check if device should be active based on current time and schedule
               // Skip individual limit check if device is in combined group (combined limit takes precedence)
@@ -1012,6 +1217,7 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
                 
                 console.log(`ActiveDevice: Real-time update: ${outletKey} control state from ${currentControlState} to ${newControlState}`)
                 
+                // Only update control.device for automatic scheduling - do NOT change main_status
                 await update(ref(realtimeDb, `devices/${outletKey}/control`), {
                   device: newControlState
                 })
@@ -1048,6 +1254,12 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
               continue
             }
             
+            // Check if main_status is 'ON' - if so, skip automatic power limit enforcement (device is in bypass mode)
+            if (currentMainStatus === 'ON') {
+              console.log(`ActiveDevice: Device ${outletKey} main_status is ON - respecting bypass mode, skipping automatic power limit enforcement`)
+              continue
+            }
+            
             // Check if device is in a combined group
             const outletDisplayName = outletKey.replace('_', ' ')
             const isInCombinedGroup = combinedLimitInfo?.enabled && 
@@ -1057,6 +1269,12 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
             // For devices in combined groups, the monthly limit check handles the power limit enforcement
             if (!isInCombinedGroup) {
               console.log(`ActiveDevice: Device ${outletKey} main status is ${currentMainStatus} - checking individual power limits`)
+              
+              // Check if main_status is 'ON' - if so, skip individual power limit enforcement (device is in bypass mode)
+              if (currentMainStatus === 'ON') {
+                console.log(`ActiveDevice: Device ${outletKey} main_status is ON - respecting bypass mode, skipping individual power limit enforcement`)
+                continue
+              }
               
               // Check power limit
               const powerLimit = deviceData.relay_control?.auto_cutoff?.power_limit || 0
@@ -1099,13 +1317,9 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
                     // Only turn off if there's no recent database activity
                     console.log(`ActiveDevice: Turning OFF ${outletKey} - no recent database activity`)
                     
+                    // Only update control.device for automatic power limit enforcement - do NOT change main_status
                     await update(ref(realtimeDb, `devices/${outletKey}/control`), {
                       device: 'off'
-                    })
-                    
-                    // Also turn off main status to prevent immediate re-activation
-                    await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
-                      main_status: 'OFF'
                     })
                     
                     console.log(`ActiveDevice: Device ${outletKey} turned OFF due to power limit exceeded`)
@@ -1118,6 +1332,12 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
               }
             } else {
               console.log(`ActiveDevice: Device ${outletKey} is in combined group - skipping individual daily limit check (monthly limit takes precedence)`)
+              
+              // For devices in combined groups, also check if main_status is 'ON' (bypass mode)
+              if (currentMainStatus === 'ON') {
+                console.log(`ActiveDevice: Device ${outletKey} main_status is ON - respecting bypass mode, skipping combined group power limit enforcement`)
+                continue
+              }
             }
           }
         }
@@ -1196,8 +1416,8 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
   }, [activeDevices, searchQuery])
 
   // Toggle device status (ON/OFF) - updates both relay status and main status
-  // Now respects power limits before allowing devices to turn ON
-  const toggleDeviceStatus = async (deviceId: string) => {
+  // Shows bypass confirmation modal when restrictions exist
+  const toggleDeviceStatus = async (deviceId: string, bypassConfirmed: boolean = false) => {
     try {
       const currentTime = Date.now()
       
@@ -1234,94 +1454,85 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
         newControlState = 'off'
         newMainStatus = 'OFF'
       } else {
-        // Device is currently OFF, so we want to turn it ON - run validation checks
-        console.log(`ActiveDevice: Turning ON ${outletKey} - running validation checks`)
-        // Get device data from Firebase to check today's energy consumption
-        const deviceRef = ref(realtimeDb, `devices/${outletKey}`)
-        const deviceSnapshot = await get(deviceRef)
-        const deviceData = deviceSnapshot.val()
-        
-        // Check if device is in a combined group
-        const outletDisplayName = outletKey.replace('_', ' ')
-        const isInCombinedGroup = combinedLimitInfo?.enabled && 
-                                 combinedLimitInfo?.selectedOutlets?.includes(outletDisplayName)
-        
-        // Only check individual daily limit if device is NOT in combined group
-        if (!isInCombinedGroup) {
-          const powerLimit = deviceData?.relay_control?.auto_cutoff?.power_limit || 0
-          
-          // Check if device has no power limit set
-          if (powerLimit <= 0) {
-            showModalSafely('noPowerLimit', { device })
-            // Clear loading state before returning
-            setUpdatingDevices(prev => {
-              const newSet = new Set(prev)
-              newSet.delete(deviceId)
-              return newSet
-            })
-            return
-          }
-          
-          // Get today's total energy consumption from daily_logs
-          const today = new Date()
-          const todayDateKey = `day_${today.getFullYear()}_${String(today.getMonth() + 1).padStart(2, '0')}_${String(today.getDate()).padStart(2, '0')}`
-          const todayLogs = deviceData?.daily_logs?.[todayDateKey]
-          const todayTotalEnergy = todayLogs?.total_energy || 0 // This is in kW
-          
-          console.log(`Power limit check for ${outletKey}:`, {
-            powerLimit: `${(powerLimit * 1000)}W`,
-            todayTotalEnergy: `${(todayTotalEnergy * 1000)}W`,
-            todayDateKey: todayDateKey,
-            exceedsLimit: todayTotalEnergy >= powerLimit,
-            isInCombinedGroup: isInCombinedGroup
-          })
-          
-          // Check if today's total energy consumption exceeds the power limit
-          if (todayTotalEnergy >= powerLimit) {
-            const currentTime = new Date().toLocaleTimeString()
-            const currentDate = new Date().toLocaleDateString()
-            
-            showModalSafely('powerLimit', {
-              device: {
-                ...device,
-                // Add additional info for the modal
-                todayTotalEnergy: todayTotalEnergy,
-                powerLimit: powerLimit,
-                currentDate: currentDate,
-                currentTime: currentTime
-              }
-            })
-            // Clear loading state before returning
-            setUpdatingDevices(prev => {
-              const newSet = new Set(prev)
-              newSet.delete(deviceId)
-              return newSet
-            })
-            return
-          }
+        // Device is currently OFF, so we want to turn it ON
+        if (bypassConfirmed) {
+          // Bypass confirmed: turn on device regardless of restrictions
+          console.log(`ActiveDevice: BYPASS CONFIRMED - Turning ON ${outletKey} - bypassing all validation checks`)
+          newControlState = 'on'
+          newMainStatus = 'ON'
         } else {
-          console.log(`ActiveDevice: Skipping individual daily limit check for ${outletKey} - device is in combined group (monthly limit takes precedence)`)
-        }
-        
-        // Check if device is within its scheduled time
-        if (deviceData.schedule && (deviceData.schedule.timeRange || deviceData.schedule.startTime)) {
-          const isWithinSchedule = isDeviceActiveBySchedule(deviceData.schedule, 'on', deviceData, isInCombinedGroup)
-          if (!isWithinSchedule) {
-            const now = new Date()
-            const currentTime = now.getHours() * 60 + now.getMinutes()
-            const schedule = deviceData.schedule
+          // Check for restrictions and show bypass modal if needed
+          console.log(`ActiveDevice: Checking restrictions for ${outletKey}`)
+          // Get device data from Firebase to check today's energy consumption
+          const deviceRef = ref(realtimeDb, `devices/${outletKey}`)
+          const deviceSnapshot = await get(deviceRef)
+          const deviceData = deviceSnapshot.val()
+          
+          // Check if device is in a combined group
+          const outletDisplayName = outletKey.replace('_', ' ')
+          const isInCombinedGroup = combinedLimitInfo?.enabled && 
+                                   combinedLimitInfo?.selectedOutlets?.includes(outletDisplayName)
+          
+          let hasRestrictions = false
+          let restrictionReason = ''
+          
+          // Check individual daily limit if device is NOT in combined group
+          if (!isInCombinedGroup) {
+            const powerLimit = deviceData?.relay_control?.auto_cutoff?.power_limit || 0
             
-            let reason = 'Device is outside its scheduled time.'
-            
-            if (schedule.timeRange && schedule.timeRange !== 'No schedule') {
-              reason = `Device is outside its scheduled time (${schedule.timeRange}). Current time: ${now.toLocaleTimeString()}.`
-            } else if (schedule.startTime && schedule.endTime) {
-              reason = `Device is outside its scheduled time (${schedule.startTime} - ${schedule.endTime}). Current time: ${now.toLocaleTimeString()}.`
+            // Check if device has no power limit set
+            if (powerLimit <= 0) {
+              hasRestrictions = true
+              restrictionReason = 'No power limit set - device requires power limit configuration'
             }
             
-            showModalSafely('scheduleConflict', {
+            // Get today's total energy consumption from daily_logs
+            const today = new Date()
+            const todayDateKey = `day_${today.getFullYear()}_${String(today.getMonth() + 1).padStart(2, '0')}_${String(today.getDate()).padStart(2, '0')}`
+            const todayLogs = deviceData?.daily_logs?.[todayDateKey]
+            const todayTotalEnergy = todayLogs?.total_energy || 0 // This is in kW
+            
+            console.log(`Power limit check for ${outletKey}:`, {
+              powerLimit: `${(powerLimit * 1000)}W`,
+              todayTotalEnergy: `${(todayTotalEnergy * 1000)}W`,
+              todayDateKey: todayDateKey,
+              exceedsLimit: todayTotalEnergy >= powerLimit,
+              isInCombinedGroup: isInCombinedGroup
+            })
+            
+            // Check if today's total energy consumption exceeds the power limit
+            if (todayTotalEnergy >= powerLimit) {
+              hasRestrictions = true
+              restrictionReason = `Power limit exceeded: ${(todayTotalEnergy * 1000).toFixed(0)}W / ${(powerLimit * 1000)}W`
+            }
+          } else {
+            console.log(`ActiveDevice: Skipping individual daily limit check for ${outletKey} - device is in combined group (monthly limit takes precedence)`)
+          }
+          
+          // Check if device is within its scheduled time
+          if (deviceData.schedule && (deviceData.schedule.timeRange || deviceData.schedule.startTime)) {
+            const isWithinSchedule = isDeviceActiveBySchedule(deviceData.schedule, 'on', deviceData, isInCombinedGroup)
+            if (!isWithinSchedule) {
+              hasRestrictions = true
+              const now = new Date()
+              const schedule = deviceData.schedule
+              
+              if (schedule.timeRange && schedule.timeRange !== 'No schedule') {
+                restrictionReason = `Outside scheduled time: ${schedule.timeRange} (Current: ${now.toLocaleTimeString()})`
+              } else if (schedule.startTime && schedule.endTime) {
+                restrictionReason = `Outside scheduled time: ${schedule.startTime} - ${schedule.endTime} (Current: ${now.toLocaleTimeString()})`
+              } else {
+                restrictionReason = 'Outside scheduled time'
+              }
+            }
+          }
+          
+          // If restrictions exist, show bypass confirmation modal
+          if (hasRestrictions) {
+            setBypassModal({
+              isOpen: true,
               device: device,
-              reason: reason
+              reason: restrictionReason
             })
             // Clear loading state before returning
             setUpdatingDevices(prev => {
@@ -1331,11 +1542,11 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
             })
             return
           }
+          
+          // No restrictions: turn on device normally
+          newControlState = 'on'
+          newMainStatus = 'ON'
         }
-        
-        // Turn ON: set both control and main status to ON
-        newControlState = 'on'
-        newMainStatus = 'ON'
       }
       
       console.log(`Toggling ${outletKey} from control:${currentControlState}/main:${currentMainStatus} to control:${newControlState}/main:${newMainStatus}`)
@@ -1419,39 +1630,7 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
     }
   }
 
-  // Success Modal Component
-  const SuccessModal = () => {
-    if (!successModal.isOpen) return null
-
-    return (
-      <div className="modal-overlay success-overlay" onClick={() => {
-        setModalOpen(false)
-        setSuccessModal({ isOpen: false, deviceName: '', action: '' })
-      }}>
-        <div className="active-device-success-modal" onClick={(e) => e.stopPropagation()}>
-          <div className="active-device-success-icon">
-            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <circle cx="12" cy="12" r="10" fill="#10b981" stroke="#10b981" strokeWidth="2"/>
-              <path d="M9 12l2 2 4-4" stroke="#ffffff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
-          </div>
-          <h3>Device Updated Successfully!</h3>
-          <p>
-            The device <strong>"{successModal.deviceName}"</strong> has been {successModal.action}.
-          </p>
-          <button 
-            className="btn-primary" 
-            onClick={() => {
-              setModalOpen(false)
-              setSuccessModal({ isOpen: false, deviceName: '', action: '' })
-            }}
-          >
-            Continue
-          </button>
-        </div>
-      </div>
-    )
-  }
+  // Success Modal Component - now memoized outside main component
 
   // Error Modal Component
   const ErrorModal = () => {
@@ -1485,59 +1664,6 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
     )
   }
 
-  // No Power Limit Modal Component
-  const NoPowerLimitModal = () => {
-    if (!noPowerLimitModal.isOpen || !noPowerLimitModal.device) return null
-
-    const device = noPowerLimitModal.device
-
-    return (
-      <div className="modal-overlay warning-overlay" onClick={() => {
-        setModalOpen(false)
-        setNoPowerLimitModal({ isOpen: false, device: null })
-      }}>
-        <div className="warning-modal" onClick={(e) => e.stopPropagation()}>
-          <div className="warning-icon">
-            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <circle cx="12" cy="12" r="10" fill="#fef3c7" stroke="#f59e0b" strokeWidth="2"/>
-              <path d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" fill="#f59e0b"/>
-            </svg>
-          </div>
-          <h3>No Power Limit Set!</h3>
-          <p><strong>"{device.outletName}" cannot be turned ON because it doesn't have a power limit set.</strong></p>
-          <div className="warning-details">
-            <div className="warning-stat">
-              <span className="label">Current Usage:</span>
-              <span className="value">{device.powerUsage}</span>
-            </div>
-            <div className="warning-stat">
-              <span className="label">Power Limit:</span>
-              <span className="value">No Power Limit Set</span>
-            </div>
-            <div className="warning-stat">
-              <span className="label">Required Action:</span>
-              <span className="value">Set Power Limit</span>
-            </div>
-          </div>
-          <p className="warning-message">
-            For safety reasons, devices must have a power limit before they can be activated. Please set a power limit in the Setup section.
-          </p>
-          <div className="modal-footer">
-            <button
-              type="button"
-              className="btn-primary"
-              onClick={() => {
-                setModalOpen(false)
-                setNoPowerLimitModal({ isOpen: false, device: null })
-              }}
-            >
-              Understood
-            </button>
-          </div>
-        </div>
-      </div>
-    )
-  }
 
   // Schedule Conflict Modal Component
   const ScheduleConflictModal = () => {
@@ -1592,6 +1718,8 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
       </div>
     )
   }
+
+  // Bypass Confirmation Modal Component - now memoized outside main component
 
   if (loading) {
     return (
@@ -1650,6 +1778,7 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
                 <th>POWER USAGE</th>
                 <th>STATUS</th>
                 <th>TODAY'S USAGE</th>
+                <th>CURRENT (A)</th>
                 <th>SCHEDULE</th>
                 <th>ACTION</th>
               </tr>
@@ -1681,6 +1810,7 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
                     {getStatusBadge(device.status)}
                   </td>
                   <td className="today-usage">{device.todayUsage}</td>
+                  <td className="current-ampere">{device.currentAmpere}</td>
                   <td className="schedule-cell">
                     <div className="schedule-info">
                       <span className="schedule-time">{device.schedule.time}</span>
@@ -1722,16 +1852,27 @@ export default function ActiveDevice({ onNavigate }: ActiveDeviceProps) {
       </section>
 
       {/* Success Modal */}
-      <SuccessModal />
+      <SuccessModal 
+        successModal={successModal}
+        setModalOpen={setModalOpen}
+        setSuccessModal={setSuccessModal}
+      />
       
       {/* Error Modal */}
       <ErrorModal />
 
-      {/* No Power Limit Modal */}
-      <NoPowerLimitModal />
 
       {/* Schedule Conflict Modal */}
       <ScheduleConflictModal />
+
+      {/* Bypass Confirmation Modal */}
+      <BypassModal 
+        bypassModal={bypassModal}
+        setModalOpen={setModalOpen}
+        setBypassModal={setBypassModal}
+        toggleDeviceStatus={toggleDeviceStatus}
+        userRole={userRole}
+      />
 
       {/* Power Limit Warning Modal */}
       {powerLimitModal.isOpen && (

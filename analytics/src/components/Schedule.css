@@ -104,12 +104,16 @@
   justify-content: space-between;
   align-items: center;
   color: white;
+  flex-wrap: wrap;
+  gap: 16px;
 }
 
 .header-left {
   display: flex;
   align-items: center;
   gap: 12px;
+  justify-content: flex-start;
+  height: 100%;
 }
 
 .header-icon {
@@ -121,6 +125,7 @@
   background: rgba(255, 255, 255, 0.1);
   border-radius: 8px;
   color: white;
+  flex-shrink: 0;
 }
 
 .header-title {
@@ -129,6 +134,8 @@
   margin: 0;
   color: white;
   line-height: 1.2;
+  display: flex;
+  align-items: center;
 }
 
 .header-search {
@@ -136,6 +143,7 @@
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
 .search-container {
@@ -216,12 +224,12 @@
 
 .schedule-table th {
   text-align: left;
-  padding: 12px 12px;
+  padding: 8px 6px;
   font-weight: 600;
-  font-size: 12px;
+  font-size: 10px;
   color: #374151;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.03em;
   border-bottom: 1px solid #e5e7eb;
   background: #f9fafb;
   white-space: nowrap;
@@ -234,7 +242,7 @@
 }
 
 .schedule-table td {
-  padding: 12px 12px;
+  padding: 8px 6px;
   border-bottom: 1px solid #f3f4f6;
   font-size: 14px;
   color: #374151;
@@ -265,9 +273,18 @@
   color: #6b7280;
 }
 
-.power-usage, .todays-usage {
+.power-usage, .current-ampere, .todays-usage, .limit {
   font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
   font-weight: 500;
+  text-align: center;
+}
+
+/* Center align LIMIT, POWER USAGE, CURRENT (A), and TODAY'S USAGE headers */
+.schedule-table th:nth-child(5),
+.schedule-table th:nth-child(6),
+.schedule-table th:nth-child(7),
+.schedule-table th:nth-child(9) {
+  text-align: center;
 }
 
 .schedule-table tbody tr:hover {
@@ -621,6 +638,9 @@
 /* Edit Schedule Modal Specific Styles */
 .edit-schedule-modal {
   max-width: 520px;
+  width: 90%;
+  max-height: 90vh;
+  overflow-y: auto;
 }
 
 .device-info {
@@ -1128,21 +1148,56 @@
   transform: translateY(-1px);
 }
 
+/* Desktop Responsive Design */
+@media (min-width: 1025px) {
+  .edit-schedule-modal {
+    max-width: 520px;
+    width: 90%;
+    margin: 0 auto;
+  }
+
+  .edit-schedule-modal .time-section {
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+  }
+
+  .edit-schedule-modal .days-grid {
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 12px;
+  }
+}
+
 /* Responsive Design */
 @media (max-width: 1024px) {
   .schedule-header {
     padding: 20px 24px;
-    flex-direction: column;
+    flex-direction: row;
     gap: 16px;
-    align-items: stretch;
+    align-items: center;
+    justify-content: space-between;
   }
 
   .header-left {
-    justify-content: center;
+    justify-content: flex-start;
+    flex: 1;
+    align-items: center;
+  }
+
+  .header-search {
+    flex-direction: column;
+    gap: 12px;
+    align-items: flex-end;
   }
 
   .search-input {
-    width: 100%;
+    width: 280px;
+  }
+
+  .add-outlets-btn {
+    width: auto;
+    min-width: 200px;
+    max-width: 280px;
+    margin-top: 0;
   }
 
   .schedule-table-container {
@@ -1162,6 +1217,38 @@
 
   .schedule-header {
     padding: 16px 20px;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: flex-start;
+  }
+
+  .header-left {
+    justify-content: flex-start;
+    flex: 1;
+    align-items: center;
+  }
+
+  .header-search {
+    flex-direction: row;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: nowrap;
+  }
+
+  .search-input {
+    width: 180px;
+    flex-shrink: 1;
+  }
+
+  .add-outlets-btn {
+    width: auto;
+    min-width: auto;
+    max-width: none;
+    margin-top: 0;
+    padding: 10px 12px;
+    font-size: 13px;
+    white-space: nowrap;
+    flex-shrink: 0;
   }
 
   .header-title {
@@ -1198,6 +1285,23 @@
     margin: 20px;
     max-width: calc(100vw - 40px);
     border-radius: 12px;
+  }
+
+  .edit-schedule-modal {
+    max-width: calc(100vw - 40px);
+    width: 95%;
+    margin: 20px;
+  }
+
+  /* Edit Schedule Modal Tablet Responsive */
+  .edit-schedule-modal .time-section {
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+
+  .edit-schedule-modal .days-grid {
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 8px;
   }
   
   .modal-header {
@@ -1244,6 +1348,39 @@
 @media (max-width: 480px) {
   .schedule-header {
     padding: 12px;
+    flex-direction: column;
+    gap: 12px;
+    align-items: stretch;
+  }
+
+  .header-left {
+    justify-content: flex-start;
+    flex: none;
+    align-items: center;
+  }
+
+  .header-search {
+    flex-direction: row;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: nowrap;
+  }
+
+  .search-input {
+    width: 100%;
+    flex: 1;
+    min-width: 120px;
+  }
+
+  .add-outlets-btn {
+    width: auto;
+    min-width: auto;
+    max-width: none;
+    margin-top: 0;
+    padding: 10px 10px;
+    font-size: 12px;
+    white-space: nowrap;
+    flex-shrink: 0;
   }
   
   .header-icon {
@@ -1278,6 +1415,13 @@
     margin: 10px;
     max-width: calc(100vw - 20px);
   }
+
+  .edit-schedule-modal {
+    max-width: calc(100vw - 20px);
+    width: 98%;
+    margin: 10px;
+    max-height: 95vh;
+  }
   
   .modal-body {
     padding: 16px;
@@ -1289,6 +1433,34 @@
   
   .days-grid {
     grid-template-columns: 1fr;
+  }
+
+  /* Edit Schedule Modal Mobile Responsive */
+  .edit-schedule-modal .time-section {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+
+  .edit-schedule-modal .days-grid {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .edit-schedule-modal .day-option {
+    padding: 10px;
+  }
+
+  .edit-schedule-modal .device-info {
+    padding: 12px;
+    margin-bottom: 16px;
+  }
+
+  .edit-schedule-modal .device-name {
+    font-size: 16px;
+  }
+
+  .edit-schedule-modal .device-details {
+    font-size: 12px;
   }
   
   .success-modal {
@@ -1349,6 +1521,11 @@
   transition: all 0.2s ease;
   white-space: nowrap;
   margin-top: -20px;
+  width: auto;
+  min-width: 200px;
+  max-width: 280px;
+  justify-content: center;
+  flex-shrink: 0;
 }
 
 .add-outlets-btn:hover {
@@ -1479,13 +1656,21 @@
 /* Mobile responsive updates for new elements */
 @media (max-width: 768px) {
   .header-search {
-    flex-direction: column;
-    gap: 12px;
+    flex-direction: row;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: nowrap;
   }
   
   .add-outlets-btn {
-    width: 100%;
+    width: auto;
+    min-width: auto;
+    max-width: none;
     justify-content: center;
+    padding: 10px 12px;
+    font-size: 13px;
+    white-space: nowrap;
+    flex-shrink: 0;
   }
   
   .outlets-grid {
@@ -1535,3 +1720,4 @@
   color: #dc2626;
   font-weight: 600;
 }
+

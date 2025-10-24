@@ -17,9 +17,9 @@ import ActiveDevice from './components/ActiveDevice'
 function App() {
   const [isAuthed, setIsAuthed] = useState(false)
   const [userName, setUserName] = useState('User')
-  const [userRole, setUserRole] = useState<'faculty' | 'admin'>('faculty')
+  const [userRole, setUserRole] = useState<'Coordinator' | 'admin'>('Coordinator')
   const [authView, setAuthView] = useState<'login' | 'signup'>('login')
-  const [activeView, setActiveView] = useState<'dashboard' | 'setup' | 'schedule' | 'activeDevice' | 'reports' | 'users' | 'userLogs' | 'deviceLogs'>('dashboard')
+  const [activeView, setActiveView] = useState<'dashboard' | 'setup' | 'schedule' | 'activeDevice' | 'reports' | 'users' | 'userLogs' | 'deviceLogs' | 'offices'>('dashboard')
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [isMobile, setIsMobile] = useState(false)
   const [showNotificationModal, setShowNotificationModal] = useState(false)
@@ -534,7 +534,7 @@ function App() {
         setIsAuthed(false)
         setAuthView('login')
         setUserName('User')
-        setUserRole('faculty')
+        setUserRole('Coordinator')
         setActiveView('dashboard')
       }
     })
@@ -1591,7 +1591,7 @@ function App() {
               setIsAuthed(false)
               setAuthView('login')
               setUserName('User')
-              setUserRole('faculty')
+              setUserRole('Coordinator')
               setActiveView('dashboard')
               return
             }
@@ -1608,7 +1608,7 @@ function App() {
             setIsAuthed(false)
             setAuthView('login')
             setUserName('User')
-            setUserRole('faculty')
+            setUserRole('Coordinator')
             setActiveView('dashboard')
             
             console.log('Logout completed successfully')
@@ -1625,14 +1625,14 @@ function App() {
             setIsAuthed(false)
             setAuthView('login')
             setUserName('User')
-            setUserRole('faculty')
+            setUserRole('Coordinator')
             setActiveView('dashboard')
           }
         }} 
         onNavigate={(k) => setActiveView(k)}
         isOpen={sidebarOpen}
         onToggle={() => setSidebarOpen(!sidebarOpen)}
-        activeView={activeView === 'userLogs' ? 'users' : activeView}
+        activeView={activeView === 'userLogs' ? 'users' : activeView === 'offices' ? 'users' : activeView}
         userRole={userRole}
       />
       <main style={{
@@ -1774,9 +1774,9 @@ function App() {
         {activeView === 'dashboard' && <Dashboard onNavigate={(key) => setActiveView(key as any)} />}
         {activeView === 'setup' && <SetUp />}
         {activeView === 'schedule' && <Schedule />}
-        {activeView === 'activeDevice' && <ActiveDevice />}
+        {activeView === 'activeDevice' && <ActiveDevice userRole={userRole} />}
         {activeView === 'reports' && <Reports />}
-        {(activeView === 'users' || activeView === 'userLogs' || activeView === 'deviceLogs') && <UserManagment onNavigate={(k) => setActiveView(k as any)} currentView={activeView} />}
+        {(activeView === 'users' || activeView === 'userLogs' || activeView === 'deviceLogs' || activeView === 'offices') && <UserManagment onNavigate={(k) => setActiveView(k as any)} currentView={activeView} />}
         {/* Logs view removed */}
       </main>
 

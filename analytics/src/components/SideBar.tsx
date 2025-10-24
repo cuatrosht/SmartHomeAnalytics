@@ -3,7 +3,7 @@ import { auth } from '../firebase/config'
 import { logAuthEvent } from '../utils/userLogging'
 import './SideBar.css'
 
-export type SidebarItemKey = 'dashboard' | 'setup' | 'schedule' | 'activeDevice' | 'reports' | 'users' | 'deviceLogs'
+export type SidebarItemKey = 'dashboard' | 'setup' | 'schedule' | 'activeDevice' | 'reports' | 'users' | 'deviceLogs' | 'offices'
 
 interface SideBarProps {
   onLogout?: () => void
@@ -11,10 +11,10 @@ interface SideBarProps {
   isOpen?: boolean
   onToggle?: () => void
   activeView?: SidebarItemKey
-  userRole?: 'faculty' | 'admin'
+  userRole?: 'Coordinator' | 'admin'
 }
 
-export default function SideBar({ onLogout, onNavigate, isOpen = true, onToggle, activeView = 'dashboard', userRole = 'faculty' }: SideBarProps) {
+export default function SideBar({ onLogout, onNavigate, isOpen = true, onToggle, activeView = 'dashboard', userRole = 'Coordinator' }: SideBarProps) {
   const [showLogoutModal, setShowLogoutModal] = useState(false)
 
 
@@ -152,7 +152,7 @@ export default function SideBar({ onLogout, onNavigate, isOpen = true, onToggle,
             </svg>
           }/>
           
-          {/* Admin-only sections */}
+          {/* GSO-only sections */}
           {userRole === 'admin' && (
             <>
               <div className="sb-rule" />
