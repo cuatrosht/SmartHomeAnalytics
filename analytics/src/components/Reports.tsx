@@ -633,8 +633,8 @@ export default function Reports() {
           // Add device data for table preview
           deviceTableData.push({
             outletId: device.outletId,
-            appliance: device.appliances || 'Unassigned',
-            powerLimit: (device.relay_control?.auto_cutoff?.power_limit || 0) * 1000, // Convert to watts
+            appliance: deviceData.office_info?.appliance || 'Unassigned',
+            powerLimit: (deviceData.relay_control?.auto_cutoff?.power_limit || 0) * 1000, // Convert to watts
             monthlyEnergy: deviceEnergy * 1000, // Convert to watts
             totalHours: deviceHours,
             monthlyCost: deviceEnergy * currentRate
@@ -645,7 +645,7 @@ export default function Reports() {
           deviceTableData.push({
             outletId: device.outletId,
             appliance: device.appliances || 'Unassigned',
-            powerLimit: (device.relay_control?.auto_cutoff?.power_limit || 0) * 1000,
+            powerLimit: 0,
             monthlyEnergy: 0,
             totalHours: 0,
             monthlyCost: 0
@@ -657,7 +657,7 @@ export default function Reports() {
         deviceTableData.push({
           outletId: device.outletId,
           appliance: device.appliances || 'Unassigned',
-          powerLimit: (device.relay_control?.auto_cutoff?.power_limit || 0) * 1000,
+          powerLimit: 0,
           monthlyEnergy: 0,
           totalHours: 0,
           monthlyCost: 0
