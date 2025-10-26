@@ -535,103 +535,180 @@ export default function Reports() {
   }
 
   // Handle date range confirmation and show preview
-  const handleDateRangeConfirm = () => {
+  const handleDateRangeConfirm = async () => {
     if (!selectedStartDate || !selectedEndDate) return
     
     setIsLoadingPreview(true)
     console.log('Date range selected:', { selectedStartDate, selectedEndDate, selectedOffice, selectedPdfDepartment })
     
-    // Close date range modal and open PDF preview modal
-    setIsDateRangeModalOpen(false)
-    setIsPdfPreviewModalOpen(true)
-    
-    // Generate preview data (same simplified approach as Dashboard.tsx)
-    let filteredDevices = devices.filter(device => {
-      if (selectedPdfDepartment === 'All Departments') {
-        // For "All Departments", include ALL devices regardless of office_info
-        return true
-      }
-      // For specific departments, only include devices with matching department
-      if (device.office_info && device.office_info.department) {
-        return device.office_info.department.toLowerCase() === selectedPdfDepartment.toLowerCase()
-      }
-      return false
-    })
-    
-    // Additional filtering by office if specific office is selected
-    if (selectedPdfOffice !== 'All Offices') {
-      filteredDevices = filteredDevices.filter(device => {
-        if (device.office_info && device.office_info.office) {
-          return device.office_info.office === selectedPdfOffice
-        }
-        return false
-      })
-    }
-    
-    // Calculate preview data
-    const deviceCount = filteredDevices.length
-    console.log('Filtered devices count:', deviceCount, 'Department:', selectedPdfDepartment, 'Office:', selectedPdfOffice)
-    console.log('Total devices available:', devices.length)
-    console.log('Devices with office_info:', devices.filter(d => d.office_info).length)
-    console.log('Devices with department:', devices.filter(d => d.office_info?.department).length)
-    console.log('Sample device office_info:', devices.slice(0, 3).map(d => ({ outletId: d.outletId, office_info: d.office_info })))
-    
-    // Calculate total energy from lifetime_energy values (convert kW to kWh)
-    const totalEnergy = filteredDevices.reduce((sum, device) => {
-      const lifetimeEnergyKw = device.lifetime_energy || 0
-      return sum + lifetimeEnergyKw // Already in kW from database
-    }, 0)
-    
-    // Generate device table data - use same calculation as Dashboard.tsx
-    const deviceTableData = filteredDevices.map(device => {
-      // Use lifetime_energy for monthly consumption (convert kW to Wh)
-      const lifetimeEnergyKw = device.lifetime_energy || 0
-      const monthlyEnergyWh = lifetimeEnergyKw * 1000 // Convert kW to Wh
-      const monthlyConsumptionStr = `${monthlyEnergyWh.toFixed(3)} Wh`
+    try {
+      // Use the EXACT same logic as PDF generation (which works)
+      const startDate = new Date(selectedStartDate)
+      const endDate = new Date(selectedEndDate)
       
-      // Convert Wh to kWh for cost calculation
-      const monthlyConsumptionKwh = monthlyEnergyWh / 1000
-      // Use same calculation as Dashboard.tsx: monthlyConsumptionKwh * currentRate
-      const monthlyCost = monthlyConsumptionKwh * currentRate
+      // Filter devices based on selected department and office (SAME AS PDF GENERATION)
+      let reportDevices = devices
+      let officeDisplayName = 'All Offices'
       
-      return {
-        outletId: device.outletId,
-        appliance: device.appliances || 'Unassigned',
-        powerLimit: 0, // Will be filled from Firebase data if needed
-        monthlyEnergy: monthlyEnergyWh, // In Wh for consistency
-        totalHours: 0, // Will be calculated from Firebase if needed
-        monthlyCost: monthlyCost,
-        consumptionValue: monthlyEnergyWh // For sorting
+      // First filter by department
+      if (selectedPdfDepartment !== 'All Departments') {
+        reportDevices = devices.filter(device => {
+          if (device.office_info && device.office_info.department) {
+            return device.office_info.department.toLowerCase() === selectedPdfDepartment.toLowerCase()
+          }
+          return false
+        })
       }
-    })
-    
-    // Sort by consumption (highest first) if report type is "Outlets"
-    if (selectedReportType === 'Outlets') {
-      deviceTableData.sort((a, b) => b.consumptionValue - a.consumptionValue)
-    }
-    
-    // Calculate estimated cost using same logic as Dashboard.tsx
-    // Sum the truncated individual costs instead of calculating from total energy
-    const estimatedCost = deviceTableData.reduce((sum, device) => sum + (Math.floor(device.monthlyCost * 100) / 100), 0)
-    
-    console.log('Preview data calculated:', {
-      deviceCount,
-      totalEnergy,
-      estimatedCost,
-      currentRate,
-      deviceTableDataLength: deviceTableData.length,
-      deviceTableData: deviceTableData.slice(0, 3) // Show first 3 devices for debugging
-    })
-    
-    setPreviewData({
-      deviceCount,
-      totalEnergy,
-      estimatedCost,
-      filteredDevices,
-      deviceTableData
-    })
+      
+      // Then filter by office if specific office is selected (SAME AS PDF GENERATION)
+      if (selectedPdfOffice && selectedPdfOffice !== 'All Offices') {
+        reportDevices = reportDevices.filter(device => {
+          if (device.office_info && device.office_info.office) {
+            return device.office_info.office === selectedPdfOffice
+          }
+          return false
+        })
+        officeDisplayName = selectedPdfOffice
+      }
 
-    setIsLoadingPreview(false)
+      console.log('Preview: Filtered devices for preview:', reportDevices.length, 'Department:', selectedPdfDepartment, 'Office:', selectedPdfOffice)
+      console.log('Preview: Date range:', { startDate, endDate })
+      console.log('Preview: Total devices available:', devices.length)
+      console.log('Preview: Sample devices:', devices.slice(0, 3).map(d => ({ outletId: d.outletId, office_info: d.office_info })))
+
+      // Calculate monthly energy consumption for each device (SAME LOGIC AS PDF GENERATION)
+      const deviceMonthlyData = await Promise.all(reportDevices.map(async (device) => {
+        console.log(`Preview: Processing device ${device.outletId}`)
+        try {
+          const devicesRef = ref(realtimeDb, 'devices')
+          const snapshot = await get(devicesRef)
+          
+          if (snapshot.exists()) {
+            const devicesData = snapshot.val()
+            const outlet = devicesData[device.outletId]
+            console.log(`Preview: Device ${device.outletId} outlet data:`, outlet)
+            
+            if (outlet && outlet.daily_logs) {
+              let monthlyEnergy = 0
+              let totalHours = 0
+              
+              // Use date range filtering with robust date parsing (SAME AS PDF)
+              const start = new Date(startDate)
+              const end = new Date(endDate)
+              
+              console.log(`Preview: Processing daily_logs for ${device.outletId}, date range:`, { start, end })
+              console.log(`Preview: Available daily_logs dates:`, Object.keys(outlet.daily_logs))
+              
+              for (const [dateStr, dayData] of Object.entries(outlet.daily_logs)) {
+                // Handle different date formats from the database (SAME AS PDF)
+                let logDate: Date
+                try {
+                  // Try parsing as-is first
+                  logDate = new Date(dateStr)
+                  
+                  // If that fails or gives invalid date, try parsing day_YYYY_MM_DD format
+                  if (isNaN(logDate.getTime()) && dateStr.startsWith('day_')) {
+                    const datePart = dateStr.replace('day_', '').replace(/_/g, '-')
+                    logDate = new Date(datePart)
+                  }
+                  
+                  // If still invalid, try to extract date from the string
+                  if (isNaN(logDate.getTime())) {
+                    const match = dateStr.match(/(\d{4})_(\d{2})_(\d{2})/)
+                    if (match) {
+                      const [, year, month, day] = match
+                      logDate = new Date(parseInt(year), parseInt(month) - 1, parseInt(day))
+                    }
+                  }
+                } catch (error) {
+                  console.error(`Error parsing date ${dateStr}:`, error)
+                  continue
+                }
+                
+                if (logDate >= start && logDate <= end) {
+                  const dayDataTyped = dayData as { total_energy?: number; usage_time_hours?: number }
+                  console.log(`Preview: Adding data for ${dateStr} in date range:`, dayDataTyped)
+                  monthlyEnergy += dayDataTyped.total_energy || 0 // Already in kW
+                  totalHours += dayDataTyped.usage_time_hours || 0 // Usage time in hours
+                }
+              }
+              
+              console.log(`Preview: Device ${device.outletId} calculated:`, { monthlyEnergy, totalHours })
+              
+              const deviceData = {
+                outletId: device.outletId,
+                appliance: outlet.office_info?.appliance || 'Unassigned',
+                powerLimit: (outlet.relay_control?.auto_cutoff?.power_limit || 0) * 1000, // Convert to watts
+                monthlyEnergy: monthlyEnergy * 1000, // Convert to watts
+                totalHours: totalHours,
+                monthlyCost: monthlyEnergy * currentRate
+              }
+              
+              return deviceData
+            } else {
+              console.log(`Preview: Device ${device.outletId} has no daily_logs`)
+            }
+          } else {
+            console.log(`Preview: Firebase snapshot does not exist for device ${device.outletId}`)
+          }
+          
+          return {
+            outletId: device.outletId,
+            appliance: device.appliances || 'Unassigned',
+            powerLimit: 0,
+            monthlyEnergy: 0,
+            totalHours: 0,
+            monthlyCost: 0
+          }
+        } catch (error) {
+          console.error(`Error calculating data for ${device.outletId}:`, error)
+          return {
+            outletId: device.outletId,
+            appliance: device.appliances || 'Unassigned',
+            powerLimit: 0,
+            monthlyEnergy: 0,
+            totalHours: 0,
+            monthlyCost: 0
+          }
+        }
+      }))
+
+      // Calculate totals (SAME AS PDF GENERATION)
+      const totalEnergy = deviceMonthlyData.reduce((sum, device) => sum + device.monthlyEnergy, 0) / 1000 // Convert back to kWh
+      const estimatedCost = deviceMonthlyData.reduce((sum, device) => sum + (Math.floor(device.monthlyCost * 100) / 100), 0)
+      const deviceCount = deviceMonthlyData.length
+
+      console.log('Preview data calculated (SAME AS PDF):', {
+        deviceCount,
+        totalEnergy,
+        estimatedCost,
+        currentRate,
+        deviceTableDataLength: deviceMonthlyData.length,
+        deviceTableData: deviceMonthlyData.slice(0, 3) // Show first 3 devices for debugging
+      })
+
+      // Sort deviceTableData by energy consumption (highest first) if report type is "Outlets"
+      if (selectedReportType === 'Outlets') {
+        deviceMonthlyData.sort((a, b) => b.monthlyEnergy - a.monthlyEnergy)
+      }
+
+      setPreviewData({
+        deviceCount,
+        totalEnergy,
+        estimatedCost,
+        filteredDevices: reportDevices,
+        deviceTableData: deviceMonthlyData
+      })
+
+      setIsLoadingPreview(false)
+      setIsDateRangeModalOpen(false)
+      setIsPdfPreviewModalOpen(true)
+      
+    } catch (error) {
+      console.error('Error generating preview data:', error)
+      setIsLoadingPreview(false)
+      alert('Error generating preview data. Please try again.')
+    }
   }
 
   // Handle PDF generation with filtered data
@@ -1608,58 +1685,73 @@ export default function Reports() {
 
   // Fetch devices data from Firebase
   useEffect(() => {
+    console.log('=== DEVICE LOADING DEBUG ===')
     const devicesRef = ref(realtimeDb, 'devices')
+    console.log('Firebase devices reference:', devicesRef.toString())
     
     const unsubscribe = onValue(devicesRef, (snapshot) => {
+      console.log('Firebase snapshot received:', snapshot.exists())
       const data = snapshot.val()
+      console.log('Firebase data:', data)
+      
       if (data) {
+        console.log('Firebase data exists, processing devices...')
         const devicesArray: DeviceData[] = []
 
         const todayDateKey = getTodayDateKey()
+        console.log('Today date key:', todayDateKey)
+        console.log('Available device keys:', Object.keys(data))
         
         Object.keys(data).forEach((outletKey) => {
           const outlet: FirebaseDeviceData = data[outletKey]
-          if (outlet.sensor_data) {
-            // Map office values to display names
-            const officeNames: Record<string, string> = {
-              'computer-lab-1': 'Computer Laboratory 1',
-              'computer-lab-2': 'Computer Laboratory 2',
-              'computer-lab-3': 'Computer Laboratory 3',
-              'deans-office': "Dean's Office",
-              'faculty-office': 'Faculty Office'
-            }
-            
-            const officeValue = outlet.office_info?.office || ''
-            const officeInfo = officeValue ? (officeNames[officeValue] || officeValue) : '—'
-            
-            // Get today's data from daily_logs
-            const todayLogs = outlet.daily_logs?.[todayDateKey]
-            
-            // Get lifetime_energy from root level (already in kW from database)
-            const lifetimeEnergyKw = outlet.lifetime_energy || 0
-            
-            const deviceData: DeviceData = {
-              outletId: outletKey,
-              status: outlet.relay_control?.status || 'OFF',
-              power: outlet.sensor_data.power || 0,
-              energy: outlet.sensor_data.energy || 0,
-              current: outlet.sensor_data.current || 0,
-              voltage: outlet.sensor_data.voltage || 0,
-              power_factor: outlet.sensor_data.power_factor || 0,
-              timestamp: outlet.sensor_data.timestamp || '',
-              avg_power: todayLogs?.avg_power || 0,
-              peak_power: todayLogs?.peak_power || 0,
-              total_energy: todayLogs?.total_energy || 0, // This is in kW from daily logs
-              lifetime_energy: lifetimeEnergyKw, // This is in kW from root level
-              officeRoom: officeInfo,
-              appliances: outlet.office_info?.appliance || 'Unassigned',
-              office_info: outlet.office_info, // Add office_info data
-              relay_control: outlet.relay_control // Add relay_control data
-            }
-            devicesArray.push(deviceData)
+          console.log(`Processing device ${outletKey}:`, {
+            hasSensorData: !!outlet.sensor_data,
+            hasOfficeInfo: !!outlet.office_info,
+            hasRelayControl: !!outlet.relay_control,
+            lifetimeEnergy: outlet.lifetime_energy
+          })
+          
+          // Include ALL devices, even those without sensor_data
+          // Map office values to display names
+          const officeNames: Record<string, string> = {
+            'computer-lab-1': 'Computer Laboratory 1',
+            'computer-lab-2': 'Computer Laboratory 2',
+            'computer-lab-3': 'Computer Laboratory 3',
+            'deans-office': "Dean's Office",
+            'faculty-office': 'Faculty Office'
           }
+          
+          const officeValue = outlet.office_info?.office || ''
+          const officeInfo = officeValue ? (officeNames[officeValue] || officeValue) : '—'
+          
+          // Get today's data from daily_logs
+          const todayLogs = outlet.daily_logs?.[todayDateKey]
+          
+          // Get lifetime_energy from root level (already in kW from database)
+          const lifetimeEnergyKw = outlet.lifetime_energy || 0
+          
+          const deviceData: DeviceData = {
+            outletId: outletKey,
+            status: outlet.relay_control?.status || 'OFF',
+            power: outlet.sensor_data?.power || 0,
+            energy: outlet.sensor_data?.energy || 0,
+            current: outlet.sensor_data?.current || 0,
+            voltage: outlet.sensor_data?.voltage || 0,
+            power_factor: outlet.sensor_data?.power_factor || 0,
+            timestamp: outlet.sensor_data?.timestamp || '',
+            avg_power: todayLogs?.avg_power || 0,
+            peak_power: todayLogs?.peak_power || 0,
+            total_energy: todayLogs?.total_energy || 0, // This is in kW from daily logs
+            lifetime_energy: lifetimeEnergyKw, // This is in kW from root level
+            officeRoom: officeInfo,
+            appliances: outlet.office_info?.appliance || 'Unassigned',
+            office_info: outlet.office_info, // Add office_info data
+            relay_control: outlet.relay_control // Add relay_control data
+          }
+          devicesArray.push(deviceData)
         })
 
+        console.log('Processed devices array length:', devicesArray.length)
         setDevices(devicesArray)
         
         // Debug logging
@@ -1675,7 +1767,13 @@ export default function Reports() {
             office_info: d.office_info
           }))
         })
+      } else {
+        console.error('ERROR: No data received from Firebase devices collection!')
+        console.log('Firebase snapshot:', snapshot)
+        setDevices([])
       }
+    }, (error) => {
+      console.error('Firebase error:', error)
     })
 
     return () => off(devicesRef, 'value', unsubscribe)
