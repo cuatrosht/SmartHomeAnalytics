@@ -536,6 +536,7 @@ export default function Reports() {
 
   // Handle date range confirmation and show preview
   const handleDateRangeConfirm = async () => {
+    // Updated: Using same logic as PDF generation for consistency
     if (!selectedStartDate || !selectedEndDate) return
     
     setIsLoadingPreview(true)
