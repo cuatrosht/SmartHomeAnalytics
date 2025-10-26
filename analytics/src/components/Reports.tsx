@@ -554,11 +554,16 @@ export default function Reports() {
     }
     
     // Then filter by office if specific office is selected
-    if (selectedOffice !== 'All Offices') {
-      filteredDevices = filteredDevices.filter(device => device.officeRoom === selectedOffice)
+    if (selectedPdfOffice !== 'All Offices') {
+      filteredDevices = filteredDevices.filter(device => {
+        if (device.office_info && device.office_info.office) {
+          return device.office_info.office === selectedPdfOffice
+        }
+        return false
+      })
     }
 
-    console.log('Filtered devices:', filteredDevices.length, 'Department:', selectedPdfDepartment, 'Office:', selectedOffice)
+    console.log('Filtered devices:', filteredDevices.length, 'Department:', selectedPdfDepartment, 'Office:', selectedPdfOffice)
 
     // Calculate preview data for the selected date range
     const startDate = new Date(selectedStartDate)
@@ -671,6 +676,11 @@ export default function Reports() {
       deviceTableData
     })
 
+    // Sort deviceTableData by energy consumption (highest first) if report type is "Outlets"
+    if (selectedReportType === 'Outlets') {
+      deviceTableData.sort((a, b) => b.monthlyEnergy - a.monthlyEnergy)
+    }
+
     setPreviewData({
       deviceCount,
       totalEnergy,
@@ -719,7 +729,12 @@ export default function Reports() {
       
       // Then filter by office if specific office is selected
       if (targetOffice && targetOffice !== 'All Offices') {
-        reportDevices = reportDevices.filter(device => device.officeRoom === targetOffice)
+        reportDevices = reportDevices.filter(device => {
+          if (device.office_info && device.office_info.office) {
+            return device.office_info.office === targetOffice
+          }
+          return false
+        })
         officeDisplayName = targetOffice
       }
 
@@ -949,7 +964,7 @@ export default function Reports() {
     yPosition += 10
 
     // Table headers with light blue background and grid structure
-    const colWidths = [20, 30, 25, 30, 25, 25, 20]
+    const colWidths = selectedReportType === 'Outlets' ? [15, 20, 30, 25, 30, 25, 25] : [20, 30, 25, 30, 25, 25, 20]
     const headerHeight = 16
     let xPosition = 20
 
@@ -966,40 +981,48 @@ export default function Reports() {
     xPosition = 20
     
     // Draw table headers with multi-line text
+    // Rank (only for outlets)
+    if (selectedReportType === 'Outlets') {
+      addText('Rank', xPosition + 2, yPosition + 4, { fontSize: 10, bold: true })
+      xPosition += colWidths[0]
+    }
+    
     // Outlet
     addText('Outlet', xPosition + 2, yPosition + 4, { fontSize: 10, bold: true })
-    xPosition += colWidths[0]
+    xPosition += colWidths[selectedReportType === 'Outlets' ? 1 : 0]
     
     // Appliance
     addText('Appliance', xPosition + 2, yPosition + 4, { fontSize: 10, bold: true })
-    xPosition += colWidths[1]
+    xPosition += colWidths[selectedReportType === 'Outlets' ? 2 : 1]
     
     // Power Limit (Wh) - split into two lines with better spacing
     addText('Power Limit', xPosition + 2, yPosition + 3, { fontSize: 10, bold: true })
     addText('(Wh)', xPosition + 2, yPosition + 9, { fontSize: 10, bold: true })
-    xPosition += colWidths[2]
+    xPosition += colWidths[selectedReportType === 'Outlets' ? 3 : 2]
     
     // Total Power Usage (Wh) - split into three lines
     addText('Total Power', xPosition + 2, yPosition + 2, { fontSize: 10, bold: true })
     addText('Usage', xPosition + 2, yPosition + 6, { fontSize: 10, bold: true })
     addText('(Wh)', xPosition + 2, yPosition + 10, { fontSize: 10, bold: true })
-    xPosition += colWidths[3]
+    xPosition += colWidths[selectedReportType === 'Outlets' ? 4 : 3]
     
     // Total No. of Hours (hrs) - split into three lines
     addText('Total No. of', xPosition + 2, yPosition + 2, { fontSize: 10, bold: true })
     addText('Hours', xPosition + 2, yPosition + 6, { fontSize: 10, bold: true })
     addText('(hrs)', xPosition + 2, yPosition + 10, { fontSize: 10, bold: true })
-    xPosition += colWidths[4]
+    xPosition += colWidths[selectedReportType === 'Outlets' ? 5 : 4]
     
     // Monthly Cost (PHP) - split into two lines
     addText('Monthly Cost', xPosition + 2, yPosition + 4, { fontSize: 10, bold: true })
     addText('(PHP)', xPosition + 2, yPosition + 8, { fontSize: 10, bold: true })
-    xPosition += colWidths[5]
+    xPosition += colWidths[selectedReportType === 'Outlets' ? 5 : 5]
     
-    // Share of Total (%) - split into three lines
-    addText('Share of', xPosition + 2, yPosition + 2, { fontSize: 10, bold: true })
-    addText('Total', xPosition + 2, yPosition + 6, { fontSize: 10, bold: true })
-    addText('(%)', xPosition + 2, yPosition + 10, { fontSize: 10, bold: true })
+    // Share of Total (%) - only show if not outlets
+    if (selectedReportType !== 'Outlets') {
+      addText('Share of', xPosition + 2, yPosition + 2, { fontSize: 10, bold: true })
+      addText('Total', xPosition + 2, yPosition + 6, { fontSize: 10, bold: true })
+      addText('(%)', xPosition + 2, yPosition + 10, { fontSize: 10, bold: true })
+    }
     
     yPosition += headerHeight + 2
 
@@ -1037,15 +1060,26 @@ export default function Reports() {
         ? ((device.monthlyEnergy / deviceMonthlyData.reduce((sum, d) => sum + d.monthlyEnergy, 0)) * 100).toFixed(3)
         : '0.000'
       
-      return [
+      const baseData = [
         `Outlet ${outletNumber}`,
         device.appliance,
         powerLimitDisplay,
         monthlyEnergyDisplay,
         totalHoursDisplay,
-        monthlyCostDisplay,
-        sharePercentage
+        monthlyCostDisplay
       ]
+      
+      // Add share percentage only if not outlets
+      if (selectedReportType !== 'Outlets') {
+        baseData.push(sharePercentage)
+      }
+      
+      // Add rank at the beginning if report type is "Outlets"
+      if (selectedReportType === 'Outlets') {
+        return [(index + 1).toString(), ...baseData]
+      }
+      
+      return baseData
     })
 
     // Draw table rows with grid structure
@@ -1355,6 +1389,10 @@ export default function Reports() {
   const [officesData, setOfficesData] = useState<any>({})
   const [offices, setOffices] = useState<string[]>([])
   const [departments, setDepartments] = useState<string[]>(['All Departments'])
+
+  // Report Type Modal States
+  const [isReportTypeModalOpen, setIsReportTypeModalOpen] = useState(false)
+  const [selectedReportType, setSelectedReportType] = useState('')
 
   // Debug departments state
   useEffect(() => {
@@ -2381,7 +2419,7 @@ export default function Reports() {
           <button 
             className="print-report-btn" 
             type="button" 
-            onClick={() => showPdfDepartmentSelection()}
+            onClick={() => setIsReportTypeModalOpen(true)}
             title="Generate PDF Report"
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -3151,6 +3189,59 @@ export default function Reports() {
         </div>
       )}
 
+      {/* Report Type Selection Modal */}
+      {isReportTypeModalOpen && (
+        <div className="chart-modal-overlay" onClick={() => setIsReportTypeModalOpen(false)}>
+          <div className="chart-modal-content report-type-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="chart-modal-header">
+              <h3>Select Report Type</h3>
+              <button 
+                className="chart-modal-close" 
+                onClick={() => setIsReportTypeModalOpen(false)}
+                aria-label="Close modal"
+              >
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </button>
+            </div>
+            <div className="chart-modal-body">
+              <div className="report-type-container">
+                <button 
+                  className="report-type-option"
+                  onClick={() => {
+                    setSelectedReportType('Departments')
+                    setIsReportTypeModalOpen(false)
+                    setIsPdfDepartmentModalOpen(true)
+                  }}
+                >
+                  <div className="report-type-content">
+                    <h4>Departments</h4>
+                    <p>Generate report by department (CCMS, CBPA, etc.)</p>
+                  </div>
+                </button>
+                
+                <button 
+                  className="report-type-option"
+                  onClick={() => {
+                    setSelectedReportType('Outlets')
+                    setSelectedPdfDepartment('All Departments') // Set default for outlets
+                    setSelectedPdfOffice('All Offices') // Set default for outlets
+                    setIsReportTypeModalOpen(false)
+                    setIsDateRangeModalOpen(true) // Go directly to date range modal
+                  }}
+                >
+                  <div className="report-type-content">
+                    <h4>Outlets</h4>
+                    <p>Generate report by individual outlets</p>
+                  </div>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Department Selection Modal for PDF */}
       {isPdfDepartmentModalOpen && (
         <div className="chart-modal-overlay" onClick={() => setIsPdfDepartmentModalOpen(false)}>
@@ -3199,8 +3290,9 @@ export default function Reports() {
                       className="office-option"
                       onClick={() => {
                         setSelectedPdfDepartment(department)
+                        setSelectedPdfOffice('All Offices') // Set default office
                         setIsPdfDepartmentModalOpen(false)
-                        setIsPdfOfficeModalOpen(true)
+                        setIsDateRangeModalOpen(true)
                       }}
                     >
                       <div className="office-option-content">
@@ -3360,7 +3452,7 @@ export default function Reports() {
         <div className="chart-modal-overlay" onClick={() => setIsPdfPreviewModalOpen(false)}>
           <div className="chart-modal-content pdf-preview-modal" onClick={(e) => e.stopPropagation()}>
             <div className="chart-modal-header">
-              <h3>PDF Report Preview - {selectedPdfDepartment}{selectedOffice && selectedOffice !== 'All Offices' ? ` - ${selectedOffice}` : ''}</h3>
+              <h3>PDF Report Preview - {selectedPdfDepartment}{selectedPdfOffice && selectedPdfOffice !== 'All Offices' ? ` - ${selectedPdfOffice}` : ''}</h3>
               <button 
                 className="chart-modal-close" 
                 onClick={() => setIsPdfPreviewModalOpen(false)}
@@ -3392,7 +3484,7 @@ export default function Reports() {
                       {selectedPdfDepartment !== 'All Departments' && (
                         <p><strong>Department:</strong> {selectedPdfDepartment}</p>
                       )}
-                      <p><strong>Offices:</strong> {selectedOffice}</p>
+                      <p><strong>Offices:</strong> {selectedPdfOffice}</p>
                       <p><strong>No. of EcoPlug:</strong> {previewData?.deviceCount || 0}</p>
                       <p><strong>Electricity Rate:</strong> PHP {currentRate.toFixed(4)} per kWh</p>
                     </div>
@@ -3414,26 +3506,28 @@ export default function Reports() {
                     <h3>I. Outlet Performance Breakdown</h3>
                     <div className="table-preview">
                       <div className="table-header">
+                        {selectedReportType === 'Outlets' && <div className="table-cell">Rank</div>}
                         <div className="table-cell">Outlet</div>
                         <div className="table-cell">Appliance</div>
                         <div className="table-cell">Power Limit (Wh)</div>
                         <div className="table-cell">Total Power Usage (Wh)</div>
                         <div className="table-cell">Total No. of Hours (hrs)</div>
                         <div className="table-cell">Monthly Cost (PHP)</div>
-                        <div className="table-cell">Share of Total (%)</div>
+                        {selectedReportType !== 'Outlets' && <div className="table-cell">Share of Total (%)</div>}
                       </div>
                       {previewData?.deviceTableData?.slice(0, 5).map((device: any, index: number) => {
                         const totalEnergy = previewData.totalEnergy || 0
                         const sharePercentage = totalEnergy > 0 ? ((device.monthlyEnergy / (totalEnergy * 1000)) * 100).toFixed(3) : '0.000'
                         return (
                           <div key={index} className="table-row">
+                            {selectedReportType === 'Outlets' && <div className="table-cell">{index + 1}</div>}
                             <div className="table-cell">{device.outletId}</div>
                             <div className="table-cell">{device.appliance}</div>
                             <div className="table-cell">{device.powerLimit.toFixed(3)}</div>
                             <div className="table-cell">{device.monthlyEnergy.toFixed(3)}</div>
                             <div className="table-cell">{device.totalHours.toFixed(3)}</div>
                             <div className="table-cell">PHP {(Math.floor(device.monthlyCost * 100) / 100).toFixed(2)}</div>
-                            <div className="table-cell">{sharePercentage}</div>
+                            {selectedReportType !== 'Outlets' && <div className="table-cell">{sharePercentage}</div>}
                           </div>
                         )
                       })}

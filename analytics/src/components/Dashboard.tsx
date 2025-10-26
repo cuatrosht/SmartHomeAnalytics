@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Line, Bar } from 'react-chartjs-2'
+import jsPDF from 'jspdf'
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -293,6 +294,14 @@ interface DeviceData {
     appliance?: string
     enable_power_scheduling?: boolean
   }
+  relay_control?: {
+    status: string
+    main_status?: string
+    auto_cutoff?: {
+      enabled: boolean
+      power_limit: number
+    }
+  }
 }
 
 export default function Dashboard({ onNavigate }: DashboardProps) {
@@ -447,6 +456,24 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
   const [selectedFilter1, setSelectedFilter1] = useState('Day')
   const [selectedFilter2, setSelectedFilter2] = useState('Day')
   const [selectedFilter3, setSelectedFilter3] = useState('Day')
+  
+  // Office Reports Modal States
+  const [isOfficeReportsModalOpen, setIsOfficeReportsModalOpen] = useState(false)
+  const [isReportTypeModalOpen, setIsReportTypeModalOpen] = useState(false)
+  const [selectedReportDepartment, setSelectedReportDepartment] = useState('All Departments')
+  const [selectedReportOffice, setSelectedReportOffice] = useState('All Offices')
+  const [selectedReportType, setSelectedReportType] = useState('')
+  
+  // Date Range Modal States
+  const [isDateRangeModalOpen, setIsDateRangeModalOpen] = useState(false)
+  const [selectedStartDate, setSelectedStartDate] = useState('')
+  const [selectedEndDate, setSelectedEndDate] = useState('')
+  
+  // PDF Preview Modal States
+  const [isPdfPreviewModalOpen, setIsPdfPreviewModalOpen] = useState(false)
+  const [previewData, setPreviewData] = useState<any>(null)
+  const [isLoadingPreview, setIsLoadingPreview] = useState(false)
+  const [currentRate, setCurrentRate] = useState(9.3885)
   const [timeSegment, setTimeSegment] = useState('Week')
   const [department, setDepartment] = useState('All Departments')
   const [office, setOffice] = useState('All Offices')
@@ -471,7 +498,6 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
   const [totalLifetimeEnergy, setTotalLifetimeEnergy] = useState(0)
   const [dailyAverage, setDailyAverage] = useState(0)
   const [todayTotalEnergy, setTodayTotalEnergy] = useState(0)
-  const [currentRate, setCurrentRate] = useState(9.3885) // Default CANORECO Residential rate (Aug 2025)
   const [lastRateUpdate, setLastRateUpdate] = useState<string>('')
   const [currentBill, setCurrentBill] = useState(0)
   const [monthlyBill, setMonthlyBill] = useState(0)
@@ -1199,7 +1225,9 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
               lifetime_energy: lifetimeEnergyKw, // Use the raw kW value for calculations
               monthUsage: calculateMonthlyEnergy(outlet), // Calculate monthly energy
               officeRoom: officeInfo,
-              appliances: outlet.office_info?.appliance || 'Unassigned'
+              appliances: outlet.office_info?.appliance || 'Unassigned',
+              office_info: outlet.office_info, // Add office_info data
+              relay_control: outlet.relay_control // Add relay_control data
             }
             devicesArray.push(deviceData)
           }
@@ -2239,6 +2267,307 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     )
   }
 
+  // Format date for display
+  const formatDate = (dateString: string) => {
+    if (!dateString) return ''
+    const date = new Date(dateString)
+    return date.toLocaleDateString('en-US', { 
+      year: 'numeric', 
+      month: 'long', 
+      day: 'numeric' 
+    })
+  }
+
+  // Handle date range confirmation
+  const handleDateRangeConfirm = () => {
+    console.log('Generating report for:', {
+      department: selectedReportDepartment,
+      office: selectedReportOffice,
+      startDate: selectedStartDate,
+      endDate: selectedEndDate,
+      totalDevices: devices.length
+    })
+    
+    // Close date range modal and open PDF preview modal
+    setIsDateRangeModalOpen(false)
+    setIsPdfPreviewModalOpen(true)
+    
+    // Generate preview data (simplified version)
+    let filteredDevices = devices.filter(device => {
+      if (selectedReportDepartment === 'All Departments') return true
+      if (device.office_info && device.office_info.department) {
+        return device.office_info.department.toLowerCase() === selectedReportDepartment.toLowerCase()
+      }
+      return false
+    })
+    
+    // Additional filtering by office if specific office is selected
+    if (selectedReportOffice !== 'All Offices') {
+      filteredDevices = filteredDevices.filter(device => {
+        if (device.office_info && device.office_info.office) {
+          return device.office_info.office === selectedReportOffice
+        }
+        return false
+      })
+    }
+    
+    // Calculate preview data
+    const deviceCount = filteredDevices.length
+    console.log('Filtered devices count:', deviceCount, 'Department:', selectedReportDepartment, 'Office:', selectedReportOffice)
+    // Calculate total energy from monthly consumption values (convert Wh to kWh)
+    const totalEnergy = filteredDevices.reduce((sum, device) => {
+      const monthlyConsumptionStr = device.monthUsage || '0.000 Wh'
+      const monthlyConsumptionValue = parseFloat(monthlyConsumptionStr.replace(/[^\d.]/g, '')) || 0
+      return sum + (monthlyConsumptionValue / 1000) // Convert Wh to kWh
+    }, 0)
+    
+    // Generate device table data - use same calculation as Reports.tsx
+    const deviceTableData = filteredDevices.map(device => {
+      // Parse the monthly consumption from monthUsage (e.g., "10.190 Wh" -> 10.190)
+      const monthlyConsumptionStr = device.monthUsage || '0.000 Wh'
+      const monthlyConsumptionValue = parseFloat(monthlyConsumptionStr.replace(/[^\d.]/g, '')) || 0
+      // Convert Wh to kWh for cost calculation
+      const monthlyConsumptionKwh = monthlyConsumptionValue / 1000
+      // Use same calculation as Reports.tsx: monthlyConsumptionKwh * currentRate
+      const monthlyCost = monthlyConsumptionKwh * currentRate
+      
+      return {
+        outletId: device.outletId,
+        office: device.office_info?.office || 'Unassigned',
+        department: device.office_info?.department || 'Unassigned',
+        appliances: device.appliances || 'Unassigned',
+        monthlyConsumption: monthlyConsumptionStr, // Use the same format as office ranking
+        monthlyCost: monthlyCost, // Same calculation as Reports.tsx
+        consumptionValue: monthlyConsumptionValue // For sorting
+      }
+    })
+    
+    // Sort by consumption (highest first) if report type is "Outlets"
+    if (selectedReportType === 'Outlets') {
+      deviceTableData.sort((a, b) => b.consumptionValue - a.consumptionValue)
+    }
+    
+    // Calculate estimated cost using same logic as Reports.tsx
+    // Sum the truncated individual costs instead of calculating from total energy
+    const estimatedCost = deviceTableData.reduce((sum, device) => sum + (Math.floor(device.monthlyCost * 100) / 100), 0)
+    
+    setPreviewData({
+      deviceCount,
+      totalEnergy,
+      estimatedCost,
+      currentRate,
+      deviceTableData
+    })
+  }
+
+  // Handle PDF generation
+  const handleGeneratePDF = () => {
+    if (!previewData) return
+
+    const doc = new jsPDF()
+    const pageWidth = doc.internal.pageSize.getWidth()
+    const pageHeight = doc.internal.pageSize.getHeight()
+    let yPosition = 20
+
+    // Helper function to add text with wrapping
+    const addText = (text: string, x: number, y: number, options: any = {}) => {
+      // Only render if coordinates are valid (not 0,0 for measurement)
+      if (x === 0 && y === 0) {
+        // This is a measurement call, just calculate height
+        if (options.maxWidth) {
+          const lines = doc.splitTextToSize(text, options.maxWidth)
+          return lines.length * (options.fontSize || 12) * 0.4
+        }
+        return 0
+      }
+      
+      doc.setFontSize(options.fontSize || 12)
+      doc.setFont('helvetica', options.bold ? 'bold' : 'normal')
+      doc.setTextColor(options.color || '#000000')
+      
+      if (options.maxWidth) {
+        // Split text into lines that fit within maxWidth
+        const lines = doc.splitTextToSize(text, options.maxWidth)
+        lines.forEach((line: string, index: number) => {
+          const lineY = y + (index * (options.fontSize || 12) * 0.4)
+          if (options.align) {
+            doc.text(line, x, lineY, { align: options.align })
+          } else {
+            doc.text(line, x, lineY)
+          }
+        })
+        return lines.length * (options.fontSize || 12) * 0.4
+      } else {
+        if (options.align) {
+          doc.text(text, x, y, { align: options.align })
+        } else {
+          doc.text(text, x, y)
+        }
+        return 0
+      }
+    }
+
+    // Helper function to add rectangle
+    const addRect = (x: number, y: number, width: number, height: number, fillColor?: string) => {
+      if (fillColor) {
+        doc.setFillColor(fillColor)
+        doc.rect(x, y, width, height, 'F')
+      } else {
+        doc.rect(x, y, width, height)
+      }
+    }
+
+    // Helper function to check for new page
+    const checkNewPage = (requiredSpace: number) => {
+      if (yPosition + requiredSpace > pageHeight - 20) {
+        doc.addPage()
+        yPosition = 20
+      }
+    }
+
+    // Header
+    addText('Camarines Norte State College', pageWidth / 2, yPosition, { fontSize: 14, bold: true, align: 'center' })
+    yPosition += 7
+    addText('Daet, Camarines Norte', pageWidth / 2, yPosition, { fontSize: 14, bold: true, align: 'center' })
+    yPosition += 15
+
+    // Report title
+    addText('Top Consumption Summary Report', pageWidth / 2, yPosition, { fontSize: 16, bold: true, align: 'center' })
+    yPosition += 20
+
+    // Report details
+    addText(`Date Range: ${formatDate(selectedStartDate)} to ${formatDate(selectedEndDate)}`, 20, yPosition, { fontSize: 12 })
+    yPosition += 7
+
+    if (selectedReportDepartment !== 'All Departments') {
+      addText(`Department: ${selectedReportDepartment}`, 20, yPosition, { fontSize: 12 })
+      yPosition += 7
+    }
+
+    addText(`Offices: ${selectedReportOffice}`, 20, yPosition, { fontSize: 12 })
+    yPosition += 7
+    addText(`No. of EcoPlug: ${previewData.deviceCount}`, 20, yPosition, { fontSize: 12 })
+    yPosition += 7
+    addText(`Electricity Rate: PHP ${currentRate.toFixed(4)} per kWh`, 20, yPosition, { fontSize: 12 })
+    yPosition += 15
+
+    // Table section
+    const tableTitle = selectedReportType === 'Outlets' ? 'I. Top Outlet Consumption Ranking' : 'I. Outlet Performance Breakdown'
+    addText(tableTitle, 20, yPosition, { fontSize: 14, bold: true })
+    yPosition += 10
+
+    // Table headers
+    const headers = selectedReportType === 'Outlets' 
+      ? ['Rank', 'Outlet', 'Appliance', 'Office', 'This Month Consumption', 'Monthly Cost (PHP)']
+      : ['Rank', 'Office', 'Department', 'Outlet', 'This Month Consumption', 'Monthly Cost (PHP)']
+
+    const colWidths = [16, 22, 33, 33, 38, 27]
+    const rowHeight = 10
+    const startX = 20
+
+    // Draw table headers
+    let xPosition = startX
+    let maxHeaderHeight = rowHeight
+    
+    // First pass: calculate the maximum height needed
+    headers.forEach((header, index) => {
+      const textHeight = addText(header, 0, 0, { 
+        fontSize: 10, 
+        bold: true, 
+        maxWidth: colWidths[index] - 4 
+      })
+      maxHeaderHeight = Math.max(maxHeaderHeight, textHeight + 8)
+    })
+    
+    // Second pass: draw rectangles and text with correct height
+    xPosition = startX
+    headers.forEach((header, index) => {
+      addRect(xPosition, yPosition - 2, colWidths[index], maxHeaderHeight)
+      addText(header, xPosition + 2, yPosition + 6, { 
+        fontSize: 10, 
+        bold: true, 
+        maxWidth: colWidths[index] - 4 
+      })
+      xPosition += colWidths[index]
+    })
+    yPosition += maxHeaderHeight
+
+    // Draw table rows
+    previewData.deviceTableData.slice(0, 10).forEach((device: any, index: number) => {
+      const rowData = selectedReportType === 'Outlets' 
+        ? [
+            (index + 1).toString(),
+            device.outletId.split('_')[1] || device.outletId,
+            device.appliances || 'Unassigned',
+            device.office || 'Unassigned',
+            device.monthlyConsumption,
+            `PHP ${(Math.floor(device.monthlyCost * 100) / 100).toFixed(2)}`
+          ]
+        : [
+            (index + 1).toString(),
+            device.office || 'Unassigned',
+            device.department || 'Unassigned',
+            device.outletId.split('_')[1] || device.outletId,
+            device.monthlyConsumption,
+            `PHP ${(Math.floor(device.monthlyCost * 100) / 100).toFixed(2)}`
+          ]
+
+      // First pass: calculate the maximum height needed for this row
+      let maxRowHeight = rowHeight
+      rowData.forEach((cellData, cellIndex) => {
+        const textHeight = addText(cellData, 0, 0, { 
+          fontSize: 9, 
+          maxWidth: colWidths[cellIndex] - 4 
+        })
+        maxRowHeight = Math.max(maxRowHeight, textHeight + 8)
+      })
+      
+      checkNewPage(maxRowHeight + 5)
+      
+      // Second pass: draw rectangles and text with correct height
+      xPosition = startX
+      rowData.forEach((cellData, cellIndex) => {
+        addRect(xPosition, yPosition - 2, colWidths[cellIndex], maxRowHeight)
+        addText(cellData, xPosition + 2, yPosition + 6, { 
+          fontSize: 9, 
+          maxWidth: colWidths[cellIndex] - 4 
+        })
+        xPosition += colWidths[cellIndex]
+      })
+      yPosition += maxRowHeight
+    })
+
+    // Summary section
+    yPosition += 2
+    checkNewPage(20)
+    
+    const totalTableWidth = colWidths.reduce((sum, width) => sum + width, 0)
+    const summaryText = `Estimated Cost: PHP ${previewData.estimatedCost.toFixed(2)}`
+    const summaryTextHeight = addText(summaryText, 0, 0, { 
+      fontSize: 10, 
+      bold: true, 
+      maxWidth: totalTableWidth - 4 
+    })
+    const summaryHeight = Math.max(rowHeight, summaryTextHeight + 8)
+    
+    addRect(startX, yPosition - 2, totalTableWidth, summaryHeight)
+    addText(summaryText, startX + 2, yPosition + 6, { 
+      fontSize: 10, 
+      bold: true, 
+      maxWidth: totalTableWidth - 4 
+    })
+
+    // Save the PDF
+    const fileName = selectedReportType === 'Outlets' 
+      ? `Top_Outlet_Consumption_Report_${new Date().toISOString().split('T')[0]}.pdf`
+      : `${selectedReportDepartment}_Report_${new Date().toISOString().split('T')[0]}.pdf`
+    
+    doc.save(fileName)
+    
+    // Close the preview modal
+    setIsPdfPreviewModalOpen(false)
+  }
+
   return (
     <div className="dash-wrap">
       <section className="dash-hero">
@@ -2393,6 +2722,14 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
           <div className="analytics-title">
             <h2>Energy Consumption</h2>
             <p>Track your energy usage over time</p>
+          </div>
+          <div className="filter-container">
+            <button className="office-reports-btn" type="button" onClick={() => setIsReportTypeModalOpen(true)}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+              <span>Consumption Reports</span>
+            </button>
           </div>
         </div>
         
@@ -3310,6 +3647,327 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                   </div>
               </div>
             )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Report Type Selection Modal */}
+      {isReportTypeModalOpen && (
+        <div className="chart-modal-overlay" onClick={() => setIsReportTypeModalOpen(false)}>
+          <div className="chart-modal-content report-type-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="chart-modal-header">
+              <h3>Select Report Type</h3>
+              <button 
+                className="chart-modal-close" 
+                onClick={() => setIsReportTypeModalOpen(false)}
+                aria-label="Close modal"
+              >
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </button>
+    </div>
+            <div className="chart-modal-body">
+              <div className="report-type-container">
+                <button 
+                  className="report-type-option"
+                  onClick={() => {
+                    setSelectedReportType('Departments')
+                    setIsReportTypeModalOpen(false)
+                    setIsOfficeReportsModalOpen(true)
+                  }}
+                >
+                  <div className="report-type-content">
+                    <h4>Departments</h4>
+                    <p>Generate report by department (CCMS, CBPA, etc.)</p>
+                  </div>
+                </button>
+                
+                <button 
+                  className="report-type-option"
+                  onClick={() => {
+                    setSelectedReportType('Outlets')
+                    setSelectedReportDepartment('All Departments') // Set default for outlets
+                    setSelectedReportOffice('All Offices') // Set default for outlets
+                    setIsReportTypeModalOpen(false)
+                    setIsDateRangeModalOpen(true) // Go directly to date range modal
+                  }}
+                >
+                  <div className="report-type-content">
+                    <h4>Outlets</h4>
+                    <p>Generate report by individual outlets</p>
+                  </div>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Office Reports Modal */}
+      {isOfficeReportsModalOpen && (
+        <div className="chart-modal-overlay" onClick={() => setIsOfficeReportsModalOpen(false)}>
+          <div className="chart-modal-content office-selection-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="chart-modal-header">
+              <h3>Select Department for Office Report</h3>
+              <button 
+                className="chart-modal-close" 
+                onClick={() => setIsOfficeReportsModalOpen(false)}
+                aria-label="Close modal"
+              >
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </button>
+            </div>
+            <div className="chart-modal-body">
+              <div className="office-selection-grid">
+                <button 
+                  className="office-option"
+                  onClick={() => {
+                    setSelectedReportDepartment('All Departments')
+                    setSelectedReportOffice('All Offices')
+                    setIsOfficeReportsModalOpen(false)
+                    setIsDateRangeModalOpen(true)
+                  }}
+                >
+                  <div className="office-option-content">
+                    <h4>All Departments</h4>
+                    <p>Generate report for all devices across all departments</p>
+                    <div className="office-stats">
+                      <span>{devices.length} devices</span>
+                    </div>
+                  </div>
+                </button>
+                
+                {departments.filter(dept => dept !== 'All Departments').map((department) => {
+                  const departmentDevices = devices.filter(device => {
+                    if (device.office_info && device.office_info.department) {
+                      return device.office_info.department.toLowerCase() === department.toLowerCase()
+                    }
+                    return false
+                  })
+                  return (
+                    <button 
+                      key={department}
+                      className="office-option"
+                      onClick={() => {
+                        setSelectedReportDepartment(department)
+                        setSelectedReportOffice('All Offices')
+                        setIsOfficeReportsModalOpen(false)
+                        setIsDateRangeModalOpen(true)
+                      }}
+                    >
+                      <div className="office-option-content">
+                        <h4>{department}</h4>
+                        <p>Generate report for devices in this department</p>
+                        <div className="office-stats">
+                          <span>{departmentDevices.length} devices</span>
+                        </div>
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Date Range Selection Modal */}
+      {isDateRangeModalOpen && (
+        <div className="chart-modal-overlay" onClick={() => setIsDateRangeModalOpen(false)}>
+          <div className="chart-modal-content date-range-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="chart-modal-header">
+              <h3>Select Date Range for {selectedReportDepartment}</h3>
+              <button 
+                className="chart-modal-close" 
+                onClick={() => setIsDateRangeModalOpen(false)}
+                aria-label="Close modal"
+              >
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </button>
+            </div>
+            <div className="chart-modal-body">
+              <div className="date-range-container">
+                <div className="date-input-group">
+                  <label htmlFor="start-date">Start Date:</label>
+                  <input
+                    id="start-date"
+                    type="date"
+                    value={selectedStartDate}
+                    onChange={(e) => setSelectedStartDate(e.target.value)}
+                    className="date-input"
+                  />
+                </div>
+                <div className="date-input-group">
+                  <label htmlFor="end-date">End Date:</label>
+                  <input
+                    id="end-date"
+                    type="date"
+                    value={selectedEndDate}
+                    onChange={(e) => setSelectedEndDate(e.target.value)}
+                    className="date-input"
+                    min={selectedStartDate}
+                  />
+                </div>
+                <div className="date-range-actions">
+                  <button 
+                    className="btn-secondary"
+                    onClick={() => setIsDateRangeModalOpen(false)}
+                  >
+                    Cancel
+                  </button>
+                  <button 
+                    className="btn-primary"
+                    onClick={() => handleDateRangeConfirm()}
+                    disabled={!selectedStartDate || !selectedEndDate}
+                  >
+                    Preview Report
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* PDF Preview Modal */}
+      {isPdfPreviewModalOpen && (
+        <div className="chart-modal-overlay" onClick={() => setIsPdfPreviewModalOpen(false)}>
+          <div className="chart-modal-content dashboard-pdf-preview-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="chart-modal-header">
+              <h3>PDF Report Preview - {selectedReportType === 'Outlets' ? 'Top Outlets' : selectedReportDepartment}</h3>
+              <button 
+                className="chart-modal-close" 
+                onClick={() => setIsPdfPreviewModalOpen(false)}
+                aria-label="Close modal"
+              >
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </button>
+            </div>
+            <div className="chart-modal-body">
+              <div className="dashboard-pdf-preview-container">
+                <div className="dashboard-pdf-preview-content">
+                  {/* PDF Header */}
+                  <div className="dashboard-pdf-preview-header">
+                    <div style={{ textAlign: 'center', marginBottom: '16px' }}>
+                      {/* Only show department name if not "All Departments" */}
+                      {selectedReportDepartment !== 'All Departments' && (
+                        <p style={{ margin: '4px 0', fontSize: '14px', fontWeight: '500' }}>{selectedReportDepartment}</p>
+                      )}
+                      <p style={{ margin: '4px 0', fontSize: '14px', fontWeight: '500' }}>Camarines Norte State College</p>
+                      <p style={{ margin: '4px 0', fontSize: '14px', fontWeight: '500' }}>Daet, Camarines Norte</p>
+                    </div>
+                    <h2 style={{ textAlign: 'center', marginTop: '16px' }}>Top Consumption Summary Report</h2>
+                    <div className="dashboard-pdf-preview-separator"></div>
+                    
+                    <div className="dashboard-pdf-preview-details" style={{ fontSize: '12px', lineHeight: '1.8' }}>
+                      <p><strong>Date Range:</strong> {formatDate(selectedStartDate)} to {formatDate(selectedEndDate)}</p>
+                      {selectedReportDepartment !== 'All Departments' && (
+                        <p><strong>Department:</strong> {selectedReportDepartment}</p>
+                      )}
+                      <p><strong>Offices:</strong> {selectedReportOffice}</p>
+                      <p><strong>No. of EcoPlug:</strong> {previewData?.deviceCount || 0}</p>
+                      <p><strong>Electricity Rate:</strong> PHP {currentRate.toFixed(4)} per kWh</p>
+                    </div>
+                  </div>
+
+                  {previewData?.deviceTableData?.length === 0 && (
+                    <div className="dashboard-no-data-message">
+                      <p>⚠️ No data found for the selected date range. Please check:</p>
+                      <ul>
+                        <li>Date range is correct</li>
+                        <li>Devices have data for this period</li>
+                        <li>Database connection is working</li>
+                      </ul>
+                    </div>
+                  )}
+
+                  {/* I. Outlet Performance Breakdown */}
+                  <div className="dashboard-pdf-preview-table">
+                    <h3>{selectedReportType === 'Outlets' ? 'I. Top Outlet Consumption Ranking' : 'I. Outlet Performance Breakdown'}</h3>
+                    <div className="dashboard-table-preview">
+                      <div className="dashboard-table-header">
+                        <div className="dashboard-table-cell">Rank</div>
+                        <div className="dashboard-table-cell">{selectedReportType === 'Outlets' ? 'Outlet' : 'Office'}</div>
+                        <div className="dashboard-table-cell">{selectedReportType === 'Outlets' ? 'Appliance' : 'Department'}</div>
+                        <div className="dashboard-table-cell">{selectedReportType === 'Outlets' ? 'Office' : 'Outlet'}</div>
+                        <div className="dashboard-table-cell">This Month Consumption</div>
+                        <div className="dashboard-table-cell">Monthly Cost (PHP)</div>
+                      </div>
+                      {previewData?.deviceTableData?.slice(0, 5).map((device: any, index: number) => {
+                        return (
+                          <div key={index} className="dashboard-table-row">
+                            <div className="dashboard-table-cell">{index + 1}</div>
+                            <div className="dashboard-table-cell">
+                              {selectedReportType === 'Outlets' 
+                                ? device.outletId.split('_')[1] || device.outletId
+                                : device.office || 'Unassigned'
+                              }
+                            </div>
+                            <div className="dashboard-table-cell">
+                              {selectedReportType === 'Outlets' 
+                                ? device.appliances || 'Unassigned'
+                                : device.department || 'Unassigned'
+                              }
+                            </div>
+                            <div className="dashboard-table-cell">
+                              {selectedReportType === 'Outlets' 
+                                ? device.office || 'Unassigned'
+                                : device.outletId.split('_')[1] || device.outletId
+                              }
+                            </div>
+                            <div className="dashboard-table-cell">{device.monthlyConsumption}</div>
+                            <div className="dashboard-table-cell">PHP {(Math.floor(device.monthlyCost * 100) / 100).toFixed(2)}</div>
+                          </div>
+                        )
+                      })}
+                      {previewData?.deviceTableData?.length > 5 && (
+                        <div className="dashboard-table-row dashboard-more-devices">
+                          <div className="dashboard-table-cell" style={{ gridColumn: '1 / -1' }}>
+                            ... and {previewData.deviceTableData.length - 5} more devices
+                          </div>
+                        </div>
+                      )}
+                      {/* Summary rows */}
+                      {previewData?.deviceTableData?.length > 0 && (
+                        <>
+                          <div className="dashboard-table-row" style={{ fontWeight: 'bold', background: '#f8fafc' }}>
+                            <div className="dashboard-table-cell" style={{ gridColumn: '1 / -1' }}>
+                              Estimated Cost: PHP {previewData.estimatedCost.toFixed(2)}
+                            </div>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                </div>
+
+                <div className="dashboard-preview-actions">
+                  <button 
+                    className="btn-secondary"
+                    onClick={() => {
+                      setIsPdfPreviewModalOpen(false)
+                      setIsDateRangeModalOpen(true)
+                    }}
+                  >
+                    Back to Date Selection
+                  </button>
+                  <button 
+                    className="btn-primary"
+                    onClick={handleGeneratePDF}
+                  >
+                    Generate PDF
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         </div>

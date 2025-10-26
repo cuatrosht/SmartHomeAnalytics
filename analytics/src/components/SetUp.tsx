@@ -361,6 +361,7 @@ const clearAutoTurnoffTimer = (outletKey: string, setAutoTurnoffTimers: React.Di
   })
 }
 
+
 const resetAutoTurnoffFunction = (outletKey: string, setAutoTurnoffTimers: React.Dispatch<React.SetStateAction<Record<string, NodeJS.Timeout | null>>>) => {
   // Clear any existing timer
   clearAutoTurnoffTimer(outletKey, setAutoTurnoffTimers)
@@ -1294,6 +1295,128 @@ function EditDeviceModal({
             }))
             return
           }
+        }
+      }
+      
+      // Schedule validation: prevent turning ON device outside scheduled time
+      if (formData.enabled && device.schedule && device.schedule.timeRange) {
+        try {
+          // Get device schedule data from database
+          const outletKey = device.outletName.replace(' ', '_')
+          const deviceRef = ref(realtimeDb, `devices/${outletKey}`)
+          const deviceSnapshot = await get(deviceRef)
+          const deviceData = deviceSnapshot.val()
+          
+          if (deviceData && deviceData.schedule) {
+            const schedule = deviceData.schedule
+            const now = new Date()
+            const currentTime = now.getHours() * 60 + now.getMinutes() // Convert to minutes
+            const currentDay = now.getDay() // 0 = Sunday, 1 = Monday, etc.
+            
+            // Parse schedule time range
+            let startTime: number, endTime: number
+            
+            if (schedule.startTime && schedule.endTime) {
+              // Use startTime and endTime from database (24-hour format)
+              const [startHours, startMinutes] = schedule.startTime.split(':').map(Number)
+              const [endHours, endMinutes] = schedule.endTime.split(':').map(Number)
+              startTime = startHours * 60 + startMinutes
+              endTime = endHours * 60 + endMinutes
+            } else if (schedule.timeRange && schedule.timeRange !== 'No schedule') {
+              // Parse timeRange format (e.g., "8:36 PM - 8:40 PM")
+              const timeRange = schedule.timeRange
+              const [startTimeStr, endTimeStr] = timeRange.split(' - ')
+              
+              // Convert 12-hour format to 24-hour format
+              const convertTo24Hour = (time12h: string): number => {
+                const [time, modifier] = time12h.split(' ')
+                let [hours, minutes] = time.split(':').map(Number)
+                
+                if (hours === 12) {
+                  hours = 0
+                }
+                if (modifier === 'PM') {
+                  hours += 12
+                }
+                
+                return hours * 60 + minutes
+              }
+              
+              startTime = convertTo24Hour(startTimeStr)
+              endTime = convertTo24Hour(endTimeStr)
+            } else {
+              // No valid schedule time found
+              return
+            }
+            
+            // Check if current time is within the scheduled time range
+            const isWithinTimeRange = currentTime >= startTime && currentTime < endTime
+            
+            // Check if current day matches the schedule frequency
+            const frequency = schedule.frequency || ''
+            let isCorrectDay = false
+            
+            if (frequency.toLowerCase() === 'daily') {
+              isCorrectDay = true
+            } else if (frequency.toLowerCase() === 'weekdays') {
+              isCorrectDay = currentDay >= 1 && currentDay <= 5 // Monday to Friday
+            } else if (frequency.toLowerCase() === 'weekends') {
+              isCorrectDay = currentDay === 0 || currentDay === 6 // Sunday or Saturday
+            } else if (frequency.includes(',')) {
+              // Handle comma-separated days (e.g., "M,T,W,TH,F,SAT" or "MONDAY, WEDNESDAY, FRIDAY")
+              const dayMap: { [key: string]: number } = {
+                'monday': 1, 'tuesday': 2, 'wednesday': 3, 'thursday': 4, 
+                'friday': 5, 'saturday': 6, 'sunday': 0,
+                'mon': 1, 'tue': 2, 'wed': 3, 'thu': 4, 
+                'fri': 5, 'sat': 6, 'sun': 0,
+                'm': 1, 't': 2, 'w': 3, 'th': 4, 
+                'f': 5, 's': 6
+              }
+              
+              const scheduledDays = frequency.split(',').map((day: string) => {
+                const trimmedDay = day.trim().toLowerCase()
+                return dayMap[trimmedDay]
+              }).filter((day: number | undefined) => day !== undefined)
+              
+              isCorrectDay = scheduledDays.includes(currentDay)
+            } else if (frequency) {
+              // Handle single day or other formats
+              const dayMap: { [key: string]: number } = {
+                'monday': 1, 'tuesday': 2, 'wednesday': 3, 'thursday': 4, 
+                'friday': 5, 'saturday': 6, 'sunday': 0,
+                'mon': 1, 'tue': 2, 'wed': 3, 'thu': 4, 
+                'fri': 5, 'sat': 6, 'sun': 0,
+                'm': 1, 't': 2, 'w': 3, 'th': 4, 
+                'f': 5, 's': 6
+              }
+              
+              const dayNumber = dayMap[frequency.toLowerCase()]
+              if (dayNumber !== undefined) {
+                isCorrectDay = dayNumber === currentDay
+              }
+            }
+            
+            // Check if device is within scheduled time
+            const isWithinSchedule = isWithinTimeRange && isCorrectDay
+            
+            if (!isWithinSchedule) {
+              let scheduleError = 'Device is outside scheduled time'
+              if (schedule.timeRange && schedule.timeRange !== 'No schedule') {
+                scheduleError = `Outside scheduled time: ${schedule.timeRange} (Current: ${now.toLocaleTimeString()})`
+              } else if (schedule.startTime && schedule.endTime) {
+                scheduleError = `Outside scheduled time: ${schedule.startTime} - ${schedule.endTime} (Current: ${now.toLocaleTimeString()})`
+              }
+              
+              setErrors(prev => ({ 
+                ...prev, 
+                deviceControl: scheduleError 
+              }))
+              return
+            }
+          }
+        } catch (error) {
+          console.error('Error checking schedule validation:', error)
+          // Continue with save if schedule check fails
         }
       }
       
@@ -3341,7 +3464,7 @@ export default function SetUp() {
 
   // Auto-turnoff timer state for non-idle devices
   const [autoTurnoffTimers, setAutoTurnoffTimers] = useState<Record<string, NodeJS.Timeout | null>>({})
-
+  
   // Fetch devices data from Firebase
   useEffect(() => {
     const devicesRef = ref(realtimeDb, 'devices')
@@ -3494,7 +3617,8 @@ export default function SetUp() {
               lastEnergyUpdate: currentTime,
               lastControlUpdate: currentTime,
               lastTotalEnergy: currentTotalEnergy,
-              lastControlState: controlState
+              lastControlState: controlState,
+ // Initialize with 0, will be updated after currentAmpere is declared
             }
             
             // Check for energy updates (total_energy changed)
@@ -3558,10 +3682,10 @@ export default function SetUp() {
               console.log(`SetUp: Schedule has frequency:`, !!outlet.schedule.frequency)
             }
 
-            // Get current (ampere) from sensor_data - no decimal places
+            // Get current (ampere) from sensor_data - with 2 decimal places
             const currentAmpere = outlet.sensor_data?.current || 0
-            const currentAmpereDisplay = `${Math.round(currentAmpere)} A`
-
+            const currentAmpereDisplay = `${currentAmpere.toFixed(2)}A`
+            
             const deviceData: Device = {
               id: String(deviceId).padStart(3, '0'),
               outletName: outletKey, // Use the actual outlet key from Firebase
@@ -4525,6 +4649,7 @@ export default function SetUp() {
           clearTimeout(timer)
         }
       })
+      
     }
   }, [combinedLimitInfo])
 
@@ -5530,9 +5655,9 @@ export default function SetUp() {
               }
             }
 
-            // Get current (ampere) from sensor_data - no decimal places
+            // Get current (ampere) from sensor_data - with 2 decimal places
             const currentAmpere = outlet.sensor_data?.current || 0
-            const currentAmpereDisplay = `${Math.round(currentAmpere)} A`
+            const currentAmpereDisplay = `${currentAmpere.toFixed(2)}A`
 
             const deviceData: Device = {
               id: String(deviceId).padStart(3, '0'),

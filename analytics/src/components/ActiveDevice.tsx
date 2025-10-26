@@ -281,6 +281,7 @@ const clearAutoTurnoffTimer = (outletKey: string, setAutoTurnoffTimers: React.Di
   })
 }
 
+
 // const resetAutoTurnoffFunction = (outletKey: string, setAutoTurnoffTimers: React.Dispatch<React.SetStateAction<Record<string, NodeJS.Timeout | null>>>) => {
 //   // Function disabled to prevent auto-turnoff spam
 // }
@@ -927,7 +928,7 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
             lastControlUpdate: currentTime,
             lastTotalEnergy: currentTotalEnergy,
             lastControlState: controlState,
-            lastStateHash: currentStateHash
+            lastStateHash: currentStateHash,
           }
           
           // If this is the first time we're seeing this device with energy data, initialize the timestamp
@@ -939,7 +940,7 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
                 lastControlUpdate: currentTime,
                 lastTotalEnergy: currentTotalEnergy,
                 lastControlState: controlState,
-                lastStateHash: currentStateHash
+                lastStateHash: currentStateHash,
               }
             }))
           }
@@ -1038,9 +1039,9 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
           // Get appliance from database or show "Unassigned"
           const applianceType = outlet.office_info?.appliance || 'Unassigned'
           
-          // Get current (ampere) from sensor_data - no decimal places
+          // Get current (ampere) from sensor_data - with 2 decimal places
           const currentAmpere = outlet.sensor_data?.current || 0
-          const currentAmpereDisplay = `${Math.round(currentAmpere)} A`
+          const currentAmpereDisplay = `${currentAmpere.toFixed(2)}A`
           
           // Format schedule information
           let scheduleTime = 'No schedule'
@@ -1380,6 +1381,7 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
           clearTimeout(timer)
         }
       })
+      
     }
   }, [])
 

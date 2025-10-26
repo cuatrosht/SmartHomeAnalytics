@@ -95,6 +95,7 @@ const clearAutoTurnoffTimer = (outletKey: string, setAutoTurnoffTimers: React.Di
   })
 }
 
+
 // Function to check and enforce combined monthly limits
 const checkCombinedMonthlyLimit = async (devicesData: any, combinedLimitInfo: any) => {
   try {
@@ -320,6 +321,7 @@ interface EditScheduleModalProps {
     timeRange: string
     frequency: string
   }) => void
+  onLimitExceeded: (deviceName: string, limitType: 'individual' | 'combined', currentUsage: number, limitValue: number, scheduleTime: string) => void
 }
 
 
@@ -532,8 +534,106 @@ const formatFrequencyDisplay = (frequency: string): string => {
 
 
 
+// Limit Exceeded Modal Component
+function LimitExceededModal({ 
+  isOpen, 
+  onClose, 
+  deviceName,
+  limitType,
+  currentUsage,
+  limitValue,
+  scheduleTime
+}: { 
+  isOpen: boolean; 
+  onClose: () => void; 
+  deviceName: string;
+  limitType: 'individual' | 'combined';
+  currentUsage: number;
+  limitValue: number;
+  scheduleTime: string;
+}) {
+  if (!isOpen) return null
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content limit-exceeded-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <h3>⚠️ Limit Exceeded</h3>
+          <button
+            type="button"
+            className="modal-close"
+            onClick={onClose}
+            aria-label="Close modal"
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          </button>
+        </div>
+
+        <div className="modal-body">
+          <div className="warning-icon">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          </div>
+          
+            <div className="warning-content">
+              <h4>Cannot Save Schedule</h4>
+              <p>
+                The following outlet(s) would exceed the {limitType} power limit:
+              </p>
+              
+              <div className="exceeding-outlets">
+                <strong>{deviceName}</strong>
+              </div>
+              
+              <div className="limit-details">
+                <div className="detail-row">
+                  <span className="label">Schedule Time:</span>
+                  <span className="value">{scheduleTime}</span>
+                </div>
+                <div className="detail-row">
+                  <span className="label">Current Usage:</span>
+                  <span className="value">{currentUsage.toFixed(3)} Wh</span>
+                </div>
+                <div className="detail-row">
+                  <span className="label">{limitType === 'individual' ? 'Individual' : 'Combined'} Limit:</span>
+                  <span className="value">{limitValue.toFixed(3)} Wh</span>
+                </div>
+                <div className="detail-row">
+                  <span className="label">Excess:</span>
+                  <span className="value excess">{((currentUsage - limitValue)).toFixed(3)} Wh</span>
+                </div>
+              </div>
+              
+              <div className="warning-message">
+                <p>
+                  {limitType === 'individual' 
+                    ? 'Please adjust the schedule time or increase the individual power limit for the exceeding outlet(s) before saving.'
+                    : 'Please adjust the schedule time or increase the power limit for the exceeding outlet(s) before saving.'
+                  }
+                </p>
+              </div>
+            </div>
+        </div>
+
+        <div className="modal-footer">
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={onClose}
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // Edit Schedule Modal Component
-function EditScheduleModal({ isOpen, onClose, device, onSave }: EditScheduleModalProps) {
+function EditScheduleModal({ isOpen, onClose, device, onSave, onLimitExceeded }: EditScheduleModalProps) {
   const [startTime, setStartTime] = useState('')
   const [endTime, setEndTime] = useState('')
   const [selectedDays, setSelectedDays] = useState<string[]>([])
@@ -699,7 +799,7 @@ function EditScheduleModal({ isOpen, onClose, device, onSave }: EditScheduleModa
     return Object.keys(newErrors).length === 0
   }
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     
     if (validateForm() && device) {
@@ -721,6 +821,71 @@ function EditScheduleModal({ isOpen, onClose, device, onSave }: EditScheduleModa
                  selectedDays.includes('SATURDAY') && 
                  selectedDays.includes('SUNDAY')) {
         frequency = 'Weekends'
+      }
+      
+      // Check limit before saving
+      try {
+        const outletKey = device.outletName.replace(' ', '_')
+        const deviceRef = ref(realtimeDb, `devices/${outletKey}`)
+        const deviceSnapshot = await get(deviceRef)
+        
+        if (deviceSnapshot.exists()) {
+          const deviceData = deviceSnapshot.val()
+          
+          // Get today's energy consumption
+          const today = new Date()
+          const todayDateKey = `day_${today.getFullYear()}_${String(today.getMonth() + 1).padStart(2, '0')}_${String(today.getDate()).padStart(2, '0')}`
+          const todayLogs = deviceData?.daily_logs?.[todayDateKey]
+          const todayTotalEnergy = todayLogs?.total_energy || 0 // This is in kW
+          const todayTotalEnergyWh = todayTotalEnergy * 1000 // Convert to Wh
+          
+          // Check if device is part of combined limit group
+          const deviceOutletName = device.outletName || ''
+          const deviceOutletNameWithSpace = deviceOutletName.replace('_', ' ')
+          
+          // Get combined limit info from parent component
+          const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
+          const combinedLimitSnapshot = await get(combinedLimitRef)
+          const combinedLimitData = combinedLimitSnapshot.exists() ? combinedLimitSnapshot.val() : null
+          
+          const isInCombinedGroup = combinedLimitData?.enabled && 
+            (combinedLimitData?.selectedOutlets?.includes(deviceOutletName) || 
+             combinedLimitData?.selectedOutlets?.includes(deviceOutletNameWithSpace))
+          
+          if (isInCombinedGroup) {
+            // Check combined limit
+            const combinedLimitWh = combinedLimitData?.combinedLimit || 0
+            
+            if (todayTotalEnergyWh >= combinedLimitWh) {
+              onLimitExceeded(
+                device.outletName,
+                'combined',
+                todayTotalEnergyWh,
+                combinedLimitWh,
+                timeRange
+              )
+              return
+            }
+          } else {
+            // Check individual limit
+            const powerLimit = deviceData.relay_control?.auto_cutoff?.power_limit || 0
+            const powerLimitWh = powerLimit * 1000 // Convert from kW to Wh
+            
+            if (powerLimitWh > 0 && todayTotalEnergyWh >= powerLimitWh) {
+              onLimitExceeded(
+                device.outletName,
+                'individual',
+                todayTotalEnergyWh,
+                powerLimitWh,
+                timeRange
+              )
+              return
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Error checking limit validation:', error)
+        // Continue with save if limit check fails
       }
       
       onSave(device.id, {
@@ -1083,7 +1248,9 @@ function OutletSelectionModal({
   onClose, 
   onSave,
   isEditMode,
-  existingCombinedSchedule
+  existingCombinedSchedule,
+  onLimitExceeded,
+  onSuccess
 }: { 
   isOpen: boolean; 
   onClose: () => void; 
@@ -1094,6 +1261,8 @@ function OutletSelectionModal({
     selectedOutlets: string[];
     scheduleData: any;
   } | null;
+  onLimitExceeded: (deviceName: string, limitType: 'individual' | 'combined', currentUsage: number, limitValue: number, scheduleTime: string) => void;
+  onSuccess: (message: string) => void;
 }) {
   const [availableOutlets, setAvailableOutlets] = useState<any[]>([])
   const [selectedOutlets, setSelectedOutlets] = useState<string[]>([])
@@ -1269,7 +1438,72 @@ function OutletSelectionModal({
     return Object.keys(newErrors).length === 0
   }
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const saveNonExceedingOutlets = async (outletsToSave: string[], exceedingOutletsNames: string[]) => {
+    try {
+      // Convert 24-hour format to 12-hour for display
+      const convertTo12Hour = (time24h: string) => {
+        if (!time24h) return ''
+        const [hours, minutes] = time24h.split(':')
+        const hour = parseInt(hours, 10)
+        const ampm = hour >= 12 ? 'PM' : 'AM'
+        const hour12 = hour % 12 || 12
+        return `${hour12}:${minutes} ${ampm}`
+      }
+      
+      const timeRange = `${convertTo12Hour(startTime)} - ${convertTo12Hour(endTime)}`
+      
+      // Determine frequency based on selected days
+      let frequency = selectedDays.join(', ')
+      if (selectedDays.length === 7) {
+        frequency = 'Daily'
+      } else if (selectedDays.length === 5 && 
+                 selectedDays.includes('MONDAY') && 
+                 selectedDays.includes('TUESDAY') && 
+                 selectedDays.includes('WEDNESDAY') && 
+                 selectedDays.includes('THURSDAY') && 
+                 selectedDays.includes('FRIDAY')) {
+        frequency = 'Weekdays'
+      } else if (selectedDays.length === 2 && 
+                 selectedDays.includes('SATURDAY') && 
+                 selectedDays.includes('SUNDAY')) {
+        frequency = 'Weekends'
+      }
+
+      const scheduleData = {
+        timeRange,
+        frequency,
+        startTime,
+        endTime,
+        selectedDays,
+        isCombined: true,
+        combinedScheduleId: `combined_${Date.now()}`
+      }
+
+      // Save schedule for each non-exceeding outlet
+      for (const outletKey of outletsToSave) {
+        const scheduleRef = ref(realtimeDb, `devices/${outletKey}/schedule`)
+        await set(scheduleRef, scheduleData)
+      }
+
+      // Show success message for saved outlets
+      const savedOutletsNames = outletsToSave.map(key => key.replace('_', ' '))
+      const successMessage = `Schedule saved successfully for: ${savedOutletsNames.join(', ')}`
+      
+      if (exceedingOutletsNames.length > 0) {
+        const excludedMessage = `\n\nNote: ${exceedingOutletsNames.join(', ')} were excluded due to power limit restrictions.`
+        onSuccess(successMessage + excludedMessage)
+      } else {
+        onSuccess(successMessage)
+      }
+
+      onClose()
+    } catch (error) {
+      console.error('Error saving non-exceeding outlets:', error)
+      alert('Error saving schedule. Please try again.')
+    }
+  }
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     
     if (validateForm()) {
@@ -1300,6 +1534,90 @@ function OutletSelectionModal({
                  selectedDays.includes('SATURDAY') && 
                  selectedDays.includes('SUNDAY')) {
         frequency = 'Weekends'
+      }
+      
+      // Check combined limit before saving - check each outlet individually
+      try {
+        const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
+        const combinedLimitSnapshot = await get(combinedLimitRef)
+        const combinedLimitData = combinedLimitSnapshot.exists() ? combinedLimitSnapshot.val() : null
+        
+        if (selectedOutlets.length > 0) {
+          const devicesRef = ref(realtimeDb, 'devices')
+          const devicesSnapshot = await get(devicesRef)
+          
+          if (devicesSnapshot.exists()) {
+            const devicesData = devicesSnapshot.val()
+            const today = new Date()
+            const todayDateKey = `day_${today.getFullYear()}_${String(today.getMonth() + 1).padStart(2, '0')}_${String(today.getDate()).padStart(2, '0')}`
+            
+            const exceedingOutlets: string[] = []
+            let totalEnergyWh = 0
+            
+            // Check if combined limit is enabled and has a valid value
+            const combinedLimitWh = combinedLimitData?.combinedLimit || 0
+            const hasValidCombinedLimit = combinedLimitData?.enabled && combinedLimitWh > 0
+            
+            for (const outletKey of selectedOutlets) {
+              const deviceData = devicesData[outletKey]
+              if (deviceData) {
+                const todayLogs = deviceData?.daily_logs?.[todayDateKey]
+                const todayTotalEnergy = todayLogs?.total_energy || 0 // This is in kW
+                const outletEnergyWh = todayTotalEnergy * 1000 // Convert to Wh
+                totalEnergyWh += outletEnergyWh
+                
+                let outletExceedsLimit = false
+                
+                if (hasValidCombinedLimit) {
+                  // Use combined limit if it's set and valid
+                  outletExceedsLimit = outletEnergyWh >= combinedLimitWh
+                } else {
+                  // Fallback to individual limit if no combined limit is set
+                  const individualPowerLimit = deviceData.relay_control?.auto_cutoff?.power_limit || 0
+                  const individualPowerLimitWh = individualPowerLimit * 1000 // Convert from kW to Wh
+                  
+                  if (individualPowerLimitWh > 0) {
+                    outletExceedsLimit = outletEnergyWh >= individualPowerLimitWh
+                  }
+                  // If no individual limit is set either, allow the outlet
+                }
+                
+                if (outletExceedsLimit) {
+                  exceedingOutlets.push(outletKey)
+                }
+              }
+            }
+            
+            // If any outlets exceed the limit, show warning for those specific outlets
+            if (exceedingOutlets.length > 0) {
+              const exceedingOutletsNames = exceedingOutlets.map(key => key.replace('_', ' '))
+              const limitType = hasValidCombinedLimit ? 'combined' : 'individual'
+              const limitValue = hasValidCombinedLimit ? combinedLimitWh : totalEnergyWh // For individual, show total usage
+              
+              // Filter out exceeding outlets from selectedOutlets
+              const outletsToSave = selectedOutlets.filter(outlet => !exceedingOutlets.includes(outlet))
+              
+              // Show limit exceeded modal
+              onLimitExceeded(
+                `${exceedingOutletsNames.join(', ')}`,
+                limitType,
+                totalEnergyWh,
+                limitValue,
+                timeRange
+              )
+              
+              // If there are outlets that don't exceed the limit, save them
+              if (outletsToSave.length > 0) {
+                // Continue with saving the non-exceeding outlets
+                await saveNonExceedingOutlets(outletsToSave, exceedingOutletsNames)
+              }
+              return
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Error checking combined limit validation:', error)
+        // Continue with save if limit check fails
       }
       
       const scheduleData = {
@@ -1551,6 +1869,22 @@ export default function Schedule() {
     existingCombinedSchedule: null
   })
 
+  const [limitExceededModal, setLimitExceededModal] = useState<{
+    isOpen: boolean;
+    deviceName: string;
+    limitType: 'individual' | 'combined';
+    currentUsage: number;
+    limitValue: number;
+    scheduleTime: string;
+  }>({
+    isOpen: false,
+    deviceName: '',
+    limitType: 'individual',
+    currentUsage: 0,
+    limitValue: 0,
+    scheduleTime: ''
+  })
+
   // Function to detect existing combined schedules
   const detectExistingCombinedSchedule = () => {
     // Find the first device with a combined schedule
@@ -1652,7 +1986,8 @@ export default function Schedule() {
               lastEnergyUpdate: currentTime,
               lastControlUpdate: currentTime,
               lastTotalEnergy: currentTotalEnergy,
-              lastControlState: controlState
+              lastControlState: controlState,
+ // Initialize with 0, will be updated after currentAmpere is declared
             }
             
             // Check for energy updates (total_energy changed)
@@ -1706,10 +2041,10 @@ export default function Schedule() {
             //   resetAutoTurnoffFunction(outletKey, setAutoTurnoffTimers)
             // }
 
-            // Get current (ampere) from sensor_data - no decimal places
+            // Get current (ampere) from sensor_data - with 2 decimal places
             const currentAmpere = outletData.sensor_data?.current || 0
-            const currentAmpereDisplay = `${Math.round(currentAmpere)} A`
-
+            const currentAmpereDisplay = `${currentAmpere.toFixed(2)}A`
+            
             // Create device object
             const device: DeviceData = {
               id: String(index + 1).padStart(3, '0'),
@@ -1873,9 +2208,9 @@ export default function Schedule() {
           //   resetAutoTurnoffFunction(outletKey, setAutoTurnoffTimers)
           // }
 
-          // Get current (ampere) from sensor_data - no decimal places
+          // Get current (ampere) from sensor_data - with 2 decimal places
           const currentAmpere = outletData.sensor_data?.current || 0
-          const currentAmpereDisplay = `${Math.round(currentAmpere)} A`
+          const currentAmpereDisplay = `${currentAmpere.toFixed(2)}A`
 
           // Create device object
           const device: DeviceData = {
@@ -2241,6 +2576,7 @@ export default function Schedule() {
           clearTimeout(timer)
         }
       })
+      
     }
   }, [combinedLimitInfo])
 
@@ -2441,6 +2777,60 @@ export default function Schedule() {
       console.log('Schedule data:', scheduleData)
       console.log('Edit mode:', isEditMode)
       
+      // Check which outlets exceed limits before saving
+      const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
+      const combinedLimitSnapshot = await get(combinedLimitRef)
+      const combinedLimitData = combinedLimitSnapshot.exists() ? combinedLimitSnapshot.val() : null
+      
+      let outletsToSave = selectedOutlets
+      
+      if (selectedOutlets.length > 0) {
+        const devicesRef = ref(realtimeDb, 'devices')
+        const devicesSnapshot = await get(devicesRef)
+        
+        if (devicesSnapshot.exists()) {
+          const devicesData = devicesSnapshot.val()
+          const today = new Date()
+          const todayDateKey = `day_${today.getFullYear()}_${String(today.getMonth() + 1).padStart(2, '0')}_${String(today.getDate()).padStart(2, '0')}`
+          
+          // Check if combined limit is enabled and has a valid value
+          const combinedLimitWh = combinedLimitData?.combinedLimit || 0
+          const hasValidCombinedLimit = combinedLimitData?.enabled && combinedLimitWh > 0
+          
+          // Filter out outlets that exceed limits
+          outletsToSave = selectedOutlets.filter(outletKey => {
+            const deviceData = devicesData[outletKey]
+            if (deviceData) {
+              const todayLogs = deviceData?.daily_logs?.[todayDateKey]
+              const todayTotalEnergy = todayLogs?.total_energy || 0 // This is in kW
+              const outletEnergyWh = todayTotalEnergy * 1000 // Convert to Wh
+              
+              let outletExceedsLimit = false
+              
+              if (hasValidCombinedLimit) {
+                // Use combined limit if it's set and valid
+                outletExceedsLimit = outletEnergyWh >= combinedLimitWh
+              } else {
+                // Fallback to individual limit if no combined limit is set
+                const individualPowerLimit = deviceData.relay_control?.auto_cutoff?.power_limit || 0
+                const individualPowerLimitWh = individualPowerLimit * 1000 // Convert from kW to Wh
+                
+                if (individualPowerLimitWh > 0) {
+                  outletExceedsLimit = outletEnergyWh >= individualPowerLimitWh
+                }
+                // If no individual limit is set either, allow the outlet
+              }
+              
+              // Only include outlets that are within limits
+              return !outletExceedsLimit
+            }
+            return true // Include if no data found
+          })
+          
+          console.log(`Filtered outlets: ${outletsToSave.length} out of ${selectedOutlets.length} outlets will be saved`)
+        }
+      }
+      
       // Use existing combined schedule ID if editing, otherwise generate new one
       const combinedScheduleId = isEditMode && existingSchedule 
         ? existingSchedule.combinedScheduleId 
@@ -2449,7 +2839,7 @@ export default function Schedule() {
       // If editing, first remove the old combined schedule from outlets that are no longer selected
       if (isEditMode && existingSchedule) {
         const outletsToRemove = existingSchedule.selectedOutlets.filter(
-          outlet => !selectedOutlets.includes(outlet)
+          outlet => !outletsToSave.includes(outlet)
         )
         
         for (const outletKey of outletsToRemove) {
@@ -2459,15 +2849,15 @@ export default function Schedule() {
         }
       }
       
-      // Save the combined schedule to each selected outlet
-      for (const outletKey of selectedOutlets) {
+      // Save the combined schedule only to outlets that are within limits
+      for (const outletKey of outletsToSave) {
         const scheduleRef = ref(realtimeDb, `devices/${outletKey}/schedule`)
         
         await set(scheduleRef, {
           ...scheduleData,
           combinedScheduleId,
           isCombinedSchedule: true,
-          selectedOutlets: selectedOutlets
+          selectedOutlets: outletsToSave
         })
         
         console.log(`Saved combined schedule to ${outletKey}`)
@@ -2478,11 +2868,11 @@ export default function Schedule() {
       const scheduleDetails = `${scheduleData.timeRange} (${scheduleData.frequency})`
       // Create proper outlet list
       let outletList = '';
-      if (selectedOutlets.length === 1) {
-        outletList = selectedOutlets[0].replace('Outlet ', 'Outlet');
-      } else if (selectedOutlets.length > 1) {
+      if (outletsToSave.length === 1) {
+        outletList = outletsToSave[0].replace('Outlet ', 'Outlet');
+      } else if (outletsToSave.length > 1) {
         // Extract numbers and create range
-        const numbers = selectedOutlets.map(outlet => {
+        const numbers = outletsToSave.map(outlet => {
           // Handle different outlet name formats
           const match = outlet.match(/Outlet[_\s]*(\d+)/);
           return match ? match[1] : outlet.replace(/Outlet[_\s]*/, '');
@@ -2502,15 +2892,40 @@ export default function Schedule() {
       // Close the modal
       setOutletSelectionModal({ isOpen: false, isEditMode: false, existingCombinedSchedule: null })
       
-      // Show success message
+      // Show success message with information about filtered outlets
+      const filteredCount = selectedOutlets.length - outletsToSave.length
+      let successMessage = `Combined schedule ${isEditMode ? 'updated' : 'created'} for ${outletsToSave.length} outlets`
+      
+      if (filteredCount > 0) {
+        successMessage += ` (${filteredCount} outlet(s) excluded due to limit restrictions)`
+      }
+      
       setSuccessModal({ 
         isOpen: true, 
-        deviceName: `Combined schedule ${isEditMode ? 'updated' : 'created'} for ${selectedOutlets.length} outlets` 
+        deviceName: successMessage
       })
       
     } catch (error) {
       console.error('Error saving combined schedule:', error)
     }
+  }
+
+  const handleLimitExceeded = (deviceName: string, limitType: 'individual' | 'combined', currentUsage: number, limitValue: number, scheduleTime: string) => {
+    setLimitExceededModal({
+      isOpen: true,
+      deviceName,
+      limitType,
+      currentUsage,
+      limitValue,
+      scheduleTime
+    })
+  }
+
+  const handleSuccess = (message: string) => {
+    setSuccessModal({
+      isOpen: true,
+      deviceName: message
+    })
   }
 
   // Get status badge styling (updated to match Dashboard.tsx)
@@ -2769,6 +3184,7 @@ export default function Schedule() {
         onClose={() => setEditModal({ isOpen: false, device: null })}
         device={editModal.device}
         onSave={handleSaveSchedule}
+        onLimitExceeded={handleLimitExceeded}
       />
 
       {/* Delete Confirmation Modal */}
@@ -2808,6 +3224,26 @@ export default function Schedule() {
         onSave={handleSaveCombinedSchedule}
         isEditMode={outletSelectionModal.isEditMode}
         existingCombinedSchedule={outletSelectionModal.existingCombinedSchedule}
+        onLimitExceeded={handleLimitExceeded}
+        onSuccess={handleSuccess}
+      />
+
+      {/* Limit Exceeded Modal */}
+      <LimitExceededModal
+        isOpen={limitExceededModal.isOpen}
+        onClose={() => setLimitExceededModal({ 
+          isOpen: false, 
+          deviceName: '', 
+          limitType: 'individual', 
+          currentUsage: 0, 
+          limitValue: 0, 
+          scheduleTime: '' 
+        })}
+        deviceName={limitExceededModal.deviceName}
+        limitType={limitExceededModal.limitType}
+        currentUsage={limitExceededModal.currentUsage}
+        limitValue={limitExceededModal.limitValue}
+        scheduleTime={limitExceededModal.scheduleTime}
       />
     </div>
   )
