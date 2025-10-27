@@ -2039,7 +2039,7 @@ export default function Reports() {
             }
           }
           
-          // Total Consumption: Sum of all daily energy consumption from all time periods
+          // Total Consumption: Use lifetime_energy from each device (more efficient and accurate)
           let currentTotalEnergySum = 0
           
           for (const device of filteredDevices) {
@@ -2050,18 +2050,9 @@ export default function Reports() {
               if (snapshot.exists()) {
                 const outlet = snapshot.val()
                 
-                if (outlet && outlet.daily_logs) {
-                  let totalLifetimeEnergy = 0
-                  
-                  // Sum up all daily energy from all time periods
-                  Object.keys(outlet.daily_logs).forEach(dayKey => {
-                    const dayData = outlet.daily_logs[dayKey]
-                    if (dayData && dayData.total_energy) {
-                      totalLifetimeEnergy += dayData.total_energy // Already in kW
-                    }
-                  })
-                  
-                  currentTotalEnergySum += totalLifetimeEnergy
+                // Use lifetime_energy directly from the root level (already in kW from database)
+                if (outlet && outlet.lifetime_energy !== undefined) {
+                  currentTotalEnergySum += outlet.lifetime_energy
                 }
               }
             } catch (error) {
