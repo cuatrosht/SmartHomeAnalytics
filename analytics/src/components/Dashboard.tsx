@@ -703,13 +703,9 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
         
         if (!deviceData) continue
         
-        // Loop through all daily logs for this device
-        if (deviceData.daily_logs) {
-          for (const [dateKey, dayLogs] of Object.entries(deviceData.daily_logs)) {
-            const dayData = dayLogs as any
-            const dayEnergy = dayData?.total_energy || 0 // Energy in kW
-            totalLifetimeEnergy += dayEnergy
-          }
+        // Use lifetime_energy directly from the root level (already in kW from database)
+        if (deviceData.lifetime_energy !== undefined) {
+          totalLifetimeEnergy += deviceData.lifetime_energy
         }
       }
       
