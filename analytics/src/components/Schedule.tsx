@@ -258,6 +258,7 @@ interface DeviceData {
     combinedScheduleId?: string
     isCombinedSchedule?: boolean
     selectedOutlets?: string[]
+    disabled_by_unplug?: boolean
   }
   controlState: string
   mainStatus: string
@@ -310,6 +311,7 @@ interface FirebaseDeviceData {
     combinedScheduleId?: string
     isCombinedSchedule?: boolean
     selectedOutlets?: string[]
+    disabled_by_unplug?: boolean
   }
 }
 
@@ -1843,6 +1845,18 @@ export default function Schedule() {
     lastControlState: string;
   }>>({})
 
+  // Track voltage changes for unplug detection (rounded to 3 decimals)
+  const [voltageActivity, setVoltageActivity] = useState<Record<string, {
+    lastRoundedVoltage: number;
+    lastChangeTime: number;
+  }>>({})
+
+  // Track sensor timestamp changes for unplug detection (preferred over voltage)
+  const [timestampActivity, setTimestampActivity] = useState<Record<string, {
+    lastTimestampValue: string | number;
+    lastChangeTime: number;
+  }>>({})
+
   // Auto-turnoff timer state for non-idle devices
   const [autoTurnoffTimers, setAutoTurnoffTimers] = useState<Record<string, NodeJS.Timeout | null>>({})
   
@@ -2184,6 +2198,42 @@ export default function Schedule() {
             }))
           }
           
+          // Timestamp change tracking from sensor_data.timestamp (string or number)
+          const currentSensorTimestamp = String(outletData.sensor_data?.timestamp ?? '')
+          const prevTs = timestampActivity[outletKey]
+          const tsChanged = !prevTs || prevTs.lastTimestampValue !== currentSensorTimestamp
+          if (tsChanged) {
+            setTimestampActivity(prev => ({
+              ...prev,
+              [outletKey]: {
+                lastTimestampValue: currentSensorTimestamp,
+                lastChangeTime: currentTime
+              }
+            }))
+            // If timestamp resumed updating, clear unplug flags (do not turn device on here)
+            try {
+              const wasDisabled = (outletData as any)?.disabled_by_unplug === true || outletData?.schedule?.disabled_by_unplug === true
+              if (wasDisabled) {
+                ;(async () => {
+                  try {
+                    await update(ref(realtimeDb, `devices/${outletKey}`), {
+                      disabled_by_unplug: false,
+                      disabled_by_unplug_timestamp: null
+                    })
+                    await update(ref(realtimeDb, `devices/${outletKey}/schedule`), {
+                      disabled_by_unplug: false
+                    })
+                    console.log(`🔌 Schedule: ${outletKey} timestamp updated; cleared unplug-disabled flags`)
+                  } catch (err) {
+                    console.error('Schedule: Error clearing unplug flags after timestamp update for', outletKey, err)
+                  }
+                })()
+              }
+            } catch (e) {
+              console.error('Schedule: Error scheduling unplug-flag clear after timestamp update for', outletKey, e)
+            }
+          }
+
           // Determine if device is idle (15 seconds of no updates)
           const timeSinceEnergyUpdate = currentTime - activity.lastEnergyUpdate
           const timeSinceControlUpdate = currentTime - activity.lastControlUpdate
@@ -2358,6 +2408,24 @@ export default function Schedule() {
         if (snapshot.exists()) {
           const devicesData = snapshot.val()
           console.log(`Schedule: Real-time scheduler check at ${new Date().toLocaleTimeString()}`)
+
+          // ABSOLUTE PRIORITY: Enforce unplug-disabled state for ALL devices before any other logic
+          try {
+            for (const [outletKey, outletData] of Object.entries(devicesData)) {
+              const deviceData = outletData as any
+              const flagged = deviceData?.disabled_by_unplug === true || deviceData?.schedule?.disabled_by_unplug === true
+              const existingControl = deviceData?.control?.device || 'off'
+              if (flagged) {
+                if (existingControl !== 'off') {
+                  await update(ref(realtimeDb, `devices/${outletKey}/control`), { device: 'off' })
+                }
+                await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), { main_status: 'OFF' })
+                console.log(`🔌 Schedule: Global unplug enforcement -> ${outletKey} forced OFF and main_status=OFF (pre-check pass)`) 
+              }
+            }
+          } catch (e) {
+            console.error('Schedule: Error during global unplug enforcement pass:', e)
+          }
           
           // HIERARCHY: Check monthly limit FIRST (highest priority) - AUTO TURN OFF
           // This automatically turns off all devices if monthly limit is exceeded
@@ -2394,10 +2462,81 @@ export default function Schedule() {
               
               const currentControlState = deviceData.control?.device || 'off'
               const currentMainStatus = deviceData.relay_control?.main_status || 'ON'
-              
+
+              // UNPLUG DETECTION (Highest priority overall):
+              // If sensor timestamp hasn't changed for >= 30s, force OFF and set disabled_by_unplug
+              try {
+                const nowMs = Date.now()
+                const tsEntry = timestampActivity[outletKey]
+                const currentTs = String(deviceData.sensor_data?.timestamp ?? '')
+                const prevTsVal = tsEntry?.lastTimestampValue
+                const lastTsChange = tsEntry?.lastChangeTime ?? nowMs
+                const tsStalled = prevTsVal !== undefined && currentTs === prevTsVal && (nowMs - lastTsChange) >= 30000
+                const disabledByUnplugFlag = (deviceData as any).disabled_by_unplug === true
+
+                if (tsStalled || disabledByUnplugFlag || deviceData?.schedule?.disabled_by_unplug === true) {
+                  const reason = deviceData?.schedule?.disabled_by_unplug ? 'schedule flagged' : (tsStalled ? 'timestamp stalled >=30s' : 'flagged')
+                  console.log(`🔌 Schedule: ${outletKey} unplug-detected (${reason}). Forcing OFF and setting disabled_by_unplug.`)
+                  if (currentControlState !== 'off') {
+                    await update(ref(realtimeDb, `devices/${outletKey}/control`), { device: 'off' })
+                  }
+                  await update(ref(realtimeDb, `devices/${outletKey}`), {
+                    disabled_by_unplug: true,
+                    disabled_by_unplug_timestamp: new Date().toISOString()
+                  })
+                  await update(ref(realtimeDb, `devices/${outletKey}/schedule`), { disabled_by_unplug: true })
+                  continue
+                }
+              } catch (e) {
+                console.error('Schedule: Error during unplug detection for', outletKey, e)
+              }
+
               // RESPECT bypass mode - if main_status is ON, don't override it (device is in bypass mode)
               if (currentMainStatus === 'ON') {
                 console.log(`Schedule: Device ${outletKey} has main_status = 'ON' - respecting bypass mode, skipping schedule check`)
+                continue
+              }
+              
+              // UNPLUG DETECTION (Highest priority after bypass):
+              // If sensor timestamp hasn't changed for >= 30s, force OFF and set disabled_by_unplug
+              try {
+                const nowMs = Date.now()
+                const tsEntry = timestampActivity[outletKey]
+                const currentTs = String(deviceData.sensor_data?.timestamp ?? '')
+                const prevTsVal = tsEntry?.lastTimestampValue
+                const lastTsChange = tsEntry?.lastChangeTime ?? nowMs
+                const tsStalled = prevTsVal !== undefined && currentTs === prevTsVal && (nowMs - lastTsChange) >= 30000
+                const disabledByUnplugFlag = (deviceData as any).disabled_by_unplug === true
+
+                if (tsStalled || disabledByUnplugFlag) {
+                  const reason = tsStalled ? 'timestamp stalled >=30s' : 'flagged'
+                  console.log(`🔌 Schedule: ${outletKey} unplug-detected (${reason}). Forcing OFF and setting disabled_by_unplug.`)
+                  if (currentControlState !== 'off') {
+                    await update(ref(realtimeDb, `devices/${outletKey}/control`), {
+                      device: 'off'
+                    })
+                  }
+                  await update(ref(realtimeDb, `devices/${outletKey}`), {
+                    disabled_by_unplug: true,
+                    disabled_by_unplug_timestamp: new Date().toISOString()
+                  })
+                  // Also disable this outlet's schedule to avoid further schedule checks
+                  await update(ref(realtimeDb, `devices/${outletKey}/schedule`), {
+                    disabled_by_unplug: true
+                  })
+                  // Ensure we don't proceed to schedule/idle logic when unplugged
+                  continue
+                }
+              } catch (e) {
+                console.error('Schedule: Error during unplug detection for', outletKey, e)
+              }
+
+              // If schedule was previously disabled by unplug, enforce OFF and skip
+              if (deviceData?.schedule?.disabled_by_unplug === true) {
+                if (currentControlState !== 'off') {
+                  await update(ref(realtimeDb, `devices/${outletKey}/control`), { device: 'off' })
+                }
+                console.log(`🔌 Schedule: ${outletKey} schedule is disabled_by_unplug; skipping schedule logic and keeping OFF.`)
                 continue
               }
               
@@ -2491,6 +2630,21 @@ export default function Schedule() {
                 }
               }
               
+              // Final safety: if about to turn ON, re-read flags to ensure schedule isn't disabled
+              if (newControlState === 'on') {
+                try {
+                  const latestSnap = await get(ref(realtimeDb, `devices/${outletKey}`))
+                  const latest = latestSnap.val() || {}
+                  const blocked = latest.disabled_by_unplug === true || latest.schedule?.disabled_by_unplug === true
+                  if (blocked) {
+                    console.log(`🔌 Schedule: ${outletKey} ON prevented due to unplug-disabled flags.`)
+                    newControlState = 'off'
+                  }
+                } catch (e) {
+                  console.error('Schedule: Error verifying unplug flags before ON for', outletKey, e)
+                }
+              }
+
               console.log(`Schedule: Final status determination for ${outletKey}:`, {
                 scheduleSays: shouldBeActive ? 'ON' : 'OFF',
                 finalDecision: newControlState,
@@ -2662,6 +2816,15 @@ export default function Schedule() {
                      updatedSchedule.frequency.toLowerCase() === 'weekends' ? ['SATURDAY', 'SUNDAY'] :
                      updatedSchedule.frequency.split(', ').map(day => day.trim())
       })
+
+      // Reset unplug flags when saving a schedule and re-enable schedule checks
+      await update(ref(realtimeDb, `devices/${outletKey}`), {
+        disabled_by_unplug: false,
+        disabled_by_unplug_timestamp: null
+      })
+      await update(ref(realtimeDb, `devices/${outletKey}/schedule`), {
+        disabled_by_unplug: false
+      })
       
       console.log(`Saved schedule for ${outletKey}:`, {
         timeRange: updatedSchedule.timeRange,
@@ -2683,13 +2846,20 @@ export default function Schedule() {
         endTime: endTime24
       }, 'on', currentDeviceData) // Pass device data to check power limits
       
-      const newControlState = shouldBeActive ? 'on' : 'off'
-      console.log(`Setting ${outletKey} control state to ${newControlState} based on new schedule`)
+      // Do not auto-turn-on if device is disabled_by_unplug or schedule.disabled_by_unplug
+      const latestDeviceSnap = await get(ref(realtimeDb, `devices/${outletKey}`))
+      const latestDevice = latestDeviceSnap.val() || {}
+      const unplugDisabled = latestDevice.disabled_by_unplug === true || latestDevice.schedule?.disabled_by_unplug === true
+      const newControlState = unplugDisabled ? 'off' : (shouldBeActive ? 'on' : 'off')
+      console.log(`Setting ${outletKey} control state to ${newControlState} based on new schedule${unplugDisabled ? ' (blocked by unplug disable)' : ''}`)
       console.log(`Note: Main status ON will override schedule restrictions for manual control`)
-      
-      await update(ref(realtimeDb, `devices/${outletKey}/control`), {
-        device: newControlState
-      })
+
+      const currControl = latestDevice.control?.device || 'off'
+      if (currControl !== newControlState) {
+        await update(ref(realtimeDb, `devices/${outletKey}/control`), {
+          device: newControlState
+        })
+      }
       
       console.log(`✅ Updated control state to ${newControlState} for ${outletKey} based on new schedule`)
       
@@ -2858,6 +3028,15 @@ export default function Schedule() {
           combinedScheduleId,
           isCombinedSchedule: true,
           selectedOutlets: outletsToSave
+        })
+
+        // Reset unplug flags when saving combined schedule for this outlet and re-enable schedule checks
+        await update(ref(realtimeDb, `devices/${outletKey}`), {
+          disabled_by_unplug: false,
+          disabled_by_unplug_timestamp: null
+        })
+        await update(ref(realtimeDb, `devices/${outletKey}/schedule`), {
+          disabled_by_unplug: false
         })
         
         console.log(`Saved combined schedule to ${outletKey}`)
