@@ -1762,8 +1762,10 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     const filteredOffices: string[] = ['All Offices']
     
     Object.values(officesData).forEach((officeData: any) => {
-      if (officeData.department === department && officeData.office) {
-        filteredOffices.push(officeData.office)
+      const dep = officeData?.department
+      const off = officeData?.office
+      if (dep && off && dep.toLowerCase() === department.toLowerCase()) {
+        filteredOffices.push(off)
       }
     })
     
@@ -1942,13 +1944,13 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
               departmentMatch: device.office_info.department === department
             })
             
-            // Check if the device's office_info matches the selected department and office
-            return device.office_info.department === department && 
-                   device.office_info.office === office
+            // Check if the device's office_info matches the selected department and office (case-insensitive)
+            return device.office_info.department.toLowerCase() === department.toLowerCase() && 
+                   device.office_info.office.toLowerCase() === office.toLowerCase()
           } else if (officesData && device.officeRoom) {
             // Fallback: Use officesData if office_info is not available
             const deviceOfficeData = Object.values(officesData).find((officeData: any) => 
-              officeData.office === device.officeRoom
+              (officeData?.office || '').toLowerCase() === device.officeRoom.toLowerCase()
             )
             
             console.log('Device filtering check (fallback):', {
@@ -1960,10 +1962,10 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
               departmentMatch: deviceOfficeData && (deviceOfficeData as any).department === department
             })
             
-            // Check if the office matches AND belongs to the selected department
+            // Check if the office matches AND belongs to the selected department (case-insensitive)
             return deviceOfficeData && 
-                   (deviceOfficeData as any).office === office && 
-                   (deviceOfficeData as any).department === department
+                   ((deviceOfficeData as any).office || '').toLowerCase() === office.toLowerCase() && 
+                   ((deviceOfficeData as any).department || '').toLowerCase() === department.toLowerCase()
           }
           return false
         })
@@ -1979,12 +1981,12 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
               departmentMatch: device.office_info.department === department
             })
             
-            // Check if the device's office_info department matches the selected department
-            return device.office_info.department === department
+            // Check if the device's office_info department matches the selected department (case-insensitive)
+            return device.office_info.department.toLowerCase() === department.toLowerCase()
           } else if (officesData && device.officeRoom) {
             // Fallback: Use officesData if office_info is not available
             const deviceOfficeData = Object.values(officesData).find((officeData: any) => 
-              officeData.office === device.officeRoom
+              (officeData?.office || '').toLowerCase() === device.officeRoom.toLowerCase()
             )
             
             console.log('Department filtering check (fallback):', {
@@ -1995,7 +1997,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
               matches: deviceOfficeData && (deviceOfficeData as any).department === department
             })
             
-            return deviceOfficeData && (deviceOfficeData as any).department === department
+            return deviceOfficeData && ((deviceOfficeData as any).department || '').toLowerCase() === department.toLowerCase()
           }
           return false
         })
@@ -2054,13 +2056,13 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                 departmentMatch: device.office_info.department === department
               })
               
-              // Check if the device's office_info matches the selected department and office
-              return device.office_info.department === department && 
-                     device.office_info.office === office
+              // Check if the device's office_info matches the selected department and office (case-insensitive)
+              return device.office_info.department.toLowerCase() === department.toLowerCase() && 
+                     device.office_info.office.toLowerCase() === office.toLowerCase()
             } else if (officesData && device.officeRoom) {
               // Fallback: Use officesData if office_info is not available
               const deviceOfficeData = Object.values(officesData).find((officeData: any) => 
-                officeData.office === device.officeRoom
+                (officeData?.office || '').toLowerCase() === device.officeRoom.toLowerCase()
               )
               
               console.log('Energy consumption filtering check (fallback):', {
@@ -2072,10 +2074,10 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                 departmentMatch: deviceOfficeData && (deviceOfficeData as any).department === department
               })
               
-              // Check if the office matches AND belongs to the selected department
+              // Check if the office matches AND belongs to the selected department (case-insensitive)
               return deviceOfficeData && 
-                     (deviceOfficeData as any).office === office && 
-                     (deviceOfficeData as any).department === department
+                     ((deviceOfficeData as any).office || '').toLowerCase() === office.toLowerCase() && 
+                     ((deviceOfficeData as any).department || '').toLowerCase() === department.toLowerCase()
             }
             return false
           })
@@ -2091,12 +2093,12 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                 departmentMatch: device.office_info.department === department
               })
               
-              // Check if the device's office_info department matches the selected department
-              return device.office_info.department === department
+              // Check if the device's office_info department matches the selected department (case-insensitive)
+              return device.office_info.department.toLowerCase() === department.toLowerCase()
             } else if (officesData && device.officeRoom) {
               // Fallback: Use officesData if office_info is not available
               const deviceOfficeData = Object.values(officesData).find((officeData: any) => 
-                officeData.office === device.officeRoom
+                (officeData?.office || '').toLowerCase() === device.officeRoom.toLowerCase()
               )
               
               console.log('Energy consumption department filtering (fallback):', {
@@ -2107,7 +2109,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                 matches: deviceOfficeData && (deviceOfficeData as any).department === department
               })
               
-              return deviceOfficeData && (deviceOfficeData as any).department === department
+              return deviceOfficeData && ((deviceOfficeData as any).department || '').toLowerCase() === department.toLowerCase()
             }
             return false
           })
