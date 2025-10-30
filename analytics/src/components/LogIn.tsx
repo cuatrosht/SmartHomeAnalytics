@@ -719,9 +719,19 @@ export default function LogIn({ onSuccess, onNavigateToSignUp }: LogInProps) {
           // Update last login time
           await get(ref(realtimeDb, `users/${user.uid}/lastLogin`))
         } else {
-          // User doesn't exist in database yet (first time Google sign-in)
-          // This will be handled by the SignUp component when they first sign up
-          console.log('New Google user - no database record yet, using default role')
+          // First time Google sign-in: create a Coordinator account record
+          const nowIso = new Date().toISOString()
+          await update(ref(realtimeDb, `users/${user.uid}`), {
+            uid: user.uid,
+            email: user.email || '',
+            displayName: user.displayName || 'User',
+            role: 'Coordinator',
+            createdAt: nowIso,
+            lastLogin: nowIso,
+            authProvider: 'google'
+          })
+          userRole = 'Coordinator'
+          console.log('Created new Coordinator account for Google user in database')
         }
       } catch (dbError) {
         console.log('Could not fetch user data:', dbError)
