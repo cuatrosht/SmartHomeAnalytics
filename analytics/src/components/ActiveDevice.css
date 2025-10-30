@@ -2274,32 +2274,36 @@
 
 .warning-modal {
   background: white;
-  border-radius: 16px;
-  padding: 32px;
+  border-radius: 12px;
+  padding: 12px;
   text-align: center;
-  max-width: 500px;
+  max-width: 360px;
   width: 90%;
-  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+  box-shadow: 0 16px 24px -8px rgba(0, 0, 0, 0.08);
   animation: modalSlideIn 0.2s ease-out;
   border: 2px solid #f59e0b;
+  /* No scrolling inside modal */
+  max-height: none;
+  overflow: visible;
 }
 
 .warning-icon {
-  margin-bottom: 20px;
+  margin-bottom: 8px;
   display: flex;
   justify-content: center;
 }
+.warning-icon svg { width: 40px; height: 40px; }
 
 .warning-modal h3 {
-  margin: 0 0 16px 0;
-  font-size: 20px;
+  margin: 0 0 6px 0;
+  font-size: 15px;
   font-weight: 600;
   color: #d97706;
 }
 
 .warning-modal p {
-  margin: 0 0 16px 0;
-  font-size: 14px;
+  margin: 0 0 6px 0;
+  font-size: 11px;
   line-height: 1.5;
   color: #374151;
 }
@@ -2312,9 +2316,9 @@
 .warning-details {
   background: #fef3c7;
   border: 1px solid #fbbf24;
-  border-radius: 12px;
-  padding: 16px;
-  margin: 16px 0;
+  border-radius: 10px;
+  padding: 8px;
+  margin: 6px 0;
   text-align: left;
 }
 
@@ -2333,13 +2337,13 @@
 .warning-stat .label {
   font-weight: 600;
   color: #92400e;
-  font-size: 14px;
+  font-size: 11px;
 }
 
 .warning-stat .value {
   font-weight: 700;
   color: #dc2626;
-  font-size: 14px;
+  font-size: 11px;
 }
 
 .warning-message {
@@ -2354,9 +2358,25 @@
 .modal-footer {
   display: flex;
   justify-content: center;
-  gap: 12px;
-  margin-top: 24px;
+  gap: 6px;
+  margin-top: 8px;
 }
+
+/* Smaller buttons inside the warning modal to reduce height */
+.warning-modal .btn-primary,
+.warning-modal .btn-secondary {
+  padding: 9px 16px;
+  font-size: 12px;
+  border-radius: 6px;
+}
+
+/* Bypass info block inside warning modal - compact */
+.warning-modal .bypass-info { padding: 8px; margin: 8px 0; }
+.warning-modal .bypass-info-title { font-size: 12px; }
+.warning-modal .bypass-info-text { font-size: 11px; }
+
+/* Compact warning message inside warning modal */
+.warning-modal .warning-message { font-size: 11px; margin: 6px 0 0 0; }
 
 /* Mobile Modal Responsiveness */
 @media (max-width: 767px) {
