@@ -889,9 +889,6 @@ export default function LogIn({ onSuccess, onNavigateToSignUp }: LogInProps) {
             </button>
           </div>
 
-          <div className="form-aux">
-            <a className="link" href="#">Forgot password?</a>
-          </div>
 
           <button type="submit" className="primary-btn" disabled={loading}>
             {loading ? 'Signing In...' : 'Sign In'}
