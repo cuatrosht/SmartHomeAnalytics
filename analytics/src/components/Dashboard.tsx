@@ -594,7 +594,8 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     return actualMonthlyEnergy * PHILIPPINE_RATE_PER_KWH
   }
 
-  // Calculate estimated monthly bill based on daily average consumption pattern
+  // Calculate estimated monthly bill based on current month's consumption pattern
+  // Gets data for current month (day 1 to today), calculates daily average, then projects to full month
   const calculateMonthlyBill = async (devices: DeviceData[]) => {
     const now = new Date()
     const currentYear = now.getFullYear()
@@ -613,38 +614,40 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
       const devicesRef = ref(realtimeDb, 'devices')
       const snapshot = await get(devicesRef)
       
-      if (snapshot.exists()) {
-        const devicesData = snapshot.val()
+      if (!snapshot.exists()) {
+        return 0
+      }
+      
+      const devicesData = snapshot.val()
+      
+      console.log(`📊 Processing ${devices.length} filtered devices for estimated monthly bill calculation`)
+      
+      // Process each day from day 1 to current day (only actual data available so far this month)
+      for (let day = 1; day <= currentDay; day++) {
+        const dayStr = String(day).padStart(2, '0')
+        const dateKey = `day_${currentYear}_${String(currentMonth).padStart(2, '0')}_${dayStr}`
+        let dayEnergy = 0
         
-        console.log(`📊 Processing ${devices.length} filtered devices for estimated monthly bill calculation`)
-        
-        // Process each day in the current month to count days with data
-        for (let day = 1; day <= daysInMonth; day++) {
-          const dayStr = String(day).padStart(2, '0')
-          const dateKey = `day_${currentYear}_${String(currentMonth).padStart(2, '0')}_${dayStr}`
-          let dayEnergy = 0
+        // Process each filtered device for this day
+        devices.forEach((device) => {
+          const outletKey = device.outletId
+          const outlet = devicesData[outletKey]
           
-          // Process each filtered device for this day
-          devices.forEach((device) => {
-            const outletKey = device.outletId
-            const outlet = devicesData[outletKey]
-            
-            if (!outlet || !outlet.daily_logs) return
-            
-            const dayData = outlet.daily_logs[dateKey]
-            
-            if (dayData) {
-              dayEnergy += dayData.total_energy || 0 // Already in kWh
-            }
-          })
+          if (!outlet || !outlet.daily_logs) return
           
-          if (dayEnergy > 0) {
-            totalEnergySoFar += dayEnergy
-            daysWithData++
-            console.log(`📅 Day ${day}: Energy = ${dayEnergy.toFixed(6)} kWh`)
-          } else {
-            console.log(`📅 Day ${day}: No energy data`)
+          const dayData = outlet.daily_logs[dateKey]
+          
+          if (dayData && dayData.total_energy) {
+            dayEnergy += dayData.total_energy || 0 // Already in kWh
           }
+        })
+        
+        if (dayEnergy > 0) {
+          totalEnergySoFar += dayEnergy
+          daysWithData++
+          console.log(`📅 Day ${day}: Energy = ${dayEnergy.toFixed(6)} kWh`)
+        } else {
+          console.log(`📅 Day ${day}: No energy data`)
         }
       }
     } catch (error) {
@@ -653,20 +656,24 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
       totalEnergySoFar = devices.reduce((sum, device) => {
         return sum + (device.total_energy || 0)
       }, 0)
-      daysWithData = 1
+      daysWithData = currentDay > 0 ? 1 : 0
     }
     
-    // Calculate daily average from days with actual data
-    const dailyAverage = daysWithData > 0 ? totalEnergySoFar / daysWithData : 0
+    // Calculate daily average from actual consumption so far this month (day 1 to current day)
+    // Only count days that have actual data
+    const dailyAverageKwh = daysWithData > 0 ? totalEnergySoFar / daysWithData : 0
     
-    // Estimate monthly bill based on daily average projected to full month
-    const estimatedMonthlyEnergy = dailyAverage * daysInMonth
+    // Estimate monthly bill: Project the daily average to full month
+    // Example: If on November 5th, average is 0.0015 kWh/day → estimate for full November (30 days) = 0.045 kWh
+    const estimatedMonthlyEnergy = dailyAverageKwh * daysInMonth
     const estimatedMonthlyBill = estimatedMonthlyEnergy * PHILIPPINE_RATE_PER_KWH
     
     console.log(`📊 Estimated monthly bill calculation results:`)
-    console.log(`   Total energy so far: ${totalEnergySoFar.toFixed(6)} kWh`)
-    console.log(`   Days with data: ${daysWithData}`)
-    console.log(`   Daily average: ${dailyAverage.toFixed(6)} kWh`)
+    console.log(`   Current month: ${currentMonth}/${currentYear}`)
+    console.log(`   Days processed: Day 1 to Day ${currentDay} (${daysWithData} days with actual data)`)
+    console.log(`   Total energy this month (so far): ${totalEnergySoFar.toFixed(6)} kWh`)
+    console.log(`   Daily average (from current month's data): ${dailyAverageKwh.toFixed(6)} kWh/day (${(dailyAverageKwh * 1000).toFixed(3)} Wh/day)`)
+    console.log(`   Days in full month: ${daysInMonth}`)
     console.log(`   Estimated monthly energy: ${estimatedMonthlyEnergy.toFixed(6)} kWh`)
     console.log(`   Rate: ₱${PHILIPPINE_RATE_PER_KWH} per kWh`)
     console.log(`   Estimated monthly bill: ₱${estimatedMonthlyBill.toFixed(2)}`)
@@ -768,10 +775,11 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
       
       const todayKey = getDateKey(currentYear, currentMonth, currentDay)
       let totalTodayEnergy = 0
-      let totalMonthlyEnergy = 0
-      let daysWithData = 0
+      let totalHistoricalEnergy = 0
+      const daysWithDataSet = new Set<string>() // Track unique days with data across all devices
       
-      // Calculate today's energy and monthly energy for daily average with runtime verification
+      // Calculate today's energy and historical energy for daily average with runtime verification
+      // Daily Average uses last 30 days of historical data (rolling window)
       for (const device of overallConsumptionDevices) {
         const outletKey = device.outletId
         const deviceData = devicesData[outletKey]
@@ -802,9 +810,17 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
           totalTodayEnergy += finalTodayEnergy
         }
         
-        // Monthly energy for daily average calculation with runtime verification
-        for (let day = 1; day <= currentDay; day++) {
-          const dayKey = getDateKey(currentYear, currentMonth, day)
+        // Daily average calculation: Use last 30 days of historical data (rolling window)
+        // Loop through the last 30 days from today
+        for (let daysBack = 0; daysBack < 30; daysBack++) {
+          const date = new Date(now)
+          date.setDate(date.getDate() - daysBack) // Go back N days from today
+          
+          const year = date.getFullYear()
+          const month = date.getMonth() + 1
+          const day = date.getDate()
+          
+          const dayKey = getDateKey(year, month, day)
           const dayLogs = deviceData?.daily_logs?.[dayKey]
           
           if (dayLogs) {
@@ -827,27 +843,32 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
             }
             
             if (finalDayEnergy > 0) {
-              totalMonthlyEnergy += finalDayEnergy
-              daysWithData++ // Count all days with data, not just current day
+              totalHistoricalEnergy += finalDayEnergy
+              daysWithDataSet.add(dayKey) // Track unique days with data (count each day only once across all devices)
             }
           }
         }
       }
       
-      // Calculate daily average using the formula: Daily Average (Wh) = Total Energy Used for current month (Wh) ÷ Number of active days
-      const totalMonthlyEnergyWh = totalMonthlyEnergy * 1000 // Convert kWh to Wh
-      const dailyAverageWh = daysWithData > 0 ? totalMonthlyEnergyWh / daysWithData : 0
+      const daysWithData = daysWithDataSet.size // Count unique days with data across all devices
+      
+      // Calculate daily average using the formula: Daily Average (Wh) = Total Historical Energy (last 30 days) (Wh) ÷ Number of active days
+      // This represents the typical/expected energy consumption per day based on historical data
+      const totalHistoricalEnergyWh = totalHistoricalEnergy * 1000 // Convert kWh to Wh
+      const dailyAverageWh = daysWithData > 0 ? totalHistoricalEnergyWh / daysWithData : 0
       
       // Convert to Watts and set states
       setTodayTotalEnergy(totalTodayEnergy * 1000) // Convert kW to W
       setDailyAverage(dailyAverageWh) // Already in Wh
       
-      console.log('Daily Average Calculation (Updated Formula):', {
-        totalMonthlyEnergyKwh: `${totalMonthlyEnergy.toFixed(6)} kWh`,
-        totalMonthlyEnergyWh: `${totalMonthlyEnergyWh.toFixed(3)} Wh`,
+      console.log('Daily Average Calculation (Last 30 Days Historical Data):', {
+        totalHistoricalEnergyKwh: `${totalHistoricalEnergy.toFixed(6)} kWh`,
+        totalHistoricalEnergyWh: `${totalHistoricalEnergyWh.toFixed(3)} Wh`,
         activeDays: daysWithData,
         dailyAverageWh: `${dailyAverageWh.toFixed(3)} Wh`,
-        formula: `Daily Average = ${totalMonthlyEnergyWh.toFixed(3)} Wh ÷ ${daysWithData} days = ${dailyAverageWh.toFixed(3)} Wh`,
+        formula: `Daily Average = ${totalHistoricalEnergyWh.toFixed(3)} Wh ÷ ${daysWithData} days = ${dailyAverageWh.toFixed(3)} Wh`,
+        period: 'Last 30 days (rolling window)',
+        description: 'Typical/expected energy consumption per day based on historical data',
         todayKey: todayKey,
         department: department,
         filteredDevicesCount: filteredDevices.length
@@ -2708,8 +2729,8 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
 
     // Table headers
     const headers = selectedReportType === 'Outlets' 
-      ? ['Rank', 'Outlet', 'Appliance', 'Office', 'This Month Consumption', 'Monthly Cost (PHP)']
-      : ['Rank', 'Office', 'Department', 'Outlet', 'This Month Consumption', 'Monthly Cost (PHP)']
+      ? ['Rank', 'Outlet', 'Appliance', 'Office', 'This Month Consumption', 'This Month Cost (PHP)']
+      : ['Rank', 'Office', 'Department', 'Outlet', 'This Month Consumption', 'This Month Cost (PHP)']
 
     const colWidths = [16, 22, 33, 33, 38, 27]
     const rowHeight = 10
@@ -4149,7 +4170,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                         <div className="dashboard-table-cell">{selectedReportType === 'Outlets' ? 'Appliance' : 'Department'}</div>
                         <div className="dashboard-table-cell">{selectedReportType === 'Outlets' ? 'Office' : 'Outlet'}</div>
                         <div className="dashboard-table-cell">This Month Consumption</div>
-                        <div className="dashboard-table-cell">Monthly Cost (PHP)</div>
+                        <div className="dashboard-table-cell">This Month Cost (PHP)</div>
                       </div>
                       {previewData?.deviceTableData?.slice(0, 5).map((device: any, index: number) => {
                         return (
