@@ -355,6 +355,7 @@
 .status-active {
   background: #dcfce7;
   color: #166534;
+  border: 1px solid rgba(22, 163, 74, 0.3);
 }
 
 .status-active .status-dot {
@@ -364,6 +365,7 @@
 .status-inactive {
   background: #fef2f2;
   color: #dc2626;
+  border: 1px solid rgba(220, 38, 38, 0.3);
 }
 
 .status-inactive .status-dot {
@@ -373,6 +375,7 @@
 .status-warning {
   background: #fef3c7;
   color: #92400e;
+  border: 1px solid rgba(245, 158, 11, 0.3);
 }
 
 .status-warning .status-dot {
@@ -382,10 +385,21 @@
 .status-idle {
   background: #fef3c7;
   color: #92400e;
+  border: 1px solid rgba(245, 158, 11, 0.3);
 }
 
 .status-idle .status-dot {
   background: #f59e0b;
+}
+
+.status-unplug {
+  background: #ffedd5;
+  color: #9a3412;
+  border: 1px solid rgba(234, 88, 12, 0.3);
+}
+
+.status-unplug .status-dot {
+  background: #ea580c;
 }
 
 .status-success {

@@ -25,7 +25,7 @@ function App() {
   const [showNotificationModal, setShowNotificationModal] = useState(false)
   const [notifications, setNotifications] = useState<Array<{
     id: string
-    type: 'power_limit' | 'schedule_conflict' | 'device_off' | 'device_on'
+    type: 'power_limit' | 'schedule_conflict' | 'device_off' | 'device_on' | 'device_unplug'
     title: string
     message: string
     outletName: string
@@ -242,7 +242,7 @@ function App() {
       // First, create new notifications for current device states
       const newNotifications: Array<{
         id: string
-        type: 'power_limit' | 'schedule_conflict' | 'device_off' | 'device_on'
+        type: 'power_limit' | 'schedule_conflict' | 'device_off' | 'device_on' | 'device_unplug'
         title: string
         message: string
         outletName: string
@@ -328,6 +328,24 @@ function App() {
               deviceId: outletKey
             })
           }
+        }
+        
+        // Check for unplug detection - check for disabled_by_unplug flag or UNPLUG status
+        const isUnplugged = outlet.schedule?.disabled_by_unplug === true || outlet.status === 'UNPLUG' || outlet.status === 'unplug'
+        
+        if (isUnplugged && shouldCreateNotification(outletName, 'Device has been unplug')) {
+          console.log(`🔔 Creating unplug notification for ${outletName}`)
+          newNotifications.push({
+            id: `unplug_${outletKey}_${Date.now()}`,
+            type: 'device_unplug',
+            title: 'Device has been unplug',
+            message: `${outletName} has been detected as unplugged. The device has been automatically turned off and its schedule has been disabled.`,
+            outletName,
+            timestamp: new Date(),
+            isRead: false,
+            navigateTo: 'setup',
+            deviceId: outletKey
+          })
         }
       })
       
@@ -476,6 +494,16 @@ function App() {
             const isResolved = controlState === 'off' || !schedule || schedule.timeRange === 'No schedule'
             if (isResolved) {
               console.log(`✅ Auto-resolved schedule conflict notification for ${notification.outletName}`)
+            }
+            return !isResolved
+          }
+          
+          // For device unplug notifications
+          if (notification.type === 'device_unplug' || notification.title === 'Device has been unplug') {
+            const isUnplugged = schedule?.disabled_by_unplug === true || deviceData.status === 'UNPLUG' || deviceData.status === 'unplug'
+            const isResolved = !isUnplugged
+            if (isResolved) {
+              console.log(`✅ Auto-resolved unplug notification for ${notification.outletName}: Device has been plugged back in`)
             }
             return !isResolved
           }
@@ -631,7 +659,7 @@ function App() {
 
       const newNotifications: Array<{
         id: string
-        type: 'power_limit' | 'schedule_conflict' | 'device_off' | 'device_on'
+        type: 'power_limit' | 'schedule_conflict' | 'device_off' | 'device_on' | 'device_unplug'
         title: string
         message: string
         outletName: string
@@ -663,6 +691,36 @@ function App() {
         const todayTotalEnergy = todayLogs?.total_energy || 0 // This is in kW
         
         console.log(`🔌 ${outletName}: Today's Energy=${todayTotalEnergy.toFixed(3)}kW, Limit=${powerLimit}kW, Control=${controlState}, Main=${mainStatus}`)
+
+        // PRIORITY CHECK: Unplug detection - check for disabled_by_unplug flag or UNPLUG status FIRST
+        // This must be checked before schedule or power limit checks
+        const isUnplugged = outlet.schedule?.disabled_by_unplug === true || outlet.status === 'UNPLUG' || outlet.status === 'unplug'
+        
+        if (isUnplugged) {
+          // Check previous unplug state to detect state change
+          const previousUnplugState = previousDeviceStates[`${outletKey}_unplug`] === 'true'
+          const isNewlyUnplugged = !previousUnplugState && isUnplugged
+          
+          if (isNewlyUnplugged || shouldCreateNotification(outletName, 'Device has been unplug')) {
+            console.log(`🔌 Device ${outletName} detected as unplugged - generating notification`)
+            
+            newNotifications.push({
+              id: `unplug_${outletKey}_${Date.now()}`,
+              type: 'device_unplug',
+              title: 'Device has been unplug',
+              message: `${outletName} has been detected as unplugged. The device has been automatically turned off and its schedule has been disabled.`,
+              outletName,
+              timestamp: new Date(),
+              isRead: false,
+              navigateTo: 'setup',
+              deviceId: outletKey
+            })
+          }
+          
+          // Skip other checks if device is unplugged
+          console.log(`🔌 Skipping schedule/power checks for ${outletName} - device is unplugged`)
+          return // Skip to next device
+        }
 
         // Power limit detection - continuously monitor for power limit violations
         if (powerLimit > 0) {
@@ -1217,6 +1275,10 @@ function App() {
         const outlet = data[outletKey]
         const controlState = (outlet.control?.device || 'off').toString().trim().toLowerCase()
         newPreviousStates[outletKey] = controlState
+        
+        // Also track unplug state for change detection
+        const isUnplugged = outlet.schedule?.disabled_by_unplug === true || outlet.status === 'UNPLUG' || outlet.status === 'unplug'
+        newPreviousStates[`${outletKey}_unplug`] = isUnplugged ? 'true' : 'false'
       })
       setPreviousDeviceStates(newPreviousStates)
     })
@@ -1791,20 +1853,21 @@ function App() {
             bottom: 0,
             background: 'rgba(0, 0, 0, 0.5)',
             display: 'flex',
-            alignItems: 'flex-start',
-            justifyContent: 'flex-end',
+            alignItems: isMobile ? 'center' : 'flex-start',
+            justifyContent: isMobile ? 'center' : 'flex-end',
             zIndex: 2000,
-            padding: '80px 24px 24px 24px'
+            padding: isMobile ? '16px' : '80px 24px 24px 24px'
           }}
           onClick={() => setShowNotificationModal(false)}
         >
           <div 
             style={{
               background: 'white',
-              borderRadius: '12px',
+              borderRadius: isMobile ? '16px' : '12px',
               boxShadow: '0 20px 25px rgba(0, 0, 0, 0.1)',
-              width: '400px',
-              maxHeight: '600px',
+              width: isMobile ? '100%' : '400px',
+              maxWidth: isMobile ? '100%' : '400px',
+              maxHeight: isMobile ? 'calc(100vh - 32px)' : '600px',
               overflow: 'hidden',
               display: 'flex',
               flexDirection: 'column'
@@ -1813,18 +1876,28 @@ function App() {
           >
             {/* Modal Header */}
             <div style={{
-              padding: '20px 24px 16px 24px',
+              padding: isMobile ? '16px' : '20px 24px 16px 24px',
               borderBottom: '1px solid #e5e7eb',
               display: 'flex',
               alignItems: 'center',
-              justifyContent: 'space-between'
+              justifyContent: 'space-between',
+              gap: '12px'
             }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <div style={{ 
+                display: 'flex', 
+                alignItems: 'center', 
+                gap: isMobile ? '8px' : '12px',
+                flex: 1,
+                minWidth: 0
+              }}>
                 <h3 style={{
                   margin: 0,
-                  fontSize: '18px',
+                  fontSize: isMobile ? '16px' : '18px',
                   fontWeight: '600',
-                  color: '#1f2937'
+                  color: '#1f2937',
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis'
                 }}>
                   Notifications
                 </h3>
@@ -1833,8 +1906,9 @@ function App() {
                   display: 'flex',
                   alignItems: 'center',
                   gap: '6px',
-                  fontSize: '12px',
-                  color: isRealtimeConnected ? '#10b981' : '#ef4444'
+                  fontSize: isMobile ? '10px' : '12px',
+                  color: isRealtimeConnected ? '#10b981' : '#ef4444',
+                  flexShrink: 0
                 }}>
                   <div style={{
                     width: '8px',
@@ -1843,7 +1917,7 @@ function App() {
                     backgroundColor: isRealtimeConnected ? '#10b981' : '#ef4444',
                     animation: isRealtimeConnected ? 'pulse 2s infinite' : 'none'
                   }}></div>
-                  {isRealtimeConnected ? 'Live' : 'Disconnected'}
+                  {isMobile ? (isRealtimeConnected ? '●' : '○') : (isRealtimeConnected ? 'Live' : 'Disconnected')}
                 </div>
               </div>
               <button
@@ -1851,10 +1925,12 @@ function App() {
                 style={{
                   background: 'none',
                   border: 'none',
-                  fontSize: '20px',
+                  fontSize: isMobile ? '24px' : '20px',
                   cursor: 'pointer',
                   color: '#6b7280',
-                  padding: '4px'
+                  padding: '4px',
+                  flexShrink: 0,
+                  lineHeight: 1
                 }}
               >
                 ×
@@ -1865,26 +1941,26 @@ function App() {
             <div style={{
               flex: 1,
               overflowY: 'auto',
-              maxHeight: '500px'
+              maxHeight: isMobile ? 'calc(100vh - 180px)' : '500px'
             }}>
               {notifications.length === 0 ? (
                 <div style={{
-                  padding: '40px 24px',
+                  padding: isMobile ? '32px 16px' : '40px 24px',
                   textAlign: 'center',
                   color: '#6b7280'
                 }}>
-                  <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ margin: '0 auto 16px auto', opacity: 0.5 }}>
+                  <svg width={isMobile ? "40" : "48"} height={isMobile ? "40" : "48"} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ margin: '0 auto 16px auto', opacity: 0.5 }}>
                     <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
                     <path d="M13.73 21a2 2 0 0 1-3.46 0" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
                   </svg>
-                  <p style={{ margin: 0, fontSize: '14px' }}>No notifications yet</p>
+                  <p style={{ margin: 0, fontSize: isMobile ? '13px' : '14px' }}>No notifications yet</p>
                 </div>
               ) : (
                 notifications.map((notification) => (
                   <div
                     key={notification.id}
                     style={{
-                      padding: '16px 24px',
+                      padding: isMobile ? '12px 16px' : '16px 24px',
                       borderBottom: '1px solid #f3f4f6',
                       cursor: notification.navigateTo ? 'pointer' : 'default',
                       backgroundColor: notification.isRead ? 'white' : '#f8fafc',
@@ -1910,12 +1986,12 @@ function App() {
                     <div style={{
                       display: 'flex',
                       alignItems: 'flex-start',
-                      gap: '12px'
+                      gap: isMobile ? '10px' : '12px'
                     }}>
                       {/* Notification Icon */}
                       <div style={{
-                        width: '32px',
-                        height: '32px',
+                        width: isMobile ? '28px' : '32px',
+                        height: isMobile ? '28px' : '32px',
                         borderRadius: '50%',
                         display: 'flex',
                         alignItems: 'center',
@@ -1923,24 +1999,30 @@ function App() {
                         flexShrink: 0,
                         backgroundColor: notification.type === 'power_limit' ? '#fef2f2' : 
                                        notification.type === 'schedule_conflict' ? '#fef3c7' : 
-                                       notification.type === 'device_on' ? '#f0fdf4' : '#f3f4f6'
+                                       notification.type === 'device_on' ? '#f0fdf4' : 
+                                       notification.type === 'device_unplug' ? '#ffedd5' : '#f3f4f6'
                       }}>
                         {notification.type === 'power_limit' ? (
-                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                          <svg width={isMobile ? "14" : "16"} height={isMobile ? "14" : "16"} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                             <path d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" stroke="#dc2626" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
                           </svg>
                         ) : notification.type === 'schedule_conflict' ? (
-                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                          <svg width={isMobile ? "14" : "16"} height={isMobile ? "14" : "16"} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                             <rect x="3" y="4" width="18" height="17" rx="2" stroke="#f59e0b" strokeWidth="2"/>
                             <path d="M8 2v4M16 2v4M3 9h18" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round"/>
                           </svg>
                         ) : notification.type === 'device_on' ? (
-                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                          <svg width={isMobile ? "14" : "16"} height={isMobile ? "14" : "16"} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                             <circle cx="12" cy="12" r="10" stroke="#10b981" strokeWidth="2"/>
                             <path d="M9 12l2 2 4-4" stroke="#10b981" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
                           </svg>
+                        ) : notification.type === 'device_unplug' ? (
+                          <svg width={isMobile ? "14" : "16"} height={isMobile ? "14" : "16"} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M6 12h12M10 8l-4 4 4 4M14 16l4-4-4-4" stroke="#ea580c" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                            <path d="M3 3l18 18" stroke="#ea580c" strokeWidth="2" strokeLinecap="round"/>
+                          </svg>
                         ) : (
-                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                          <svg width={isMobile ? "14" : "16"} height={isMobile ? "14" : "16"} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                             <circle cx="12" cy="12" r="10" stroke="#6b7280" strokeWidth="2"/>
                             <path d="M8 12h8" stroke="#6b7280" strokeWidth="2" strokeLinecap="round"/>
                           </svg>
@@ -1952,14 +2034,17 @@ function App() {
                         <div style={{
                           display: 'flex',
                           alignItems: 'center',
-                          gap: '8px',
-                          marginBottom: '4px'
+                          gap: isMobile ? '6px' : '8px',
+                          marginBottom: '4px',
+                          flexWrap: 'wrap'
                         }}>
                           <h4 style={{
                             margin: 0,
-                            fontSize: '14px',
+                            fontSize: isMobile ? '13px' : '14px',
                             fontWeight: '600',
-                            color: '#1f2937'
+                            color: '#1f2937',
+                            flex: 1,
+                            minWidth: 0
                           }}>
                             {notification.title}
                           </h4>
@@ -1968,29 +2053,32 @@ function App() {
                               width: '6px',
                               height: '6px',
                               borderRadius: '50%',
-                              backgroundColor: '#3b82f6'
+                              backgroundColor: '#3b82f6',
+                              flexShrink: 0
                             }}></div>
                           )}
                         </div>
                         <p style={{
                           margin: '0 0 8px 0',
-                          fontSize: '13px',
+                          fontSize: isMobile ? '12px' : '13px',
                           color: '#6b7280',
-                          lineHeight: '1.4'
+                          lineHeight: '1.4',
+                          wordBreak: 'break-word'
                         }}>
                           {notification.message}
                         </p>
                         <div style={{
-                          fontSize: '12px',
+                          fontSize: isMobile ? '11px' : '12px',
                           color: '#9ca3af',
-                          marginTop: '8px'
+                          marginTop: '8px',
+                          wordBreak: 'break-word'
                         }}>
                           {notification.timestamp.toLocaleTimeString()} • {notification.outletName}
                         </div>
                         
                         {notification.navigateTo && (
                           <div style={{
-                            marginTop: '12px',
+                            marginTop: isMobile ? '10px' : '12px',
                             display: 'flex',
                             justifyContent: 'flex-end'
                           }}>
@@ -2004,16 +2092,17 @@ function App() {
                                 background: '#3b82f6',
                                 color: 'white',
                                 border: 'none',
-                                borderRadius: '8px',
-                                padding: '8px 16px',
-                                fontSize: '12px',
+                                borderRadius: isMobile ? '6px' : '8px',
+                                padding: isMobile ? '6px 12px' : '8px 16px',
+                                fontSize: isMobile ? '11px' : '12px',
                                 fontWeight: '600',
                                 cursor: 'pointer',
                                 display: 'flex',
                                 alignItems: 'center',
-                                gap: '6px',
+                                gap: isMobile ? '4px' : '6px',
                                 transition: 'all 0.2s ease',
-                                boxShadow: '0 2px 4px rgba(59, 130, 246, 0.3)'
+                                boxShadow: '0 2px 4px rgba(59, 130, 246, 0.3)',
+                                whiteSpace: 'nowrap'
                               }}
                               onMouseEnter={(e) => {
                                 e.currentTarget.style.background = '#2563eb'
@@ -2026,7 +2115,7 @@ function App() {
                                 e.currentTarget.style.boxShadow = '0 2px 4px rgba(59, 130, 246, 0.3)'
                               }}
                             >
-                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                              <svg width={isMobile ? "12" : "14"} height={isMobile ? "12" : "14"} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                                 <path d="M9 12l2 2 4-4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
                               </svg>
                               <span>Check & Resolve</span>
@@ -2043,11 +2132,13 @@ function App() {
             {/* Modal Footer */}
             {notifications.length > 0 && (
               <div style={{
-                padding: '16px 24px',
+                padding: isMobile ? '12px 16px' : '16px 24px',
                 borderTop: '1px solid #e5e7eb',
                 display: 'flex',
                 justifyContent: 'space-between',
-                alignItems: 'center'
+                alignItems: 'center',
+                gap: isMobile ? '12px' : '16px',
+                flexWrap: isMobile ? 'wrap' : 'nowrap'
               }}>
                 <button
                   onClick={() => {
@@ -2061,25 +2152,33 @@ function App() {
                     background: 'none',
                     border: 'none',
                     color: '#3b82f6',
-                    fontSize: '14px',
+                    fontSize: isMobile ? '12px' : '14px',
                     cursor: 'pointer',
-                    fontWeight: '500'
+                    fontWeight: '500',
+                    whiteSpace: 'nowrap'
                   }}
                 >
                   Mark all as read
                 </button>
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
+                <div style={{ 
+                  display: 'flex', 
+                  flexDirection: 'column', 
+                  alignItems: isMobile ? 'flex-start' : 'flex-end',
+                  flexShrink: 0
+                }}>
                   <span style={{
-                    fontSize: '12px',
-                    color: '#9ca3af'
+                    fontSize: isMobile ? '11px' : '12px',
+                    color: '#9ca3af',
+                    whiteSpace: 'nowrap'
                   }}>
                     {notifications.filter(n => !n.isRead).length} unread
                   </span>
                   {lastUpdateTime && (
                     <span style={{
-                      fontSize: '10px',
+                      fontSize: isMobile ? '9px' : '10px',
                       color: '#9ca3af',
-                      marginTop: '2px'
+                      marginTop: '2px',
+                      whiteSpace: 'nowrap'
                     }}>
                       Last update: {lastUpdateTime.toLocaleTimeString()}
                     </span>

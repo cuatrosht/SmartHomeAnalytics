@@ -268,6 +268,8 @@ interface FirebaseDeviceData {
     startTime: string
     endTime: string
     selectedDays: string[]
+    disabled_by_unplug?: boolean
+    basis?: number
   }
 }
 
@@ -491,6 +493,14 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     lastControlUpdate: number;
     lastTotalEnergy: number;
     lastControlState: string;
+  }>>({})
+
+  // Unplug detection state - track timestamps for each device
+  const [deviceTimestamps, setDeviceTimestamps] = useState<Record<string, {
+    lastTimestamp: string;
+    lastTimestampTime: number;
+    basis: number;
+    lastChecked: number;
   }>>({})
 
   // Auto-turnoff timer state for non-idle devices
@@ -1186,13 +1196,21 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
             const timeSinceControlUpdate = currentTime - activity.lastControlUpdate
             const isIdleFromLogic = timeSinceEnergyUpdate > 15000 && timeSinceControlUpdate > 15000
             
-            // Determine final status
+            // Determine final status - CHECK FOR UNPLUG FIRST (HIGHEST PRIORITY)
+            // UNPLUG status takes precedence over Active/Inactive - if device is unplugged, always show UNPLUG
             let deviceStatus: string
-            if ((isIdleFromSensor || isIdleFromLogic) && controlState === 'on') {
-              // Show Idle if sensor reports idle OR if device is supposed to be ON but not responding
+            
+            // PRIORITY 1: UNPLUG - Check if device is unplugged (from root status or disabled_by_unplug flag)
+            // This MUST be checked first - UNPLUG takes precedence over Active/Inactive
+            if (sensorStatus === 'UNPLUG' || sensorStatus === 'unplug' || outlet.schedule?.disabled_by_unplug === true) {
+              deviceStatus = 'UNPLUG'
+            } else if ((isIdleFromSensor || isIdleFromLogic) && controlState === 'on') {
+              // PRIORITY 2: Show Idle if sensor reports idle OR if device is supposed to be ON but not responding
               deviceStatus = 'Idle'
             } else {
-              deviceStatus = controlState
+              // PRIORITY 3: Active/Inactive based on control state (only if NOT unplugged)
+              // Convert controlState to proper format ('on' -> 'Active', 'off' -> 'Inactive')
+              deviceStatus = controlState === 'on' ? 'Active' : 'Inactive'
             }
 
             // Auto-turnoff logic disabled to prevent interference with data uploads
@@ -1281,6 +1299,28 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
               
               const currentControlState = deviceData.control?.device || 'off'
               const currentMainStatus = deviceData.relay_control?.main_status || 'ON'
+              
+              // RESPECT disabled_by_unplug - if schedule is disabled by unplug, don't enable it
+              if (deviceData.schedule.disabled_by_unplug === true) {
+                console.log(`Dashboard: Device ${outletKey} is disabled by unplug - skipping schedule check`)
+                
+                // Ensure root status is set to UNPLUG for display in table
+                const rootStatus = deviceData.status
+                if (rootStatus !== 'UNPLUG' && rootStatus !== 'unplug') {
+                  await update(ref(realtimeDb, `devices/${outletKey}`), {
+                    status: 'UNPLUG'
+                  })
+                  console.log(`Dashboard: Updated root status to UNPLUG for ${outletKey} (disabled_by_unplug is true)`)
+                }
+                
+                // Ensure device stays off
+                if (currentControlState !== 'off') {
+                  await update(ref(realtimeDb, `devices/${outletKey}/control`), {
+                    device: 'off'
+                  })
+                }
+                continue
+              }
               
               // RESPECT bypass mode - if main_status is ON, don't override it (device is in bypass mode)
               if (currentMainStatus === 'ON') {
@@ -1537,6 +1577,210 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
           clearTimeout(timer)
         }
       })
+    }
+  }, [])
+
+  // Unplug detection: Monitor timestamp changes and detect unplugged devices
+  useEffect(() => {
+    const checkUnpluggedDevices = async () => {
+      try {
+        const devicesRef = ref(realtimeDb, 'devices')
+        const snapshot = await get(devicesRef)
+        
+        if (!snapshot.exists()) return
+        
+        const devicesData = snapshot.val()
+        const currentTime = Date.now()
+        
+        // Check each device with a schedule
+        for (const [outletKey, outletData] of Object.entries(devicesData)) {
+          const deviceData = outletData as FirebaseDeviceData
+          
+          // Only check devices with schedules
+          if (!deviceData.schedule || (!deviceData.schedule.timeRange && !deviceData.schedule.startTime)) {
+            continue
+          }
+          
+          // Get current timestamp from sensor_data
+          const sensorTimestamp = deviceData.sensor_data?.timestamp || ''
+          const basis = deviceData.schedule.basis || 0
+          
+          // Skip if no basis timestamp (schedule wasn't saved with basis)
+          if (!basis) {
+            continue
+          }
+          
+          // Convert timestamp to milliseconds if it's in epoch seconds format
+          let timestampMs = 0
+          if (sensorTimestamp) {
+            // Check if timestamp is in seconds (10 digits) or milliseconds (13 digits)
+            const timestampNum = parseInt(sensorTimestamp, 10)
+            if (timestampNum.toString().length === 10) {
+              timestampMs = timestampNum * 1000 // Convert seconds to milliseconds
+            } else {
+              timestampMs = timestampNum
+            }
+          }
+          
+          // CHECK FIRST: If device is already disabled by unplug, check if timestamp changed (device plugged back in)
+          if (deviceData.schedule.disabled_by_unplug === true) {
+            // Check timestamp change using functional setState to get current state
+            setDeviceTimestamps(prev => {
+              const existing = prev[outletKey]
+              
+              // Device is marked as unplugged - check if timestamp has changed (device plugged back in)
+              if (existing && existing.lastTimestamp && sensorTimestamp && existing.lastTimestamp !== sensorTimestamp) {
+                // Timestamp changed - device was plugged back in after being unplugged
+                console.log(`🔌 Dashboard: PLUG DETECTED: ${outletKey} - timestamp changed from "${existing.lastTimestamp}" to "${sensorTimestamp}", resetting unplug state`)
+                
+                // Reset unplug state ASYNCHRONOUSLY (outside of setState callback)
+                setTimeout(() => {
+                  const scheduleRef = ref(realtimeDb, `devices/${outletKey}/schedule`)
+                  update(scheduleRef, {
+                    disabled_by_unplug: false
+                  }).then(() => {
+                    // Reset root status from UNPLUG to normal status (based on control state)
+                    const controlRef = ref(realtimeDb, `devices/${outletKey}/control`)
+                    return get(controlRef).then(controlSnapshot => {
+                      const controlData = controlSnapshot.val()
+                      const controlState = controlData?.device || 'off'
+                      
+                      return update(ref(realtimeDb, `devices/${outletKey}`), {
+                        status: controlState === 'on' ? 'ON' : 'OFF'
+                      })
+                    })
+                  }).then(() => {
+                    console.log(`✅ Dashboard: RESET UNPLUG STATE: ${outletKey} - device plugged back in, disabled_by_unplug set to false, status reset to normal`)
+                  }).catch(err => {
+                    console.error(`❌ Error resetting unplug state for ${outletKey}:`, err)
+                  })
+                }, 0)
+                
+                // Update timestamp tracking with new timestamp immediately
+                return {
+                  ...prev,
+                  [outletKey]: {
+                    lastTimestamp: sensorTimestamp, // Store new timestamp
+                    lastTimestampTime: currentTime, // Reset time to track new timestamp
+                    basis: basis,
+                    lastChecked: currentTime
+                  }
+                }
+              }
+              
+              // Device is unplugged but timestamp hasn't changed - update lastChecked time only
+              if (existing) {
+                return {
+                  ...prev,
+                  [outletKey]: {
+                    ...existing,
+                    lastChecked: currentTime
+                  }
+                }
+              }
+              
+              // No existing tracking for unplugged device - initialize it with current timestamp
+              return {
+                ...prev,
+                [outletKey]: {
+                  lastTimestamp: sensorTimestamp || '', // Store current timestamp
+                  lastTimestampTime: currentTime,
+                  basis: basis,
+                  lastChecked: currentTime
+                }
+              }
+            })
+            
+            // Continue to next device after handling unplugged state
+            continue
+          }
+          
+          // Initialize or update device timestamp tracking for non-unplugged devices
+          setDeviceTimestamps(prev => {
+            const existing = prev[outletKey]
+            
+            // If timestamp hasn't changed, check if it's been 30 seconds since we first saw this timestamp
+            if (existing && existing.lastTimestamp === sensorTimestamp && sensorTimestamp) {
+              // Calculate time since we first detected this timestamp value
+              const timeSinceLastUpdate = currentTime - existing.lastTimestampTime
+              
+              // If 30 seconds have passed since timestamp last changed
+              if (timeSinceLastUpdate >= 30000) {
+                // Mark device as unplugged
+                const scheduleRef = ref(realtimeDb, `devices/${outletKey}/schedule`)
+                update(scheduleRef, {
+                  disabled_by_unplug: true
+                }).then(() => {
+                  // Turn off the device
+                  update(ref(realtimeDb, `devices/${outletKey}/control`), {
+                    device: 'off'
+                  }).then(() => {
+                    // Disable schedule by turning off main_status
+                    update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
+                      main_status: 'OFF'
+                    }).then(() => {
+                      // Set root status to UNPLUG for display
+                      return update(ref(realtimeDb, `devices/${outletKey}`), {
+                        status: 'UNPLUG'
+                      })
+                    }).then(() => {
+                      console.log(`🔌 Dashboard: UNPLUG DETECTED: ${outletKey} - timestamp unchanged for 30+ seconds. Device turned OFF, schedule disabled, and root status set to UNPLUG.`)
+                    }).catch(err => {
+                      console.error(`Dashboard: Error disabling schedule or setting UNPLUG status for ${outletKey}:`, err)
+                    })
+                  }).catch(err => {
+                    console.error(`Dashboard: Error turning off device ${outletKey}:`, err)
+                  })
+                }).catch(err => {
+                  console.error(`Dashboard: Error marking ${outletKey} as unplugged:`, err)
+                })
+                
+                // Update state to track this timestamp (when device was marked unplugged)
+                return {
+                  ...prev,
+                  [outletKey]: {
+                    lastTimestamp: sensorTimestamp, // Store the timestamp when device was marked unplugged
+                    lastTimestampTime: existing.lastTimestampTime, // Keep original time when we first saw this timestamp
+                    basis: basis,
+                    lastChecked: currentTime
+                  }
+                }
+              }
+              
+              // Timestamp hasn't changed but it hasn't been 30 seconds yet
+              return prev
+            }
+            
+            // If timestamp changed or is new, update tracking with current time
+            if (!existing || existing.lastTimestamp !== sensorTimestamp) {
+              return {
+                ...prev,
+                [outletKey]: {
+                  lastTimestamp: sensorTimestamp || '',
+                  lastTimestampTime: currentTime, // Track when we first saw this timestamp value
+                  basis: basis,
+                  lastChecked: currentTime
+                }
+              }
+            }
+            
+            return prev
+          })
+        }
+      } catch (error) {
+        console.error('Dashboard: Error checking unplugged devices:', error)
+      }
+    }
+    
+    // Run check immediately
+    checkUnpluggedDevices()
+    
+    // Set up interval to check every 5 seconds
+    const unplugCheckInterval = setInterval(checkUnpluggedDevices, 5000)
+    
+    // Cleanup interval on unmount
+    return () => {
+      clearInterval(unplugCheckInterval)
     }
   }, [])
 
@@ -2254,13 +2498,21 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     const statusClasses: { [key: string]: string } = {
       'on': 'status-active',
       'off': 'status-inactive',
-      'Idle': 'status-idle'
+      'Active': 'status-active',
+      'Inactive': 'status-inactive',
+      'Idle': 'status-idle',
+      'UNPLUG': 'status-unplug'
     }
+    
+    // Determine display text
+    let displayText = status
+    if (status === 'on') displayText = 'Active'
+    else if (status === 'off') displayText = 'Inactive'
     
     return (
       <span className={`status-badge ${statusClasses[status] || 'status-inactive'}`}>
         <span className={`status-dot ${statusClasses[status] || 'status-inactive'}`}></span>
-        {status === 'on' ? 'Active' : status === 'off' ? 'Inactive' : 'Idle'}
+        {displayText}
       </span>
     )
   }
@@ -3974,5 +4226,4 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     </div>
   )
 }
-
 

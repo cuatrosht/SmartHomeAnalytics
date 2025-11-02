@@ -92,6 +92,7 @@ ChartJS.register(
 )
 
 interface FirebaseDeviceData {
+  status?: string // Add status property at root level
   lifetime_energy?: number // Add lifetime_energy at the root level
   daily_logs?: {
     [date: string]: {
@@ -134,6 +135,8 @@ interface FirebaseDeviceData {
     startTime: string
     endTime: string
     selectedDays: string[]
+    disabled_by_unplug?: boolean
+    basis?: number
   }
 }
 
@@ -2173,6 +2176,28 @@ export default function Reports() {
               
               const currentControlState = deviceData.control?.device || 'off'
               const currentMainStatus = deviceData.relay_control?.main_status || 'ON'
+              
+              // RESPECT disabled_by_unplug - if schedule is disabled by unplug, don't enable it
+              if (deviceData.schedule.disabled_by_unplug === true) {
+                console.log(`Reports: Device ${outletKey} is disabled by unplug - skipping schedule check`)
+                
+                // Ensure root status is set to UNPLUG for display in table
+                const rootStatus = deviceData.status
+                if (rootStatus !== 'UNPLUG' && rootStatus !== 'unplug') {
+                  await update(ref(realtimeDb, `devices/${outletKey}`), {
+                    status: 'UNPLUG'
+                  })
+                  console.log(`Reports: Updated root status to UNPLUG for ${outletKey} (disabled_by_unplug is true)`)
+                }
+                
+                // Ensure device stays off
+                if (currentControlState !== 'off') {
+                  await update(ref(realtimeDb, `devices/${outletKey}/control`), {
+                    device: 'off'
+                  })
+                }
+                continue
+              }
               
               // RESPECT bypass mode - if main_status is ON, don't override it (device is in bypass mode)
               if (currentMainStatus === 'ON') {

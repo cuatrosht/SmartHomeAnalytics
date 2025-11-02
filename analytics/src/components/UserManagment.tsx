@@ -245,6 +245,28 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
               const currentControlState = deviceData.control?.device || 'off'
               const currentMainStatus = deviceData.relay_control?.main_status || 'ON'
               
+              // RESPECT disabled_by_unplug - if schedule is disabled by unplug, don't enable it
+              if (deviceData.schedule.disabled_by_unplug === true) {
+                console.log(`UserManagement: Device ${outletKey} is disabled by unplug - skipping schedule check`)
+                
+                // Ensure root status is set to UNPLUG for display in table
+                const rootStatus = deviceData.status
+                if (rootStatus !== 'UNPLUG' && rootStatus !== 'unplug') {
+                  await update(ref(realtimeDb, `devices/${outletKey}`), {
+                    status: 'UNPLUG'
+                  })
+                  console.log(`UserManagement: Updated root status to UNPLUG for ${outletKey} (disabled_by_unplug is true)`)
+                }
+                
+                // Ensure device stays off
+                if (currentControlState !== 'off') {
+                  await update(ref(realtimeDb, `devices/${outletKey}/control`), {
+                    device: 'off'
+                  })
+                }
+                continue
+              }
+              
               // RESPECT bypass mode - if main_status is ON, don't override it (device is in bypass mode)
               if (currentMainStatus === 'ON') {
                 console.log(`UserManagement: Device ${outletKey} has main_status = 'ON' - respecting bypass mode, skipping schedule check`)
