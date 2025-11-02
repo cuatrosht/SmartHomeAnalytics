@@ -939,7 +939,8 @@ export default function Reports() {
       // Report Title
       doc.setFontSize(16)
       doc.setFont('arial', 'bold')
-      doc.text('EcoPlug Performance Summary Report', pageWidth / 2, yPosition, { align: 'center' })
+      const reportTitle = selectedReportType === 'Outlets' ? 'Outlet Consumption Ranking' : 'EcoPlug Performance Summary Report'
+      doc.text(reportTitle, pageWidth / 2, yPosition, { align: 'center' })
       yPosition += 20
 
       // Add a separator line
@@ -3287,8 +3288,8 @@ export default function Reports() {
                   }}
                 >
                   <div className="report-type-content">
-                    <h4>Outlets</h4>
-                    <p>Generate report by individual outlets</p>
+                    <h4>Outlet Consumption Ranking</h4>
+                    <p>Generate report by consumption</p>
                   </div>
                 </button>
               </div>
@@ -3531,7 +3532,7 @@ export default function Reports() {
                       <p style={{ margin: '4px 0', fontSize: '14px', fontWeight: '500' }}>Camarines Norte State College</p>
                       <p style={{ margin: '4px 0', fontSize: '14px', fontWeight: '500' }}>Daet, Camarines Norte</p>
                     </div>
-                    <h2 style={{ textAlign: 'center', marginTop: '16px' }}>EcoPlug Performance Summary Report</h2>
+                    <h2 style={{ textAlign: 'center', marginTop: '16px' }}>{selectedReportType === 'Outlets' ? 'Outlet Consumption Ranking' : 'EcoPlug Performance Summary Report'}</h2>
                     <div className="pdf-preview-separator"></div>
                     
                     <div className="pdf-preview-details" style={{ fontSize: '12px', lineHeight: '1.8' }}>
