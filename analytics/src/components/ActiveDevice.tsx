@@ -2040,14 +2040,28 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
         }
       }
       
-      // Update both control state and main status in Firebase
-      await update(ref(realtimeDb, `devices/${outletKey}/control`), {
-        device: newControlState
-      })
-      
-      await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
-        main_status: newMainStatus
-      })
+      // Update main status FIRST when turning ON to prevent automatic checks from turning it off
+      // When turning OFF, order doesn't matter
+      if (newControlState === 'on') {
+        // Turn ON: Update main_status FIRST, then control.device
+        // This ensures automatic checks see bypass mode (main_status === 'ON') and skip turning off
+        await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
+          main_status: newMainStatus
+        })
+        
+        await update(ref(realtimeDb, `devices/${outletKey}/control`), {
+          device: newControlState
+        })
+      } else {
+        // Turn OFF: Update both in parallel (order doesn't matter)
+        await update(ref(realtimeDb, `devices/${outletKey}/control`), {
+          device: newControlState
+        })
+        
+        await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
+          main_status: newMainStatus
+        })
+      }
       
       // If turning off, also update status to OFF
       if (newControlState === 'off') {
