@@ -3238,10 +3238,15 @@ export default function Schedule() {
     try {
       // Find the device to get the outlet key
       const device = deviceSchedules.find(d => d.id === deleteConfirmModal.deviceId)
-      if (!device) return
+      if (!device) {
+        console.error('Device not found for deletion')
+        // Close modal even if device not found
+        setDeleteConfirmModal({ isOpen: false, deviceId: '', deviceName: '' })
+        return
+      }
       
-      // Convert outlet name back to Firebase key format
-      const outletKey = device.outletName.replace(' ', '_')
+      // Convert outlet name back to Firebase key format (replace ALL spaces with underscores)
+      const outletKey = device.outletName.replace(/\s+/g, '_')
       
       // Get current schedule data to preserve basis and disabled_by_unplug
       const scheduleRef = ref(realtimeDb, `devices/${outletKey}/schedule`)
@@ -3298,7 +3303,11 @@ export default function Schedule() {
       setSuccessModal({ isOpen: true, deviceName: `${deviceName} schedule deleted` })
     } catch (error) {
       console.error('Error deleting schedule:', error)
-      // You could add error handling here, like showing an error message
+      // Close modal and show error feedback
+      setDeleteConfirmModal({ isOpen: false, deviceId: '', deviceName: '' })
+      setError(`Failed to delete schedule: ${error instanceof Error ? error.message : 'Unknown error'}`)
+      // Clear error after 5 seconds
+      setTimeout(() => setError(null), 5000)
     }
   }
 
@@ -3327,11 +3336,65 @@ export default function Schedule() {
           const today = new Date()
           const todayDateKey = `day_${today.getFullYear()}_${String(today.getMonth() + 1).padStart(2, '0')}_${String(today.getDate()).padStart(2, '0')}`
           
-          // Check if combined limit is enabled and has a valid value
-          const combinedLimitWh = combinedLimitData?.combinedLimit || 0
-          const hasValidCombinedLimit = combinedLimitData?.enabled && combinedLimitWh > 0
+          // Handle both property name formats: selected_outlets (snake_case) or selectedOutlets (camelCase)
+          const combinedLimitWh = combinedLimitData?.combinedLimit || combinedLimitData?.combined_limit_watts || 0
+          const hasValidCombinedLimit = combinedLimitData?.enabled && (typeof combinedLimitWh === 'number' ? combinedLimitWh > 0 : false)
+          const selectedOutletsFromLimit = combinedLimitData?.selected_outlets || combinedLimitData?.selectedOutlets || []
           
-          // Filter out outlets that exceed limits
+          // Check monthly limit for outlets in combined group BEFORE filtering daily limits
+          if (combinedLimitData?.enabled && selectedOutletsFromLimit.length > 0) {
+            const outletsInCombinedGroup = selectedOutlets.filter(outletKey => {
+              const outletName = outletKey.replace('_', ' ')
+              return selectedOutletsFromLimit.some((limitOutlet: string) => {
+                const normalizedOutletKey = outletKey.replace(/_/g, ' ').toLowerCase().trim()
+                const normalizedLimitOutlet = limitOutlet.replace(/_/g, ' ').toLowerCase().trim()
+                return normalizedOutletKey === normalizedLimitOutlet ||
+                       outletKey === limitOutlet ||
+                       outletName === limitOutlet
+              })
+            })
+            
+            if (outletsInCombinedGroup.length > 0) {
+              // Check monthly limit for the first outlet in combined group (they all share the same monthly limit)
+              const firstOutlet = outletsInCombinedGroup[0]
+              const monthlyLimitCheck = await checkMonthlyLimitBeforeTurnOn(firstOutlet, {
+                enabled: combinedLimitData?.enabled,
+                selectedOutlets: selectedOutletsFromLimit,
+                combinedLimit: combinedLimitWh
+              })
+              
+              if (!monthlyLimitCheck.canTurnOn) {
+                const totalMonthlyEnergy = monthlyLimitCheck.currentMonthlyEnergy || 0
+                const monthlyLimitWatts = monthlyLimitCheck.combinedLimit
+                
+                if (typeof monthlyLimitWatts === 'number' && monthlyLimitWatts > 0) {
+                  // Convert 24-hour format to 12-hour for display
+                  const convertTo12Hour = (time24h: string) => {
+                    if (!time24h) return ''
+                    const [hours, minutes] = time24h.split(':')
+                    const hour = parseInt(hours, 10)
+                    const ampm = hour >= 12 ? 'PM' : 'AM'
+                    const hour12 = hour % 12 || 12
+                    return `${hour12}:${minutes} ${ampm}`
+                  }
+                  const timeRange = `${convertTo12Hour(scheduleData.startTime)} - ${convertTo12Hour(scheduleData.endTime)}`
+                  
+                  const outletsInGroupNames = outletsInCombinedGroup.map(key => key.replace('_', ' '))
+                  handleLimitExceeded(
+                    `${outletsInGroupNames.join(', ')}`,
+                    'monthly',
+                    totalMonthlyEnergy,
+                    monthlyLimitWatts,
+                    timeRange
+                  )
+                  return // Prevent saving if monthly limit exceeded
+                }
+              }
+            }
+          }
+          
+          // Check for outlets that exceed daily limits
+          const exceedingOutlets: string[] = []
           outletsToSave = selectedOutlets.filter(outletKey => {
             const deviceData = devicesData[outletKey]
             if (deviceData) {
@@ -3343,13 +3406,19 @@ export default function Schedule() {
               
               // Check if this outlet is part of the combined group
               const outletName = outletKey.replace('_', ' ')
-              const isOutletInCombinedGroup = hasValidCombinedLimit && 
-                (combinedLimitData?.selectedOutlets?.includes(outletKey) || 
-                 combinedLimitData?.selectedOutlets?.includes(outletName))
+              const isOutletInCombinedGroup = hasValidCombinedLimit && selectedOutletsFromLimit.some((limitOutlet: string) => {
+                const normalizedOutletKey = outletKey.replace(/_/g, ' ').toLowerCase().trim()
+                const normalizedLimitOutlet = limitOutlet.replace(/_/g, ' ').toLowerCase().trim()
+                return normalizedOutletKey === normalizedLimitOutlet ||
+                       outletKey === limitOutlet ||
+                       outletName === limitOutlet
+              })
               
               if (isOutletInCombinedGroup) {
                 // Use combined limit ONLY if outlet is part of combined group
-                outletExceedsLimit = outletEnergyWh >= combinedLimitWh
+                if (typeof combinedLimitWh === 'number') {
+                  outletExceedsLimit = outletEnergyWh >= combinedLimitWh
+                }
               } else {
                 // IMPORTANT: If outlet is NOT in combined group, always use individual limit
                 // This handles cases where: no combined limit exists, combined limit disabled, or outlet not in group
@@ -3362,11 +3431,129 @@ export default function Schedule() {
                 // If no individual limit is set either, allow the outlet
               }
               
+              if (outletExceedsLimit) {
+                exceedingOutlets.push(outletKey)
+              }
+              
               // Only include outlets that are within limits
               return !outletExceedsLimit
             }
             return true // Include if no data found
           })
+          
+          // Show modal if any outlets exceed limits
+          if (exceedingOutlets.length > 0) {
+            // Convert 24-hour format to 12-hour for display
+            const convertTo12Hour = (time24h: string) => {
+              if (!time24h) return ''
+              const [hours, minutes] = time24h.split(':')
+              const hour = parseInt(hours, 10)
+              const ampm = hour >= 12 ? 'PM' : 'AM'
+              const hour12 = hour % 12 || 12
+              return `${hour12}:${minutes} ${ampm}`
+            }
+            const timeRange = `${convertTo12Hour(scheduleData.startTime)} - ${convertTo12Hour(scheduleData.endTime)}`
+            
+            // Get the first exceeding outlet to determine limit type and value
+            const firstExceedingOutlet = exceedingOutlets[0]
+            const firstExceedingOutletData = devicesData[firstExceedingOutlet]
+            const outletName = firstExceedingOutlet.replace('_', ' ')
+            
+            // Check if first outlet is in combined group
+            const isFirstOutletInCombinedGroup = hasValidCombinedLimit && selectedOutletsFromLimit.some((limitOutlet: string) => {
+              const normalizedOutletKey = firstExceedingOutlet.replace(/_/g, ' ').toLowerCase().trim()
+              const normalizedLimitOutlet = limitOutlet.replace(/_/g, ' ').toLowerCase().trim()
+              return normalizedOutletKey === normalizedLimitOutlet ||
+                     firstExceedingOutlet === limitOutlet ||
+                     outletName === limitOutlet
+            })
+            
+            let limitType: 'individual' | 'combined' | 'monthly' = 'individual'
+            let limitValue = 0
+            let currentUsage = 0
+            
+            if (firstExceedingOutletData) {
+              const todayLogs = firstExceedingOutletData?.daily_logs?.[todayDateKey]
+              const todayTotalEnergy = todayLogs?.total_energy || 0
+              currentUsage = todayTotalEnergy * 1000 // Convert to Wh
+              
+              if (isFirstOutletInCombinedGroup && typeof combinedLimitWh === 'number') {
+                limitType = 'combined'
+                limitValue = combinedLimitWh
+              } else {
+                limitType = 'individual'
+                const individualPowerLimit = firstExceedingOutletData.relay_control?.auto_cutoff?.power_limit || 0
+                limitValue = individualPowerLimit * 1000 // Convert from kW to Wh
+              }
+            }
+            
+            const exceedingOutletsNames = exceedingOutlets.map(key => key.replace('_', ' '))
+            handleLimitExceeded(
+              `${exceedingOutletsNames.join(', ')}`,
+              limitType,
+              currentUsage,
+              limitValue,
+              timeRange
+            )
+            return // Prevent saving if any outlets exceed limits
+          }
+          
+          // Prevent saving if all outlets exceed limits
+          if (outletsToSave.length === 0 && selectedOutlets.length > 0) {
+            // Convert 24-hour format to 12-hour for display
+            const convertTo12Hour = (time24h: string) => {
+              if (!time24h) return ''
+              const [hours, minutes] = time24h.split(':')
+              const hour = parseInt(hours, 10)
+              const ampm = hour >= 12 ? 'PM' : 'AM'
+              const hour12 = hour % 12 || 12
+              return `${hour12}:${minutes} ${ampm}`
+            }
+            const timeRange = `${convertTo12Hour(scheduleData.startTime)} - ${convertTo12Hour(scheduleData.endTime)}`
+            
+            // Get the first outlet to determine limit type and value
+            const firstOutlet = selectedOutlets[0]
+            const firstOutletData = devicesData[firstOutlet]
+            const outletName = firstOutlet.replace('_', ' ')
+            
+            // Check if first outlet is in combined group
+            const isFirstOutletInCombinedGroup = hasValidCombinedLimit && selectedOutletsFromLimit.some((limitOutlet: string) => {
+              const normalizedOutletKey = firstOutlet.replace(/_/g, ' ').toLowerCase().trim()
+              const normalizedLimitOutlet = limitOutlet.replace(/_/g, ' ').toLowerCase().trim()
+              return normalizedOutletKey === normalizedLimitOutlet ||
+                     firstOutlet === limitOutlet ||
+                     outletName === limitOutlet
+            })
+            
+            let limitType: 'individual' | 'combined' | 'monthly' = 'individual'
+            let limitValue = 0
+            let currentUsage = 0
+            
+            if (firstOutletData) {
+              const todayLogs = firstOutletData?.daily_logs?.[todayDateKey]
+              const todayTotalEnergy = todayLogs?.total_energy || 0
+              currentUsage = todayTotalEnergy * 1000 // Convert to Wh
+              
+              if (isFirstOutletInCombinedGroup && typeof combinedLimitWh === 'number') {
+                limitType = 'combined'
+                limitValue = combinedLimitWh
+              } else {
+                limitType = 'individual'
+                const individualPowerLimit = firstOutletData.relay_control?.auto_cutoff?.power_limit || 0
+                limitValue = individualPowerLimit * 1000 // Convert from kW to Wh
+              }
+            }
+            
+            const outletNames = selectedOutlets.map(key => key.replace('_', ' '))
+            handleLimitExceeded(
+              `${outletNames.join(', ')}`,
+              limitType,
+              currentUsage,
+              limitValue,
+              timeRange
+            )
+            return // Prevent saving if all outlets exceed limits
+          }
           
           console.log(`Filtered outlets: ${outletsToSave.length} out of ${selectedOutlets.length} outlets will be saved`)
         }
