@@ -1314,7 +1314,7 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
                     paginatedUserLogs.map((log) => (
                       <tr key={log.id}>
                         <td>{log.user}</td>
-                        <td>{log.role.charAt(0).toUpperCase() + log.role.slice(1)}</td>
+                        <td>{log.role === 'admin' ? 'GSO' : log.role === 'Coordinator' ? 'Coordinator' : log.role.charAt(0).toUpperCase() + log.role.slice(1)}</td>
                         <td>{log.action}</td>
                         <td>{new Date(log.timestamp).toLocaleString()}</td>
                         <td>
