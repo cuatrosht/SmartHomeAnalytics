@@ -1572,8 +1572,20 @@ function EditDeviceModal({
         // Handle schedule data based on enableScheduling flag
         const scheduleRef = ref(realtimeDb, `devices/${outletKey}/schedule`)
         if (enableScheduling) {
-          console.log('Edit modal: Scheduling is enabled - keeping existing schedule data')
-          // Schedule data remains unchanged when scheduling is enabled
+          console.log('Edit modal: Scheduling is enabled - updating basis and disabled_by_unplug')
+          // If schedule exists, update basis and disabled_by_unplug
+          const scheduleSnapshot = await get(scheduleRef)
+          const existingSchedule = scheduleSnapshot.val()
+          
+          if (existingSchedule && (existingSchedule.timeRange || existingSchedule.startTime)) {
+            // Create basis timestamp for unplug detection
+            const basis = Date.now()
+            await update(scheduleRef, {
+              basis: basis,
+              disabled_by_unplug: false
+            })
+            console.log(`Edit modal: Updated basis and disabled_by_unplug for ${outletKey}`)
+          }
         } else {
           console.log('Edit modal: Scheduling is disabled - deleting existing schedule data')
           // Delete all schedule data when scheduling is disabled
@@ -4802,22 +4814,55 @@ const checkDailyLimit = (deviceData: any): boolean => {
         const devicesData = snapshot.val()
         const currentTime = Date.now()
         
-        // Check each device with a schedule
+        // Check all devices for unplug detection (even without schedule)
         for (const [outletKey, outletData] of Object.entries(devicesData)) {
           const deviceData = outletData as FirebaseDeviceData
           
-          // Only check devices with schedules
-          if (!deviceData.schedule || (!deviceData.schedule.timeRange && !deviceData.schedule.startTime)) {
-            continue
-          }
-          
           // Get current timestamp from sensor_data
           const sensorTimestamp = deviceData.sensor_data?.timestamp || ''
-          const basis = deviceData.schedule.basis || 0
           
-          // Skip if no basis timestamp (schedule wasn't saved with basis)
-          if (!basis) {
-            continue
+          // Get basis from schedule if it exists (preserved from deleted schedule), or initialize if needed
+          let basis = deviceData.schedule?.basis || 0
+          const disabledByUnplug = deviceData.schedule?.disabled_by_unplug || false
+          
+          // If schedule doesn't exist but device should be monitored, or if basis doesn't exist, initialize it
+          if (!deviceData.schedule || (!deviceData.schedule.timeRange && !deviceData.schedule.startTime)) {
+            // Device has no active schedule but may have preserved basis/disabled_by_unplug from deleted schedule
+            if (!basis && disabledByUnplug) {
+              // If disabled_by_unplug exists but no basis, skip (inconsistent state)
+              continue
+            }
+            if (!basis) {
+              // No schedule and no basis - initialize basis and schedule for unplug detection
+              basis = Date.now()
+              try {
+                const scheduleRef = ref(realtimeDb, `devices/${outletKey}/schedule`)
+                await update(scheduleRef, {
+                  basis: basis,
+                  disabled_by_unplug: false
+                })
+                console.log(`SetUp: Initialized basis for unplug detection on ${outletKey} (no schedule)`)
+              } catch (error) {
+                console.error(`SetUp: Error initializing basis for ${outletKey}:`, error)
+                continue
+              }
+            }
+          } else {
+            // Device has schedule - ensure basis exists
+            if (!basis) {
+              // Schedule exists but no basis - initialize it
+              basis = Date.now()
+              try {
+                const scheduleRef = ref(realtimeDb, `devices/${outletKey}/schedule`)
+                await update(scheduleRef, {
+                  basis: basis
+                })
+                console.log(`SetUp: Initialized basis for unplug detection on ${outletKey} (with schedule)`)
+              } catch (error) {
+                console.error(`SetUp: Error initializing basis for ${outletKey}:`, error)
+                continue
+              }
+            }
           }
           
           // Convert timestamp to milliseconds if it's in epoch seconds format
@@ -4833,7 +4878,7 @@ const checkDailyLimit = (deviceData: any): boolean => {
           }
           
           // CHECK FIRST: If device is already disabled by unplug, check if timestamp changed (device plugged back in)
-          if (deviceData.schedule.disabled_by_unplug === true) {
+          if (disabledByUnplug === true) {
             // Check timestamp change using functional setState to get current state
             setDeviceTimestamps(prev => {
               const existing = prev[outletKey]
@@ -4970,8 +5015,13 @@ const checkDailyLimit = (deviceData: any): boolean => {
             if (latestDeviceData?.schedule?.disabled_by_unplug !== true) {
               const scheduleRef = ref(realtimeDb, `devices/${outletKey}/schedule`)
               try {
+                // Get or create schedule object for basis/disabled_by_unplug
+                const scheduleSnapshot = await get(scheduleRef)
+                const currentSchedule = scheduleSnapshot.val() || {}
+                
                 // First, mark as unplugged (this is the critical flag that prevents scheduler from turning it on)
                 await update(scheduleRef, {
+                  basis: currentSchedule.basis || basis || Date.now(),
                   disabled_by_unplug: true
                 })
                 
@@ -5790,6 +5840,21 @@ const checkDailyLimit = (deviceData: any): boolean => {
             await update(officeInfoRef, {
               enable_power_scheduling: true
             })
+            
+            // Update basis and disabled_by_unplug if schedule exists
+            const scheduleRef = ref(realtimeDb, `devices/${outletKey}/schedule`)
+            const scheduleSnapshot = await get(scheduleRef)
+            const existingSchedule = scheduleSnapshot.val()
+            
+            if (existingSchedule && (existingSchedule.timeRange || existingSchedule.startTime)) {
+              // Create basis timestamp for unplug detection
+              const basis = Date.now()
+              await update(scheduleRef, {
+                basis: basis,
+                disabled_by_unplug: false
+              })
+              console.log(`Updated basis and disabled_by_unplug for ${outletKey}`)
+            }
             
             console.log(`Enabled scheduling for ${outletKey}`)
           } catch (error) {
