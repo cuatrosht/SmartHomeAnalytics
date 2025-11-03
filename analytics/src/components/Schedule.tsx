@@ -334,7 +334,7 @@ interface EditScheduleModalProps {
     timeRange: string
     frequency: string
   }) => void
-  onLimitExceeded: (deviceName: string, limitType: 'individual' | 'combined', currentUsage: number, limitValue: number, scheduleTime: string) => void
+  onLimitExceeded: (deviceName: string, limitType: 'individual' | 'combined' | 'monthly', currentUsage: number, limitValue: number, scheduleTime: string) => void
 }
 
 
@@ -560,7 +560,7 @@ function LimitExceededModal({
   isOpen: boolean; 
   onClose: () => void; 
   deviceName: string;
-  limitType: 'individual' | 'combined';
+  limitType: 'individual' | 'combined' | 'monthly';
   currentUsage: number;
   limitValue: number;
   scheduleTime: string;
@@ -608,15 +608,25 @@ function LimitExceededModal({
                 </div>
                 <div className="detail-row">
                   <span className="label">Current Usage:</span>
-                  <span className="value">{currentUsage.toFixed(3)} Wh</span>
+                  <span className="value">
+                    {limitType === 'monthly' ? `${(currentUsage / 1000).toFixed(3)} kWh` : `${currentUsage.toFixed(3)} Wh`}
+                  </span>
                 </div>
                 <div className="detail-row">
-                  <span className="label">{limitType === 'individual' ? 'Individual' : 'Combined'} Limit:</span>
-                  <span className="value">{limitValue.toFixed(3)} Wh</span>
+                  <span className="label">
+                    {limitType === 'individual' ? 'Individual' : limitType === 'combined' ? 'Combined' : 'Monthly'} Limit:
+                  </span>
+                  <span className="value">
+                    {limitType === 'monthly' ? `${(limitValue / 1000).toFixed(3)} kWh` : `${limitValue.toFixed(3)} Wh`}
+                  </span>
                 </div>
                 <div className="detail-row">
                   <span className="label">Excess:</span>
-                  <span className="value excess">{((currentUsage - limitValue)).toFixed(3)} Wh</span>
+                  <span className="value excess">
+                    {limitType === 'monthly' 
+                      ? `${((currentUsage - limitValue) / 1000).toFixed(3)} kWh` 
+                      : `${((currentUsage - limitValue)).toFixed(3)} Wh`}
+                  </span>
                 </div>
               </div>
               
@@ -624,7 +634,9 @@ function LimitExceededModal({
                 <p>
                   {limitType === 'individual' 
                     ? 'Please adjust the schedule time or increase the individual power limit for the exceeding outlet(s) before saving.'
-                    : 'Please adjust the schedule time or increase the power limit for the exceeding outlet(s) before saving.'
+                    : limitType === 'combined'
+                    ? 'Please adjust the schedule time or increase the power limit for the exceeding outlet(s) before saving.'
+                    : 'Monthly limit exceeded. Cannot save schedule. Please wait until the monthly limit resets or adjust the monthly limit settings.'
                   }
                 </p>
               </div>
@@ -894,6 +906,26 @@ function EditScheduleModal({ isOpen, onClose, device, onSave, onLimitExceeded }:
                 timeRange
               )
               return
+            }
+          }
+          
+          // Check monthly limit if device is in combined group
+          if (isInCombinedGroup && combinedLimitData) {
+            const monthlyLimitCheck = await checkMonthlyLimitBeforeTurnOn(outletKey, combinedLimitData)
+            if (!monthlyLimitCheck.canTurnOn) {
+              const totalMonthlyEnergy = monthlyLimitCheck.currentMonthlyEnergy || 0
+              const monthlyLimitWatts = monthlyLimitCheck.combinedLimit
+              
+              if (typeof monthlyLimitWatts === 'number' && monthlyLimitWatts > 0) {
+                onLimitExceeded(
+                  device.outletName,
+                  'monthly',
+                  totalMonthlyEnergy,
+                  monthlyLimitWatts,
+                  timeRange
+                )
+                return
+              }
             }
           }
         }
@@ -1275,7 +1307,7 @@ function OutletSelectionModal({
     selectedOutlets: string[];
     scheduleData: any;
   } | null;
-  onLimitExceeded: (deviceName: string, limitType: 'individual' | 'combined', currentUsage: number, limitValue: number, scheduleTime: string) => void;
+  onLimitExceeded: (deviceName: string, limitType: 'individual' | 'combined' | 'monthly', currentUsage: number, limitValue: number, scheduleTime: string) => void;
   onSuccess: (message: string) => void;
 }) {
   const [availableOutlets, setAvailableOutlets] = useState<any[]>([])
@@ -1668,6 +1700,38 @@ function OutletSelectionModal({
               }
               return
             }
+            
+            // Check monthly limit for outlets in combined group
+            if (hasValidCombinedLimit && combinedLimitData) {
+              const outletsInCombinedGroup = selectedOutlets.filter(outletKey => {
+                const outletName = outletKey.replace('_', ' ')
+                return combinedLimitData?.selectedOutlets?.includes(outletKey) || 
+                       combinedLimitData?.selectedOutlets?.includes(outletName)
+              })
+              
+              if (outletsInCombinedGroup.length > 0) {
+                // Check monthly limit for the first outlet in combined group (they all share the same monthly limit)
+                const firstOutlet = outletsInCombinedGroup[0]
+                const monthlyLimitCheck = await checkMonthlyLimitBeforeTurnOn(firstOutlet, combinedLimitData)
+                
+                if (!monthlyLimitCheck.canTurnOn) {
+                  const totalMonthlyEnergy = monthlyLimitCheck.currentMonthlyEnergy || 0
+                  const monthlyLimitWatts = monthlyLimitCheck.combinedLimit
+                  
+                  if (typeof monthlyLimitWatts === 'number' && monthlyLimitWatts > 0) {
+                    const outletsInGroupNames = outletsInCombinedGroup.map(key => key.replace('_', ' '))
+                    onLimitExceeded(
+                      `${outletsInGroupNames.join(', ')}`,
+                      'monthly',
+                      totalMonthlyEnergy,
+                      monthlyLimitWatts,
+                      timeRange
+                    )
+                    return
+                  }
+                }
+              }
+            }
           }
         }
       } catch (error) {
@@ -1935,7 +1999,7 @@ export default function Schedule() {
   const [limitExceededModal, setLimitExceededModal] = useState<{
     isOpen: boolean;
     deviceName: string;
-    limitType: 'individual' | 'combined';
+    limitType: 'individual' | 'combined' | 'monthly';
     currentUsage: number;
     limitValue: number;
     scheduleTime: string;
@@ -2947,7 +3011,7 @@ export default function Schedule() {
     device.officeRoom.toLowerCase().includes(searchQuery.toLowerCase())
   )
 
-  const handleEditSchedule = (deviceId: string) => {
+  const handleEditSchedule = async (deviceId: string) => {
     const deviceToEdit = deviceSchedules.find(device => device.id === deviceId)
     if (deviceToEdit) {
       // Check if device is part of a combined schedule
@@ -2959,6 +3023,58 @@ export default function Schedule() {
           combinedOutlets: deviceToEdit.schedule.selectedOutlets || []
         })
         return
+      }
+      
+      // Check if device is part of a combined power limit group
+      try {
+        const deviceOutletName = deviceToEdit.outletName || ''
+        // Create all possible variations of the outlet name
+        const deviceOutletNameWithSpace = deviceOutletName.replace(/_/g, ' ')
+        const deviceOutletNameWithUnderscore = deviceOutletName.replace(/ /g, '_')
+        
+        const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
+        const combinedLimitSnapshot = await get(combinedLimitRef)
+        const combinedLimitData = combinedLimitSnapshot.exists() ? combinedLimitSnapshot.val() : null
+        
+        if (combinedLimitData?.enabled) {
+          // Handle both property name formats: selected_outlets (snake_case) or selectedOutlets (camelCase)
+          const selectedOutlets = combinedLimitData.selected_outlets || combinedLimitData.selectedOutlets || []
+          
+          if (selectedOutlets.length > 0) {
+            // Check all possible variations of the outlet name to see if device is in the combined group
+            // This check should happen regardless of whether the limit is valid, because if they're in the group,
+            // they shouldn't be able to edit individually
+            const isInCombinedGroup = selectedOutlets.some((outlet: string) => {
+              // Normalize both names for comparison (handle spaces and underscores)
+              const normalizedDeviceName = deviceOutletName.replace(/_/g, ' ').toLowerCase().trim()
+              const normalizedOutletName = outlet.replace(/_/g, ' ').toLowerCase().trim()
+              
+              return normalizedDeviceName === normalizedOutletName ||
+                     deviceOutletName === outlet ||
+                     deviceOutletNameWithSpace === outlet ||
+                     deviceOutletNameWithUnderscore === outlet
+            })
+            
+            if (isInCombinedGroup) {
+              console.log('Device is in combined power limit group - blocking individual schedule edit:', {
+                deviceOutletName,
+                selectedOutlets,
+                combinedLimitEnabled: combinedLimitData?.enabled,
+                rawData: combinedLimitData
+              })
+              // Show modal that individual schedule editing is not allowed for devices in combined power limit group
+              setCombinedScheduleWarningModal({
+                isOpen: true,
+                deviceName: deviceToEdit.outletName,
+                combinedOutlets: selectedOutlets.map((outlet: string) => outlet.replace(/_/g, ' '))
+              })
+              return
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Error checking combined power limit group:', error)
+        // Continue with other checks if this fails
       }
       
       // Check if power scheduling is enabled for this device
@@ -3365,7 +3481,7 @@ export default function Schedule() {
     }
   }
 
-  const handleLimitExceeded = (deviceName: string, limitType: 'individual' | 'combined', currentUsage: number, limitValue: number, scheduleTime: string) => {
+  const handleLimitExceeded = (deviceName: string, limitType: 'individual' | 'combined' | 'monthly', currentUsage: number, limitValue: number, scheduleTime: string) => {
     setLimitExceededModal({
       isOpen: true,
       deviceName,
