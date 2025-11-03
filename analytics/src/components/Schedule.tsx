@@ -861,14 +861,14 @@ function EditScheduleModal({ isOpen, onClose, device, onSave, onLimitExceeded }:
           const combinedLimitSnapshot = await get(combinedLimitRef)
           const combinedLimitData = combinedLimitSnapshot.exists() ? combinedLimitSnapshot.val() : null
           
-          const isInCombinedGroup = combinedLimitData?.enabled && 
+          const combinedLimitWh = combinedLimitData?.combinedLimit || 0
+          const hasValidCombinedLimit = combinedLimitData?.enabled && combinedLimitWh > 0
+          const isInCombinedGroup = hasValidCombinedLimit && 
             (combinedLimitData?.selectedOutlets?.includes(deviceOutletName) || 
              combinedLimitData?.selectedOutlets?.includes(deviceOutletNameWithSpace))
           
           if (isInCombinedGroup) {
             // Check combined limit
-            const combinedLimitWh = combinedLimitData?.combinedLimit || 0
-            
             if (todayTotalEnergyWh >= combinedLimitWh) {
               onLimitExceeded(
                 device.outletName,
@@ -1586,11 +1586,17 @@ function OutletSelectionModal({
                 
                 let outletExceedsLimit = false
                 
-                if (hasValidCombinedLimit) {
-                  // Use combined limit if it's set and valid
+                // Check if this outlet is part of the combined group
+                const outletName = outletKey.replace('_', ' ')
+                const isOutletInCombinedGroup = hasValidCombinedLimit && 
+                  (combinedLimitData?.selectedOutlets?.includes(outletKey) || 
+                   combinedLimitData?.selectedOutlets?.includes(outletName))
+                
+                if (isOutletInCombinedGroup) {
+                  // Use combined limit if outlet is part of combined group
                   outletExceedsLimit = outletEnergyWh >= combinedLimitWh
                 } else {
-                  // Fallback to individual limit if no combined limit is set
+                  // Fallback to individual limit if not in combined group or no combined limit
                   const individualPowerLimit = deviceData.relay_control?.auto_cutoff?.power_limit || 0
                   const individualPowerLimitWh = individualPowerLimit * 1000 // Convert from kW to Wh
                   
@@ -1609,17 +1615,46 @@ function OutletSelectionModal({
             // If any outlets exceed the limit, show warning for those specific outlets
             if (exceedingOutlets.length > 0) {
               const exceedingOutletsNames = exceedingOutlets.map(key => key.replace('_', ' '))
-              const limitType = hasValidCombinedLimit ? 'combined' : 'individual'
-              const limitValue = hasValidCombinedLimit ? combinedLimitWh : totalEnergyWh // For individual, show total usage
+              
+              // Determine limit type based on which outlets exceeded - check if any exceeding outlet is in combined group
+              let limitType: 'individual' | 'combined' = 'individual'
+              let limitValue = 0
+              
+              // Check the first exceeding outlet to determine limit type (assuming all exceeding outlets have same limit type)
+              if (exceedingOutlets.length > 0) {
+                const firstExceedingOutlet = exceedingOutlets[0]
+                const outletName = firstExceedingOutlet.replace('_', ' ')
+                const isOutletInCombinedGroup = hasValidCombinedLimit && 
+                  (combinedLimitData?.selectedOutlets?.includes(firstExceedingOutlet) || 
+                   combinedLimitData?.selectedOutlets?.includes(outletName))
+                
+                if (isOutletInCombinedGroup) {
+                  limitType = 'combined'
+                  limitValue = combinedLimitWh
+                } else {
+                  limitType = 'individual'
+                  // Get individual limit for display
+                  const firstOutletData = devicesData[firstExceedingOutlet]
+                  if (firstOutletData) {
+                    const individualPowerLimit = firstOutletData.relay_control?.auto_cutoff?.power_limit || 0
+                    limitValue = individualPowerLimit * 1000 // Convert from kW to Wh
+                  }
+                }
+              }
               
               // Filter out exceeding outlets from selectedOutlets
               const outletsToSave = selectedOutlets.filter(outlet => !exceedingOutlets.includes(outlet))
+              
+              // Get the energy for the first exceeding outlet for display
+              const firstExceedingOutletData = devicesData[exceedingOutlets[0]]
+              const firstExceedingOutletEnergy = firstExceedingOutletData ? 
+                (firstExceedingOutletData?.daily_logs?.[todayDateKey]?.total_energy || 0) * 1000 : 0
               
               // Show limit exceeded modal
               onLimitExceeded(
                 `${exceedingOutletsNames.join(', ')}`,
                 limitType,
-                totalEnergyWh,
+                firstExceedingOutletEnergy,
                 limitValue,
                 timeRange
               )
@@ -3188,11 +3223,17 @@ export default function Schedule() {
               
               let outletExceedsLimit = false
               
-              if (hasValidCombinedLimit) {
-                // Use combined limit if it's set and valid
+              // Check if this outlet is part of the combined group
+              const outletName = outletKey.replace('_', ' ')
+              const isOutletInCombinedGroup = hasValidCombinedLimit && 
+                (combinedLimitData?.selectedOutlets?.includes(outletKey) || 
+                 combinedLimitData?.selectedOutlets?.includes(outletName))
+              
+              if (isOutletInCombinedGroup) {
+                // Use combined limit if outlet is part of combined group
                 outletExceedsLimit = outletEnergyWh >= combinedLimitWh
               } else {
-                // Fallback to individual limit if no combined limit is set
+                // Fallback to individual limit if not in combined group or no combined limit
                 const individualPowerLimit = deviceData.relay_control?.auto_cutoff?.power_limit || 0
                 const individualPowerLimitWh = individualPowerLimit * 1000 // Convert from kW to Wh
                 
