@@ -109,6 +109,151 @@ const calculateCombinedMonthlyEnergy = (devicesData: any, selectedOutlets: strin
   }
 }
 
+// Function to check if turning ON a device would exceed the monthly limit
+const checkMonthlyLimitBeforeTurnOn = async (outletKey: string, combinedLimitInfo: any): Promise<{
+  canTurnOn: boolean;
+  reason?: string;
+  currentMonthlyEnergy?: number;
+  combinedLimit?: number;
+}> => {
+  try {
+    if (!combinedLimitInfo?.enabled || !combinedLimitInfo?.selectedOutlets || combinedLimitInfo.selectedOutlets.length === 0) {
+      return { canTurnOn: true }
+    }
+    
+    // Convert outletKey to display format for checking
+    const outletDisplayName = outletKey.replace('_', ' ')
+    
+    // Check if this device is part of the combined limit group
+    if (!combinedLimitInfo.selectedOutlets.includes(outletDisplayName)) {
+      return { canTurnOn: true }
+    }
+    
+    // Get current devices data
+    const devicesRef = ref(realtimeDb, 'devices')
+    const devicesSnapshot = await get(devicesRef)
+    
+    if (!devicesSnapshot.exists()) {
+      return { canTurnOn: true }
+    }
+    
+    const devicesData = devicesSnapshot.val()
+    const totalMonthlyEnergy = calculateCombinedMonthlyEnergy(devicesData, combinedLimitInfo.selectedOutlets)
+    const combinedLimitWatts = combinedLimitInfo.combinedLimit
+    
+    console.log('ActiveDevice: Monthly limit check before turn ON:', {
+      outletKey,
+      outletDisplayName,
+      totalMonthlyEnergy,
+      combinedLimitWatts,
+      selectedOutlets: combinedLimitInfo.selectedOutlets,
+      wouldExceed: totalMonthlyEnergy >= combinedLimitWatts
+    })
+    
+    // Skip limit check if "No Limit" is set
+    if (combinedLimitWatts === "No Limit") {
+      return { canTurnOn: true, reason: 'No monthly limit set', currentMonthlyEnergy: totalMonthlyEnergy, combinedLimit: combinedLimitWatts }
+    }
+    
+    // Check if turning ON this device would exceed the monthly limit
+    if (totalMonthlyEnergy >= combinedLimitWatts) {
+      return {
+        canTurnOn: false,
+        reason: `Monthly limit exceeded: ${(totalMonthlyEnergy / 1000).toFixed(3)} kW / ${(combinedLimitWatts / 1000).toFixed(3)} kW`,
+        currentMonthlyEnergy: totalMonthlyEnergy,
+        combinedLimit: combinedLimitWatts
+      }
+    }
+    
+    return { canTurnOn: true }
+  } catch (error) {
+    console.error('ActiveDevice: Error checking monthly limit before turn ON:', error)
+    return { canTurnOn: true } // Allow turn ON if there's an error
+  }
+}
+
+// Function to check and enforce combined monthly limits (with override support)
+const checkCombinedMonthlyLimit = async (devicesData: any, combinedLimitInfo: any) => {
+  try {
+    console.log('🔍 ActiveDevice: Monthly limit check - Input data:', {
+      enabled: combinedLimitInfo?.enabled,
+      selectedOutlets: combinedLimitInfo?.selectedOutlets,
+      combinedLimit: combinedLimitInfo?.combinedLimit
+    })
+    
+    if (!combinedLimitInfo?.enabled || !combinedLimitInfo?.selectedOutlets || combinedLimitInfo.selectedOutlets.length === 0) {
+      console.log('🚫 ActiveDevice: Monthly limit check skipped - not enabled or no outlets selected')
+      return
+    }
+    
+    const totalMonthlyEnergy = calculateCombinedMonthlyEnergy(devicesData, combinedLimitInfo.selectedOutlets)
+    const combinedLimitWatts = combinedLimitInfo.combinedLimit
+    
+    console.log('📊 ActiveDevice: Monthly limit check results:', {
+      totalMonthlyEnergy: `${totalMonthlyEnergy.toFixed(3)}W`,
+      combinedLimitWatts: combinedLimitWatts === "No Limit" ? "No Limit" : `${combinedLimitWatts}W`,
+      selectedOutlets: combinedLimitInfo.selectedOutlets,
+      exceedsLimit: totalMonthlyEnergy >= combinedLimitWatts
+    })
+    
+    // Skip limit check if "No Limit" is set
+    if (combinedLimitWatts === "No Limit") {
+      console.log('📊 ActiveDevice: Combined limit is set to "No Limit" - skipping monthly limit check')
+      return
+    }
+    
+    if (totalMonthlyEnergy >= combinedLimitWatts) {
+      console.log('🚨 ActiveDevice: MONTHLY LIMIT EXCEEDED!')
+      console.log(`📊 Current: ${totalMonthlyEnergy.toFixed(3)}W >= Limit: ${combinedLimitWatts}W`)
+      console.log('🔒 TURNING OFF ALL DEVICES IN THE GROUP...')
+      
+      // Turn off all devices in the combined limit group (respecting override/bypass mode)
+      const turnOffPromises = combinedLimitInfo.selectedOutlets.map(async (outletKey: string) => {
+        try {
+          // Convert display format to Firebase format
+          const firebaseKey = outletKey.replace(' ', '_')
+          const deviceData = devicesData[firebaseKey]
+          
+          // RESPECT override/bypass mode - if main_status is 'ON', skip turning off (device is manually overridden)
+          const currentMainStatus = deviceData?.relay_control?.main_status || 'ON'
+          if (currentMainStatus === 'ON') {
+            console.log(`⚠️ ActiveDevice: Skipping ${outletKey} - main_status is ON (bypass mode/override active)`)
+            return { outletKey, success: true, skipped: true, reason: 'Bypass mode active' }
+          }
+          
+          // Turn off device control
+          const controlRef = ref(realtimeDb, `devices/${firebaseKey}/control`)
+          await update(controlRef, { device: 'off' })
+          
+          // Turn off main status to prevent immediate re-activation
+          const mainStatusRef = ref(realtimeDb, `devices/${firebaseKey}/relay_control`)
+          await update(mainStatusRef, { main_status: 'OFF' })
+          
+          console.log(`✅ ActiveDevice: TURNED OFF ${outletKey} (${firebaseKey}) due to monthly limit`)
+          
+          return { outletKey, success: true }
+        } catch (error) {
+          console.error(`❌ ActiveDevice: FAILED to turn off ${outletKey}:`, error)
+          return { outletKey, success: false, error }
+        }
+      })
+      
+      // Wait for all turn-off operations to complete
+      const results = await Promise.all(turnOffPromises)
+      const successCount = results.filter(r => r.success && !r.skipped).length
+      const skippedCount = results.filter(r => r.skipped).length
+      const failCount = results.filter(r => !r.success && !r.skipped).length
+      
+      console.log(`🔒 ActiveDevice: MONTHLY LIMIT ENFORCEMENT COMPLETE: ${successCount} turned off, ${skippedCount} skipped (bypass mode), ${failCount} failed`)
+    } else {
+      console.log('✅ ActiveDevice: Monthly limit not exceeded - devices can remain active')
+      console.log(`📊 Current: ${totalMonthlyEnergy.toFixed(3)}W < Limit: ${combinedLimitWatts}W`)
+    }
+  } catch (error) {
+    console.error('❌ ActiveDevice: Error checking combined monthly limit:', error)
+  }
+}
+
 // Memoized Modal Components to prevent blinking during realtime updates
 const SuccessModal = memo(({ successModal, setModalOpen, setSuccessModal }: {
   successModal: { isOpen: boolean; deviceName: string; action: string };
@@ -1378,6 +1523,9 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
                 console.log(`ActiveDevice: Device ${outletKey} main_status is ON - respecting bypass mode, skipping combined group power limit enforcement`)
                 continue
               }
+              
+              // Note: Monthly limit check is handled separately by checkMonthlyLimitAndTurnOffDevices() function
+              // This prevents duplicate checks and ensures monthly limits are checked efficiently
             }
           }
         }
@@ -1386,13 +1534,30 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
       }
     }
     
+    // Monthly limit check function
+    const checkMonthlyLimitAndTurnOffDevices = async () => {
+      try {
+        const devicesRef = ref(realtimeDb, 'devices')
+        const snapshot = await get(devicesRef)
+        
+        if (snapshot.exists()) {
+          const devicesData = snapshot.val()
+          await checkCombinedMonthlyLimit(devicesData, combinedLimitInfo)
+        }
+      } catch (error) {
+        console.error('ActiveDevice: Error in monthly limit check:', error)
+      }
+    }
+    
     // Run functions immediately
     checkScheduleAndUpdateDevices()
     checkPowerLimitsAndTurnOffDevices()
+    checkMonthlyLimitAndTurnOffDevices()
     
     // Add manual test function for debugging
     ;(window as any).testSchedule = checkScheduleAndUpdateDevices
     ;(window as any).testPowerLimits = checkPowerLimitsAndTurnOffDevices
+    ;(window as any).testMonthlyLimits = checkMonthlyLimitAndTurnOffDevices
     ;(window as any).checkCurrentTime = () => {
       const now = new Date()
       const currentTime = now.getHours() * 60 + now.getMinutes()
@@ -1408,11 +1573,13 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
     // Set up intervals
     const scheduleInterval = setInterval(checkScheduleAndUpdateDevices, 10000) // 10 seconds (more frequent for short schedules)
     const powerLimitInterval = setInterval(checkPowerLimitsAndTurnOffDevices, 30000) // 30 seconds (more frequent for power limits)
+    const monthlyLimitInterval = setInterval(checkMonthlyLimitAndTurnOffDevices, 60000) // 1 minute for monthly limit check
     
     // Cleanup intervals on unmount
     return () => {
       clearInterval(scheduleInterval)
       clearInterval(powerLimitInterval)
+      clearInterval(monthlyLimitInterval)
       
       // Cleanup auto-turnoff timers
       Object.values(autoTurnoffTimers).forEach(timer => {
@@ -1790,6 +1957,13 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
             }
           } else {
             console.log(`ActiveDevice: Skipping individual daily limit check for ${outletKey} - device is in combined group (monthly limit takes precedence)`)
+            
+            // Check monthly limit for devices in combined groups
+            const monthlyLimitCheck = await checkMonthlyLimitBeforeTurnOn(outletKey, combinedLimitInfo)
+            if (!monthlyLimitCheck.canTurnOn) {
+              hasRestrictions = true
+              restrictionReason = monthlyLimitCheck.reason || 'Monthly limit exceeded'
+            }
           }
           
           // Check if device is within its scheduled time
@@ -2450,4 +2624,5 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
     </div>
   )
 }
+
 

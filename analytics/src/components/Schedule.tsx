@@ -135,11 +135,19 @@ const checkCombinedMonthlyLimit = async (devicesData: any, combinedLimitInfo: an
       console.log(`📊 Current: ${totalMonthlyEnergy.toFixed(3)}W >= Limit: ${combinedLimitWatts === "No Limit" ? "No Limit" : `${combinedLimitWatts}W`}`)
       console.log('🔒 TURNING OFF ALL DEVICES IN THE GROUP...')
       
-      // Turn off all devices in the combined limit group
+      // Turn off all devices in the combined limit group (respecting override/bypass mode)
       const turnOffPromises = combinedLimitInfo.selectedOutlets.map(async (outletKey: string) => {
         try {
           // Convert display format to Firebase format
           const firebaseKey = outletKey.replace(' ', '_')
+          const deviceData = devicesData[firebaseKey]
+          
+          // RESPECT override/bypass mode - if main_status is 'ON', skip turning off (device is manually overridden)
+          const currentMainStatus = deviceData?.relay_control?.main_status || 'ON'
+          if (currentMainStatus === 'ON') {
+            console.log(`⚠️ Schedule: Skipping ${outletKey} - main_status is ON (bypass mode/override active)`)
+            return { outletKey, success: true, skipped: true, reason: 'Bypass mode active' }
+          }
           
           // Turn off device control
           const controlRef = ref(realtimeDb, `devices/${firebaseKey}/control`)
@@ -149,23 +157,24 @@ const checkCombinedMonthlyLimit = async (devicesData: any, combinedLimitInfo: an
           const mainStatusRef = ref(realtimeDb, `devices/${firebaseKey}/relay_control`)
           await update(mainStatusRef, { main_status: 'OFF' })
           
-          console.log(`✅ TURNED OFF: ${outletKey} (${firebaseKey}) due to monthly limit`)
+          console.log(`✅ Schedule: TURNED OFF ${outletKey} (${firebaseKey}) due to monthly limit`)
           
           // Note: Automatic monthly limit enforcement is not logged to avoid cluttering device logs
           
           return { outletKey, success: true }
         } catch (error) {
-          console.error(`❌ FAILED to turn off ${outletKey}:`, error)
+          console.error(`❌ Schedule: FAILED to turn off ${outletKey}:`, error)
           return { outletKey, success: false, error }
         }
       })
       
       // Wait for all turn-off operations to complete
       const results = await Promise.all(turnOffPromises)
-      const successCount = results.filter(r => r.success).length
-      const failCount = results.filter(r => !r.success).length
+      const successCount = results.filter(r => r.success && !r.skipped).length
+      const skippedCount = results.filter(r => r.skipped).length
+      const failCount = results.filter(r => !r.success && !r.skipped).length
       
-      console.log(`🔒 MONTHLY LIMIT ENFORCEMENT COMPLETE: ${successCount} turned off, ${failCount} failed`)
+      console.log(`🔒 Schedule: MONTHLY LIMIT ENFORCEMENT COMPLETE: ${successCount} turned off, ${skippedCount} skipped (bypass mode), ${failCount} failed`)
     } else {
       console.log('✅ Monthly limit not exceeded - devices can remain active')
       console.log(`📊 Current: ${totalMonthlyEnergy.toFixed(3)}W < Limit: ${combinedLimitWatts === "No Limit" ? "No Limit" : `${combinedLimitWatts}W`}`)

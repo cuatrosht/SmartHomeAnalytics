@@ -165,11 +165,19 @@ const checkCombinedMonthlyLimit = async (devicesData: any, combinedLimitInfo: an
       console.log(`📊 Current: ${totalMonthlyEnergy.toFixed(3)}W >= Limit: ${combinedLimitWatts}W`)
       console.log('🔒 TURNING OFF ALL DEVICES IN THE GROUP...')
       
-      // Turn off all devices in the combined limit group
+      // Turn off all devices in the combined limit group (respecting override/bypass mode)
       const turnOffPromises = combinedLimitInfo.selectedOutlets.map(async (outletKey: string) => {
         try {
           // Convert display format to Firebase format
           const firebaseKey = outletKey.replace(' ', '_')
+          const deviceData = devicesData[firebaseKey]
+          
+          // RESPECT override/bypass mode - if main_status is 'ON', skip turning off (device is manually overridden)
+          const currentMainStatus = deviceData?.relay_control?.main_status || 'ON'
+          if (currentMainStatus === 'ON') {
+            console.log(`⚠️ SetUp: Skipping ${outletKey} - main_status is ON (bypass mode/override active)`)
+            return { outletKey, success: true, skipped: true, reason: 'Bypass mode active' }
+          }
           
           // Turn off device control
           const controlRef = ref(realtimeDb, `devices/${firebaseKey}/control`)
@@ -179,20 +187,21 @@ const checkCombinedMonthlyLimit = async (devicesData: any, combinedLimitInfo: an
           const statusRef = ref(realtimeDb, `devices/${firebaseKey}`)
           await update(statusRef, { status: 'OFF' })
           
-          console.log(`✅ TURNED OFF: ${outletKey} (${firebaseKey}) due to monthly limit`)
+          console.log(`✅ SetUp: TURNED OFF ${outletKey} (${firebaseKey}) due to monthly limit`)
           return { outletKey, success: true }
         } catch (error) {
-          console.error(`❌ FAILED to turn off ${outletKey}:`, error)
+          console.error(`❌ SetUp: FAILED to turn off ${outletKey}:`, error)
           return { outletKey, success: false, error }
         }
       })
       
       // Wait for all turn-off operations to complete
       const results = await Promise.all(turnOffPromises)
-      const successCount = results.filter(r => r.success).length
-      const failCount = results.filter(r => !r.success).length
+      const successCount = results.filter(r => r.success && !r.skipped).length
+      const skippedCount = results.filter(r => r.skipped).length
+      const failCount = results.filter(r => !r.success && !r.skipped).length
       
-      console.log(`🔒 MONTHLY LIMIT ENFORCEMENT COMPLETE: ${successCount} turned off, ${failCount} failed`)
+      console.log(`🔒 SetUp: MONTHLY LIMIT ENFORCEMENT COMPLETE: ${successCount} turned off, ${skippedCount} skipped (bypass mode), ${failCount} failed`)
     } else {
       console.log('✅ Monthly limit not exceeded - devices can remain active')
       console.log(`📊 Current: ${totalMonthlyEnergy.toFixed(3)}W < Limit: ${combinedLimitWatts}W`)
@@ -2860,24 +2869,6 @@ function AddDeviceModal({ isOpen, onClose, onSave }: AddDeviceModalProps) {
           enable_power_scheduling: enableScheduling // ✅ Update scheduling setting
         })
         console.log('Office update result:', officeUpdate)
-
-        // Update device control (ON/OFF)
-        const controlRef = ref(realtimeDb, `devices/${formData.deviceType}/control`)
-        console.log('Updating device control at path:', `devices/${formData.deviceType}/control`)
-        
-        const controlUpdate = await update(controlRef, {
-          device: deviceControl
-        })
-        console.log('Device control update result:', controlUpdate)
-
-        // Update device status
-        const statusRef = ref(realtimeDb, `devices/${formData.deviceType}`)
-        console.log('Updating device status at path:', `devices/${formData.deviceType}`)
-        
-        const statusUpdate = await update(statusRef, {
-          status: deviceControl === 'on' ? 'ON' : 'OFF'
-        })
-        console.log('Status update result:', statusUpdate)
 
         // Handle schedule data based on enableScheduling flag
         const scheduleRef = ref(realtimeDb, `devices/${formData.deviceType}/schedule`)
@@ -6080,90 +6071,20 @@ const checkDailyLimit = (deviceData: any): boolean => {
     console.log('Enable Power Limit:', deviceData.enablePowerLimit)
     console.log('Device Control:', deviceData.deviceControl)
     
-    // Force refresh the data from Firebase to get updated power limits
-    const devicesRef = ref(realtimeDb, 'devices')
+    // Don't update devices array - let the real-time listener handle all device updates
+    // The real-time listener will automatically pick up the changes when a device is saved
+    // This prevents overwriting the status display for existing devices
     
-    // Get the latest data from Firebase
+    // Only check combined monthly limits if needed
+    // The real-time listener will handle device updates naturally
+    const devicesRef = ref(realtimeDb, 'devices')
     onValue(devicesRef, (snapshot) => {
       const data = snapshot.val()
       if (data) {
-        const devicesArray: Device[] = []
-        let deviceId = 1
-
-        // Get today's date in the format used by daily_logs (day_YYYY_MM_DD)
-        const today = new Date()
-        const todayString = `day_${today.getFullYear()}_${String(today.getMonth() + 1).padStart(2, '0')}_${String(today.getDate()).padStart(2, '0')}`
-
-        Object.keys(data).forEach((outletKey) => {
-          const outlet = data[outletKey]
-          if (outlet.sensor_data) {
-            // Use lifetime_energy as current power usage (already in kW from database)
-            const lifetimeEnergyKw = outlet.lifetime_energy || 0
-            const powerUsageDisplay = `${formatNumber(lifetimeEnergyKw * 1000)} Wh`
-            const powerUsage = lifetimeEnergyKw / 1000 // Keep in kW for calculations
-            const powerLimit = outlet.relay_control?.auto_cutoff?.power_limit || 0
-            const status = outlet.control?.device || 'off'
-            const totalEnergyWatts = outlet.daily_logs?.[todayString]?.total_energy || 0
-            // Use total_energy for today's energy (already in kW from database)
-            const todayEnergyDisplay = `${formatNumber(totalEnergyWatts * 1000)} Wh`
-            const totalEnergy = totalEnergyWatts / 1000 // Keep in kW for calculations
-            
-            // Map office values to display names
-            const officeNames: Record<string, string> = {
-              'computer-lab-1': 'Computer Laboratory 1',
-              'computer-lab-2': 'Computer Laboratory 2',
-              'computer-lab-3': 'Computer Laboratory 3',
-              'deans-office': "Dean's Office",
-              'faculty-office': 'Faculty Office'
-            }
-            
-            const officeValue = outlet.office_info?.office || ''
-            const officeInfo = officeValue ? (officeNames[officeValue] || officeValue) : '—'
-            
-            // Convert status to match Device interface with status consideration
-            const outletStatusValue = outlet.status || 'ON'
-            let deviceStatus: 'Active' | 'Inactive' | 'Warning' = 'Inactive'
-            
-            if (outletStatusValue === 'OFF') {
-              deviceStatus = 'Inactive'
-            } else if (status === 'ON') {
-              if (powerLimit >= 0 && (powerUsage * 1000) >= (powerLimit * 1000)) {
-                deviceStatus = 'Inactive'
-              } else if (powerLimit > 0 && (powerLimit * 1000) - (powerUsage * 1000) <= 50) {
-                deviceStatus = 'Warning'
-              } else {
-                deviceStatus = 'Active'
-              }
-            }
-
-            // Get current (ampere) from sensor_data - with 2 decimal places
-            const currentAmpere = outlet.sensor_data?.current || 0
-            const currentAmpereDisplay = `${currentAmpere.toFixed(2)}A`
-
-            const deviceData: Device = {
-              id: String(deviceId).padStart(3, '0'),
-              outletName: outletKey,
-              officeRoom: officeInfo,
-              appliances: outlet.office_info?.appliance || 'Unassigned',
-              enablePowerScheduling: outlet.office_info?.enable_power_scheduling || false,
-              limit: `${(powerLimit * 1000).toFixed(3)} Wh`,
-              powerUsage: powerUsageDisplay, // Use the new display format
-              currentAmpere: currentAmpereDisplay,
-              todayUsage: todayEnergyDisplay, // Use the new display format
-              monthUsage: calculateMonthlyEnergy(outlet), // Calculate monthly energy
-              status: deviceStatus
-            }
-            devicesArray.push(deviceData)
-            deviceId++
-          }
-        })
-
-        setDevices(devicesArray)
-        
-        // Check combined monthly limits after setting devices
+        // Check combined monthly limits after device is saved
         checkCombinedMonthlyLimit(data, combinedLimitInfo)
       }
-    }, { onlyOnce: true }) // Only get data once for immediate update
+    }, { onlyOnce: true }) // Only get data once to check limits
   }
 
   const handleEditSave = (updatedDevice: Device & { enableScheduling: boolean; enablePowerLimit: boolean }) => {

@@ -565,11 +565,24 @@ export default function LogIn({ onSuccess, onNavigateToSignUp }: LogInProps) {
           if (totalMonthlyEnergy >= combinedLimitkW) {
             console.log(`LogIn: Monthly limit exceeded! Turning off all devices in combined group.`)
             
-            // Turn off all devices in the combined group
+            // Turn off all devices in the combined group (respecting override/bypass mode)
+            let successCount = 0
+            let skippedCount = 0
+            let failCount = 0
+            
             for (const outletKey of combinedLimitInfo.selectedOutlets) {
               const firebaseKey = outletKey.replace(' ', '_')
+              const deviceData = devicesData[firebaseKey]
               
               try {
+                // RESPECT override/bypass mode - if main_status is 'ON', skip turning off (device is manually overridden)
+                const currentMainStatus = deviceData?.relay_control?.main_status || 'ON'
+                if (currentMainStatus === 'ON') {
+                  console.log(`⚠️ LogIn: Skipping ${outletKey} - main_status is ON (bypass mode/override active)`)
+                  skippedCount++
+                  continue
+                }
+                
                 // Turn off device control
                 const controlRef = ref(realtimeDb, `devices/${firebaseKey}/control`)
                 await update(controlRef, { device: 'off' })
@@ -578,11 +591,15 @@ export default function LogIn({ onSuccess, onNavigateToSignUp }: LogInProps) {
                 const mainStatusRef = ref(realtimeDb, `devices/${firebaseKey}/relay_control`)
                 await update(mainStatusRef, { main_status: 'OFF' })
                 
-                console.log(`✅ TURNED OFF: ${outletKey} (${firebaseKey}) due to monthly limit`)
+                console.log(`✅ LogIn: TURNED OFF ${outletKey} (${firebaseKey}) due to monthly limit`)
+                successCount++
               } catch (error) {
-                console.error(`❌ FAILED to turn off ${outletKey}:`, error)
+                console.error(`❌ LogIn: FAILED to turn off ${outletKey}:`, error)
+                failCount++
               }
             }
+            
+            console.log(`🔒 LogIn: MONTHLY LIMIT ENFORCEMENT COMPLETE: ${successCount} turned off, ${skippedCount} skipped (bypass mode), ${failCount} failed`)
           }
         }
       } catch (error) {

@@ -157,11 +157,14 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
   const [searchTerm, setSearchTerm] = useState('');
   const [userLogsSearchTerm, setUserLogsSearchTerm] = useState('');
   const [userLogsFilter, setUserLogsFilter] = useState<'all' | 'day' | 'week' | 'month' | 'year'>('all');
+  const [userLogsCurrentPage, setUserLogsCurrentPage] = useState(1);
+  const itemsPerPage = 10;
   const [users, setUsers] = useState<User[]>([]);
   const [userLogs, setUserLogs] = useState<UserLog[]>([]);
   const [deviceLogs, setDeviceLogs] = useState<DeviceLog[]>([]);
   const [deviceLogsSearchTerm, setDeviceLogsSearchTerm] = useState('');
   const [deviceLogsFilter, setDeviceLogsFilter] = useState<'all' | 'day' | 'week' | 'month' | 'year'>('all');
+  const [deviceLogsCurrentPage, setDeviceLogsCurrentPage] = useState(1);
   const [modalOpen, setModalOpen] = useState(false);
   const [modalType, setModalType] = useState<'edit' | 'delete' | 'feedback' | 'addOffice' | 'editOffice' | 'deleteOffice' | null>(null);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
@@ -456,11 +459,24 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
           if (totalMonthlyEnergy >= combinedLimitkW) {
             console.log(`UserManagement: Monthly limit exceeded! Turning off all devices in combined group.`)
             
-            // Turn off all devices in the combined group
+            // Turn off all devices in the combined group (respecting override/bypass mode)
+            let successCount = 0
+            let skippedCount = 0
+            let failCount = 0
+            
             for (const outletKey of combinedLimitInfo.selectedOutlets) {
               const firebaseKey = outletKey.replace(' ', '_')
+              const deviceData = devicesData[firebaseKey]
               
               try {
+                // RESPECT override/bypass mode - if main_status is 'ON', skip turning off (device is manually overridden)
+                const currentMainStatus = deviceData?.relay_control?.main_status || 'ON'
+                if (currentMainStatus === 'ON') {
+                  console.log(`⚠️ UserManagement: Skipping ${outletKey} - main_status is ON (bypass mode/override active)`)
+                  skippedCount++
+                  continue
+                }
+                
                 // Turn off device control
                 const controlRef = ref(realtimeDb, `devices/${firebaseKey}/control`)
                 await update(controlRef, { device: 'off' })
@@ -469,11 +485,15 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
                 const mainStatusRef = ref(realtimeDb, `devices/${firebaseKey}/relay_control`)
                 await update(mainStatusRef, { main_status: 'OFF' })
                 
-                console.log(`✅ TURNED OFF: ${outletKey} (${firebaseKey}) due to monthly limit`)
+                console.log(`✅ UserManagement: TURNED OFF ${outletKey} (${firebaseKey}) due to monthly limit`)
+                successCount++
               } catch (error) {
-                console.error(`❌ FAILED to turn off ${outletKey}:`, error)
+                console.error(`❌ UserManagement: FAILED to turn off ${outletKey}:`, error)
+                failCount++
               }
             }
+            
+            console.log(`🔒 UserManagement: MONTHLY LIMIT ENFORCEMENT COMPLETE: ${successCount} turned off, ${skippedCount} skipped (bypass mode), ${failCount} failed`)
           }
         }
       } catch (error) {
@@ -704,6 +724,17 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
     userLogsFilter
   );
 
+  // Calculate pagination for user logs
+  const userLogsTotalPages = Math.ceil(filteredUserLogs.length / itemsPerPage);
+  const userLogsStartIndex = (userLogsCurrentPage - 1) * itemsPerPage;
+  const userLogsEndIndex = userLogsStartIndex + itemsPerPage;
+  const paginatedUserLogs = filteredUserLogs.slice(userLogsStartIndex, userLogsEndIndex);
+
+  // Reset to page 1 when filters or search change
+  useEffect(() => {
+    setUserLogsCurrentPage(1);
+  }, [userLogsSearchTerm, userLogsFilter]);
+
   // Helper function to filter device logs by time period
   const filterDeviceLogsByTimePeriod = (logs: DeviceLog[], period: 'all' | 'day' | 'week' | 'month' | 'year'): DeviceLog[] => {
     if (period === 'all') return logs;
@@ -740,6 +771,17 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
     ),
     deviceLogsFilter
   );
+
+  // Calculate pagination for device logs
+  const deviceLogsTotalPages = Math.ceil(filteredDeviceLogs.length / itemsPerPage);
+  const deviceLogsStartIndex = (deviceLogsCurrentPage - 1) * itemsPerPage;
+  const deviceLogsEndIndex = deviceLogsStartIndex + itemsPerPage;
+  const paginatedDeviceLogs = filteredDeviceLogs.slice(deviceLogsStartIndex, deviceLogsEndIndex);
+
+  // Reset to page 1 when filters or search change
+  useEffect(() => {
+    setDeviceLogsCurrentPage(1);
+  }, [deviceLogsSearchTerm, deviceLogsFilter]);
 
   // Function to check if device should be active based on schedule
   const isDeviceActiveBySchedule = (schedule: any, controlState: string, deviceData?: any, skipIndividualLimitCheck?: boolean): boolean => {
@@ -1268,8 +1310,8 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredUserLogs.length > 0 ? (
-                    filteredUserLogs.map((log) => (
+                  {paginatedUserLogs.length > 0 ? (
+                    paginatedUserLogs.map((log) => (
                       <tr key={log.id}>
                         <td>{log.user}</td>
                         <td>{log.role.charAt(0).toUpperCase() + log.role.slice(1)}</td>
@@ -1299,6 +1341,98 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
                 </tbody>
               </table>
             </div>
+
+            {/* Pagination Controls for User Logs */}
+            {filteredUserLogs.length > itemsPerPage && (
+              <div style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                padding: '1rem 0',
+                marginTop: '1rem',
+                borderTop: '1px solid #e5e7eb'
+              }}>
+                <div style={{ color: '#6b7280', fontSize: '0.875rem' }}>
+                  Showing {userLogsStartIndex + 1} to {Math.min(userLogsEndIndex, filteredUserLogs.length)} of {filteredUserLogs.length} entries
+                </div>
+                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                  <button
+                    onClick={() => setUserLogsCurrentPage(prev => Math.max(1, prev - 1))}
+                    disabled={userLogsCurrentPage === 1}
+                    style={{
+                      padding: '0.5rem 1rem',
+                      border: '1px solid #e5e7eb',
+                      borderRadius: '8px',
+                      background: userLogsCurrentPage === 1 ? '#f3f4f6' : 'white',
+                      color: userLogsCurrentPage === 1 ? '#9ca3af' : '#374151',
+                      cursor: userLogsCurrentPage === 1 ? 'not-allowed' : 'pointer',
+                      fontSize: '0.875rem',
+                      fontWeight: '500',
+                      transition: 'all 0.2s'
+                    }}
+                  >
+                    Previous
+                  </button>
+                  <div style={{ display: 'flex', gap: '0.25rem' }}>
+                    {Array.from({ length: userLogsTotalPages }, (_, i) => i + 1)
+                      .filter(page => {
+                        // Show first page, last page, current page, and pages around current
+                        if (page === 1 || page === userLogsTotalPages) return true;
+                        if (Math.abs(page - userLogsCurrentPage) <= 1) return true;
+                        return false;
+                      })
+                      .flatMap((page, index, array) => {
+                        const elements: React.ReactNode[] = [];
+                        if (index > 0 && array[index] - array[index - 1] > 1) {
+                          elements.push(
+                            <span key={`ellipsis-${index}`} style={{ padding: '0.5rem', color: '#6b7280' }}>
+                              ...
+                            </span>
+                          );
+                        }
+                        elements.push(
+                          <button
+                            key={page}
+                            onClick={() => setUserLogsCurrentPage(page)}
+                            style={{
+                              padding: '0.5rem 0.75rem',
+                              border: '1px solid #e5e7eb',
+                              borderRadius: '8px',
+                              background: userLogsCurrentPage === page ? '#3b82f6' : 'white',
+                              color: userLogsCurrentPage === page ? 'white' : '#374151',
+                              cursor: 'pointer',
+                              fontSize: '0.875rem',
+                              fontWeight: '500',
+                              minWidth: '2.5rem',
+                              transition: 'all 0.2s'
+                            }}
+                          >
+                            {page}
+                          </button>
+                        );
+                        return elements;
+                      })}
+                  </div>
+                  <button
+                    onClick={() => setUserLogsCurrentPage(prev => Math.min(userLogsTotalPages, prev + 1))}
+                    disabled={userLogsCurrentPage === userLogsTotalPages}
+                    style={{
+                      padding: '0.5rem 1rem',
+                      border: '1px solid #e5e7eb',
+                      borderRadius: '8px',
+                      background: userLogsCurrentPage === userLogsTotalPages ? '#f3f4f6' : 'white',
+                      color: userLogsCurrentPage === userLogsTotalPages ? '#9ca3af' : '#374151',
+                      cursor: userLogsCurrentPage === userLogsTotalPages ? 'not-allowed' : 'pointer',
+                      fontSize: '0.875rem',
+                      fontWeight: '500',
+                      transition: 'all 0.2s'
+                    }}
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            )}
           </>
         ) : currentView === 'deviceLogs' ? (
           <>
@@ -1345,8 +1479,8 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
                       </tr>
                     </thead>
                 <tbody>
-                  {filteredDeviceLogs.length > 0 ? (
-                    filteredDeviceLogs.map((log) => (
+                  {paginatedDeviceLogs.length > 0 ? (
+                    paginatedDeviceLogs.map((log) => (
                       <tr key={log.id}>
                         <td>{log.user}</td>
                         <td>{log.activity}</td>
@@ -1365,6 +1499,98 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
                 </tbody>
               </table>
             </div>
+
+            {/* Pagination Controls for Device Logs */}
+            {filteredDeviceLogs.length > itemsPerPage && (
+              <div style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                padding: '1rem 0',
+                marginTop: '1rem',
+                borderTop: '1px solid #e5e7eb'
+              }}>
+                <div style={{ color: '#6b7280', fontSize: '0.875rem' }}>
+                  Showing {deviceLogsStartIndex + 1} to {Math.min(deviceLogsEndIndex, filteredDeviceLogs.length)} of {filteredDeviceLogs.length} entries
+                </div>
+                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                  <button
+                    onClick={() => setDeviceLogsCurrentPage(prev => Math.max(1, prev - 1))}
+                    disabled={deviceLogsCurrentPage === 1}
+                    style={{
+                      padding: '0.5rem 1rem',
+                      border: '1px solid #e5e7eb',
+                      borderRadius: '8px',
+                      background: deviceLogsCurrentPage === 1 ? '#f3f4f6' : 'white',
+                      color: deviceLogsCurrentPage === 1 ? '#9ca3af' : '#374151',
+                      cursor: deviceLogsCurrentPage === 1 ? 'not-allowed' : 'pointer',
+                      fontSize: '0.875rem',
+                      fontWeight: '500',
+                      transition: 'all 0.2s'
+                    }}
+                  >
+                    Previous
+                  </button>
+                  <div style={{ display: 'flex', gap: '0.25rem' }}>
+                    {Array.from({ length: deviceLogsTotalPages }, (_, i) => i + 1)
+                      .filter(page => {
+                        // Show first page, last page, current page, and pages around current
+                        if (page === 1 || page === deviceLogsTotalPages) return true;
+                        if (Math.abs(page - deviceLogsCurrentPage) <= 1) return true;
+                        return false;
+                      })
+                      .flatMap((page, index, array) => {
+                        const elements: React.ReactNode[] = [];
+                        if (index > 0 && array[index] - array[index - 1] > 1) {
+                          elements.push(
+                            <span key={`ellipsis-${index}`} style={{ padding: '0.5rem', color: '#6b7280' }}>
+                              ...
+                            </span>
+                          );
+                        }
+                        elements.push(
+                          <button
+                            key={page}
+                            onClick={() => setDeviceLogsCurrentPage(page)}
+                            style={{
+                              padding: '0.5rem 0.75rem',
+                              border: '1px solid #e5e7eb',
+                              borderRadius: '8px',
+                              background: deviceLogsCurrentPage === page ? '#3b82f6' : 'white',
+                              color: deviceLogsCurrentPage === page ? 'white' : '#374151',
+                              cursor: 'pointer',
+                              fontSize: '0.875rem',
+                              fontWeight: '500',
+                              minWidth: '2.5rem',
+                              transition: 'all 0.2s'
+                            }}
+                          >
+                            {page}
+                          </button>
+                        );
+                        return elements;
+                      })}
+                  </div>
+                  <button
+                    onClick={() => setDeviceLogsCurrentPage(prev => Math.min(deviceLogsTotalPages, prev + 1))}
+                    disabled={deviceLogsCurrentPage === deviceLogsTotalPages}
+                    style={{
+                      padding: '0.5rem 1rem',
+                      border: '1px solid #e5e7eb',
+                      borderRadius: '8px',
+                      background: deviceLogsCurrentPage === deviceLogsTotalPages ? '#f3f4f6' : 'white',
+                      color: deviceLogsCurrentPage === deviceLogsTotalPages ? '#9ca3af' : '#374151',
+                      cursor: deviceLogsCurrentPage === deviceLogsTotalPages ? 'not-allowed' : 'pointer',
+                      fontSize: '0.875rem',
+                      fontWeight: '500',
+                      transition: 'all 0.2s'
+                    }}
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            )}
           </>
         ) : (
           <>
