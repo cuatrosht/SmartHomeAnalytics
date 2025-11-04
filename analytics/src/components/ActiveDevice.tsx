@@ -251,10 +251,27 @@ const checkCombinedMonthlyLimit = async (devicesData: any, combinedLimitInfo: an
       const skippedCount = results.filter(r => r.skipped).length
       const failCount = results.filter(r => !r.success && !r.skipped).length
       
+      // CRITICAL: Set combined_limit_settings/device_control to "off" to prevent devices from turning back ON
+      const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
+      await update(combinedLimitRef, {
+        device_control: 'off',
+        last_enforcement: new Date().toISOString(),
+        enforcement_reason: 'Monthly limit exceeded'
+      })
+      console.log(`🔒 ActiveDevice: Set combined_limit_settings/device_control='off' to prevent re-activation`)
+      
       console.log(`🔒 ActiveDevice: MONTHLY LIMIT ENFORCEMENT COMPLETE: ${successCount} turned off, ${skippedCount} skipped (bypass mode), ${failCount} failed`)
     } else {
       console.log('✅ ActiveDevice: Monthly limit not exceeded - devices can remain active')
       console.log(`📊 Current: ${totalMonthlyEnergy.toFixed(3)}W < Limit: ${combinedLimitWatts}W`)
+      
+      // Set combined_limit_settings/device_control to "on" to allow devices to turn ON
+      const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
+      await update(combinedLimitRef, {
+        device_control: 'on',
+        enforcement_reason: ''
+      })
+      console.log(`✅ ActiveDevice: Set combined_limit_settings/device_control='on' (limit not exceeded)`)
     }
   } catch (error) {
     console.error('❌ ActiveDevice: Error checking combined monthly limit:', error)
@@ -685,10 +702,12 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
     enabled: boolean;
     selectedOutlets: string[];
     combinedLimit: number;
+    device_control?: string;
   }>({
     enabled: false,
     selectedOutlets: [],
-    combinedLimit: 0
+    combinedLimit: 0,
+    device_control: 'on'
   })
 
   // Bypass confirmation modal state
@@ -1266,31 +1285,39 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
 
   // Fetch combined limit info
   useEffect(() => {
-    const fetchCombinedLimitInfo = async () => {
-      try {
-        const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
-        const snapshot = await get(combinedLimitRef)
-        
-        if (snapshot.exists()) {
-          const data = snapshot.val()
-          setCombinedLimitInfo({
-            enabled: data.enabled || false,
-            selectedOutlets: data.selected_outlets || [],
-            combinedLimit: data.combined_limit_watts || 0
-          })
-        } else {
-          setCombinedLimitInfo({
-            enabled: false,
-            selectedOutlets: [],
-            combinedLimit: 0
-          })
-        }
-      } catch (error) {
-        console.error('ActiveDevice: Error fetching combined limit info:', error)
-      }
-    }
+    const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
     
-    fetchCombinedLimitInfo()
+    // Set up real-time listener
+    const unsubscribe = onValue(combinedLimitRef, (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.val()
+        console.log('ActiveDevice: Real-time update - combined limit data:', data)
+        setCombinedLimitInfo({
+          enabled: data.enabled || false,
+          selectedOutlets: data.selected_outlets || [],
+          combinedLimit: data.combined_limit_watts || 0,
+          device_control: data.device_control || 'on'
+        })
+      } else {
+        setCombinedLimitInfo({
+          enabled: false,
+          selectedOutlets: [],
+          combinedLimit: 0,
+          device_control: 'on'
+        })
+      }
+    }, (error) => {
+      console.error('ActiveDevice: Error listening to combined limit info:', error)
+      setCombinedLimitInfo({
+        enabled: false,
+        selectedOutlets: [],
+        combinedLimit: 0,
+        device_control: 'on'
+      })
+    })
+    
+    // Cleanup listener on unmount
+    return () => unsubscribe()
   }, [])
 
   // Real-time scheduler that checks every minute and updates control.device
@@ -1989,11 +2016,18 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
           } else {
             console.log(`ActiveDevice: Skipping individual daily limit check for ${outletKey} - device is in combined group (monthly limit takes precedence)`)
             
-            // Check monthly limit for devices in combined groups
-            const monthlyLimitCheck = await checkMonthlyLimitBeforeTurnOn(outletKey, combinedLimitInfo)
-            if (!monthlyLimitCheck.canTurnOn) {
+            // CRITICAL: Check if device_control is "off" for combined group
+            if (combinedLimitInfo?.device_control === 'off') {
               hasRestrictions = true
-              restrictionReason = monthlyLimitCheck.reason || 'Monthly limit exceeded'
+              restrictionReason = 'Combined group monthly limit exceeded - devices locked OFF'
+              console.log(`🔒 ActiveDevice: Device ${outletKey} cannot turn ON - combined_limit_settings/device_control is OFF`)
+            } else {
+              // Check monthly limit for devices in combined groups
+              const monthlyLimitCheck = await checkMonthlyLimitBeforeTurnOn(outletKey, combinedLimitInfo)
+              if (!monthlyLimitCheck.canTurnOn) {
+                hasRestrictions = true
+                restrictionReason = monthlyLimitCheck.reason || 'Monthly limit exceeded'
+              }
             }
           }
           

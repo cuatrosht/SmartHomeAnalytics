@@ -201,10 +201,27 @@ const checkCombinedMonthlyLimit = async (devicesData: any, combinedLimitInfo: an
       const skippedCount = results.filter(r => r.skipped).length
       const failCount = results.filter(r => !r.success && !r.skipped).length
       
+      // CRITICAL: Set combined_limit_settings/device_control to "off" to prevent devices from turning back ON
+      const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
+      await update(combinedLimitRef, {
+        device_control: 'off',
+        last_enforcement: new Date().toISOString(),
+        enforcement_reason: 'Monthly limit exceeded'
+      })
+      console.log(`🔒 SetUp: Set combined_limit_settings/device_control='off' to prevent re-activation`)
+      
       console.log(`🔒 SetUp: MONTHLY LIMIT ENFORCEMENT COMPLETE: ${successCount} turned off, ${skippedCount} skipped (bypass mode), ${failCount} failed`)
     } else {
       console.log('✅ Monthly limit not exceeded - devices can remain active')
       console.log(`📊 Current: ${totalMonthlyEnergy.toFixed(3)}W < Limit: ${combinedLimitWatts}W`)
+      
+      // Set combined_limit_settings/device_control to "on" to allow devices to turn ON
+      const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
+      await update(combinedLimitRef, {
+        device_control: 'on',
+        enforcement_reason: ''
+      })
+      console.log(`✅ SetUp: Set combined_limit_settings/device_control='on' (limit not exceeded)`)
     }
   } catch (error) {
     console.error('❌ Error checking combined monthly limit:', error)
@@ -3473,10 +3490,12 @@ export default function SetUp() {
     enabled: boolean;
     selectedOutlets: string[];
     combinedLimit: number;
+    device_control?: string;
   }>({
     enabled: false,
     selectedOutlets: [],
-    combinedLimit: 0
+    combinedLimit: 0,
+    device_control: 'on'
   })
   const [deleteSuccessModal, setDeleteSuccessModal] = useState<{
     isOpen: boolean;
@@ -5896,56 +5915,42 @@ const checkDailyLimit = (deviceData: any): boolean => {
   }
 
   // Fetch combined limit information
+  // Real-time listener for combined limit information
   useEffect(() => {
-    const fetchCombinedLimitInfo = async () => {
-      try {
-        const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
-        const snapshot = await get(combinedLimitRef)
-        
-        if (snapshot.exists()) {
-          const data = snapshot.val()
-          console.log('SetUp: Fetched combined limit data:', data)
-          setCombinedLimitInfo({
-            enabled: data.enabled || false,
-            selectedOutlets: data.selected_outlets || [],
-            combinedLimit: data.combined_limit_watts || 0
-          })
-        } else {
-          console.log('SetUp: No combined limit settings found in database')
-        }
-      } catch (error) {
-        console.error('Error fetching combined limit info:', error)
-      }
-    }
-
-    fetchCombinedLimitInfo()
-  }, [])
-
-  // Also refetch combined limit info when devices change (in case combined limit was set elsewhere)
-  useEffect(() => {
-    const fetchCombinedLimitInfo = async () => {
-      try {
-        const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
-        const snapshot = await get(combinedLimitRef)
-        
-        if (snapshot.exists()) {
-          const data = snapshot.val()
-          console.log('SetUp: Refetching combined limit data:', data)
-          setCombinedLimitInfo({
-            enabled: data.enabled || false,
-            selectedOutlets: data.selected_outlets || [],
-            combinedLimit: data.combined_limit_watts || 0
-          })
-        }
-      } catch (error) {
-        console.error('Error refetching combined limit info:', error)
-      }
-    }
-
-    // Refetch every 30 seconds to catch any updates (reduced frequency to prevent input interference)
-    const interval = setInterval(fetchCombinedLimitInfo, 30000)
+    const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
     
-    return () => clearInterval(interval)
+    // Set up real-time listener
+    const unsubscribe = onValue(combinedLimitRef, (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.val()
+        console.log('SetUp: Real-time update - combined limit data:', data)
+        setCombinedLimitInfo({
+          enabled: data.enabled || false,
+          selectedOutlets: data.selected_outlets || [],
+          combinedLimit: data.combined_limit_watts || 0,
+          device_control: data.device_control || 'on'
+        })
+      } else {
+        console.log('SetUp: No combined limit settings found in database')
+        setCombinedLimitInfo({
+          enabled: false,
+          selectedOutlets: [],
+          combinedLimit: 0,
+          device_control: 'on'
+        })
+      }
+    }, (error) => {
+      console.error('SetUp: Error listening to combined limit info:', error)
+      setCombinedLimitInfo({
+        enabled: false,
+        selectedOutlets: [],
+        combinedLimit: 0,
+        device_control: 'on'
+      })
+    })
+    
+    // Cleanup listener on unmount
+    return () => unsubscribe()
   }, [])
 
   // Combined Power Limit Monitor - checks combined power consumption and turns off devices when limit is reached

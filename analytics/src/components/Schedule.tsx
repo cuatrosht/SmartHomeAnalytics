@@ -202,10 +202,27 @@ const checkCombinedMonthlyLimit = async (devicesData: any, combinedLimitInfo: an
       const skippedCount = results.filter(r => r.skipped).length
       const failCount = results.filter(r => !r.success && !r.skipped).length
       
+      // CRITICAL: Set combined_limit_settings/device_control to "off" to prevent devices from turning back ON
+      const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
+      await update(combinedLimitRef, {
+        device_control: 'off',
+        last_enforcement: new Date().toISOString(),
+        enforcement_reason: 'Monthly limit exceeded'
+      })
+      console.log(`🔒 Schedule: Set combined_limit_settings/device_control='off' to prevent re-activation`)
+      
       console.log(`🔒 Schedule: MONTHLY LIMIT ENFORCEMENT COMPLETE: ${successCount} turned off, ${skippedCount} skipped (bypass mode), ${failCount} failed`)
     } else {
       console.log('✅ Monthly limit not exceeded - devices can remain active')
       console.log(`📊 Current: ${totalMonthlyEnergy.toFixed(3)}W < Limit: ${combinedLimitWatts}W`)
+      
+      // Set combined_limit_settings/device_control to "on" to allow devices to turn ON
+      const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
+      await update(combinedLimitRef, {
+        device_control: 'on',
+        enforcement_reason: ''
+      })
+      console.log(`✅ Schedule: Set combined_limit_settings/device_control='on' (limit not exceeded)`)
     }
   } catch (error) {
     console.error('❌ Error checking combined monthly limit:', error)
@@ -2049,10 +2066,12 @@ export default function Schedule() {
     enabled: boolean;
     selectedOutlets: string[];
     combinedLimit: number;
+    device_control?: string;
   }>({
     enabled: false,
     selectedOutlets: [],
-    combinedLimit: 0
+    combinedLimit: 0,
+    device_control: 'on'
   })
 
   // Idle detection state
@@ -2116,13 +2135,17 @@ export default function Schedule() {
   // Function to detect existing combined schedules
   const detectExistingCombinedSchedule = () => {
     // Find the first device with a combined schedule
-    const deviceWithCombinedSchedule = deviceSchedules.find(device => 
-      device.schedule.isCombinedSchedule && 
-      device.schedule.combinedScheduleId && 
-      device.schedule.selectedOutlets
-    )
+    // CRITICAL: Add null checks to prevent crashes when schedule is deleted
+    const deviceWithCombinedSchedule = deviceSchedules.find(device => {
+      if (!device.schedule) return false // Safety check: schedule might be null/undefined
+      return device.schedule.isCombinedSchedule === true && 
+             device.schedule.combinedScheduleId && 
+             device.schedule.selectedOutlets &&
+             Array.isArray(device.schedule.selectedOutlets) &&
+             device.schedule.selectedOutlets.length > 0
+    })
     
-    if (deviceWithCombinedSchedule) {
+    if (deviceWithCombinedSchedule && deviceWithCombinedSchedule.schedule) {
       return {
         combinedScheduleId: deviceWithCombinedSchedule.schedule.combinedScheduleId!,
         selectedOutlets: deviceWithCombinedSchedule.schedule.selectedOutlets!,
@@ -2501,40 +2524,42 @@ export default function Schedule() {
     }
   }, [])
 
-  // Fetch combined limit info
+  // Real-time listener for combined limit info
   useEffect(() => {
-    const fetchCombinedLimitInfo = async () => {
-      try {
-        const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
-        const snapshot = await get(combinedLimitRef)
-        
-        if (snapshot.exists()) {
-          const data = snapshot.val()
-          console.log('Schedule: Fetched combined limit data:', data)
-          setCombinedLimitInfo({
-            enabled: data.enabled || false,
-            selectedOutlets: data.selected_outlets || [],
-            combinedLimit: data.combined_limit_watts || 0
-          })
-        } else {
-          console.log('Schedule: No combined limit settings found')
-          setCombinedLimitInfo({
-            enabled: false,
-            selectedOutlets: [],
-            combinedLimit: 0
-          })
-        }
-      } catch (error) {
-        console.error('Schedule: Error fetching combined limit info:', error)
+    const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
+    
+    // Set up real-time listener
+    const unsubscribe = onValue(combinedLimitRef, (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.val()
+        console.log('Schedule: Real-time update - combined limit data:', data)
+        setCombinedLimitInfo({
+          enabled: data.enabled || false,
+          selectedOutlets: data.selected_outlets || [],
+          combinedLimit: data.combined_limit_watts || 0,
+          device_control: data.device_control || 'on'
+        })
+      } else {
+        console.log('Schedule: No combined limit settings found')
         setCombinedLimitInfo({
           enabled: false,
           selectedOutlets: [],
-          combinedLimit: 0
+          combinedLimit: 0,
+          device_control: 'on'
         })
       }
-    }
+    }, (error) => {
+      console.error('Schedule: Error listening to combined limit info:', error)
+      setCombinedLimitInfo({
+        enabled: false,
+        selectedOutlets: [],
+        combinedLimit: 0,
+        device_control: 'on'
+      })
+    })
     
-    fetchCombinedLimitInfo()
+    // Cleanup listener on unmount
+    return () => unsubscribe()
   }, [])
 
   // Monthly limit check - runs independently and more frequently
@@ -2763,6 +2788,22 @@ export default function Schedule() {
               const isInCombinedGroup = combinedLimitInfo?.enabled && 
                                        combinedLimitInfo?.selectedOutlets?.includes(outletDisplayName)
               
+              // CRITICAL: If device is in combined group and combined_limit_settings/device_control is "off", force device OFF
+              if (isInCombinedGroup && combinedLimitInfo?.device_control === 'off') {
+                console.log(`🔒 Schedule: FORCING ${outletKey} OFF - combined_limit_settings/device_control is OFF (monthly limit enforcement)`)
+                // Force device OFF
+                await update(ref(realtimeDb, `devices/${outletKey}/control`), {
+                  device: 'off'
+                })
+                await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
+                  main_status: 'OFF'
+                })
+                await update(ref(realtimeDb, `devices/${outletKey}`), {
+                  status: 'OFF'
+                })
+                continue
+              }
+              
               // CRITICAL: Check limits FIRST before any schedule logic
               // PRIORITY #1: Monthly limit check (for combined group devices)
               // PRIORITY #2: Combined daily limit check (for combined group devices)
@@ -2877,6 +2918,10 @@ export default function Schedule() {
                       await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
                         main_status: 'OFF'
                       })
+                      await update(ref(realtimeDb, `devices/${outletKey}`), {
+                        status: 'OFF'
+                      })
+                      console.log(`🔒 Schedule: Set status='OFF' for ${outletKey} to prevent re-activation loop`)
                       continue
                     }
                     
@@ -2889,6 +2934,10 @@ export default function Schedule() {
                       await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
                         main_status: 'OFF'
                       })
+                      await update(ref(realtimeDb, `devices/${outletKey}`), {
+                        status: 'OFF'
+                      })
+                      console.log(`🔒 Schedule: Set status='OFF' for ${outletKey} to prevent re-activation loop`)
                       continue
                     }
                   } else {
@@ -2901,6 +2950,10 @@ export default function Schedule() {
                       await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
                         main_status: 'OFF'
                       })
+                      await update(ref(realtimeDb, `devices/${outletKey}`), {
+                        status: 'OFF'
+                      })
+                      console.log(`🔒 Schedule: Set status='OFF' for ${outletKey} to prevent re-activation loop`)
                       continue
                     }
                   }
@@ -2920,6 +2973,14 @@ export default function Schedule() {
                     main_status: 'OFF'
                   })
                   console.log(`🔒 Schedule: Set main_status to 'OFF' for ${outletKey} to prevent re-activation`)
+                  
+                  // If turning OFF due to limits, also set status='OFF' to prevent re-activation loop
+                  if (limitsExceeded) {
+                    await update(ref(realtimeDb, `devices/${outletKey}`), {
+                      status: 'OFF'
+                    })
+                    console.log(`🔒 Schedule: Set status='OFF' for ${outletKey} (limits exceeded) to prevent re-activation loop`)
+                  }
                 }
               } else {
                 console.log(`Schedule: No update needed for ${outletKey} - control state already ${currentControlState}`)
@@ -3045,18 +3106,20 @@ export default function Schedule() {
                   update(scheduleRef, {
                     disabled_by_unplug: false
                   }).then(() => {
-                    // Reset root status from UNPLUG to normal status (based on control state)
+                    // Just reset status from UNPLUG to normal - based on CURRENT control state
+                    // Don't change the control state or main_status - leave device in its current state
                     const controlRef = ref(realtimeDb, `devices/${outletKey}/control`)
                     return get(controlRef).then(controlSnapshot => {
                       const controlData = controlSnapshot.val()
                       const controlState = controlData?.device || 'off'
                       
+                      // Update status to match current control state (OFF or ON)
                       return update(ref(realtimeDb, `devices/${outletKey}`), {
                         status: controlState === 'on' ? 'ON' : 'OFF'
                       })
                     })
                   }).then(() => {
-                    console.log(`✅ Schedule: RESET UNPLUG STATE: ${outletKey} - device plugged back in, disabled_by_unplug set to false, status reset to normal`)
+                    console.log(`✅ Schedule: RESET UNPLUG STATE: ${outletKey} - device plugged back in, disabled_by_unplug set to false, status updated to match current control state (no control changes made)`)
                   }).catch(err => {
                     console.error(`❌ Error resetting unplug state for ${outletKey}:`, err)
                   })
@@ -3208,12 +3271,13 @@ export default function Schedule() {
     const deviceToEdit = deviceSchedules.find(device => device.id === deviceId)
     if (deviceToEdit) {
       // Check if device is part of a combined schedule
-      if (deviceToEdit.schedule.isCombinedSchedule) {
+      // CRITICAL: Add null check to prevent crash when schedule is deleted
+      if (deviceToEdit.schedule?.isCombinedSchedule === true) {
         // Show modal that individual schedule editing is not allowed for combined schedules
         setCombinedScheduleWarningModal({
           isOpen: true,
           deviceName: deviceToEdit.outletName,
-          combinedOutlets: deviceToEdit.schedule.selectedOutlets || []
+          combinedOutlets: deviceToEdit.schedule?.selectedOutlets || []
         })
         return
       }
@@ -3445,6 +3509,98 @@ export default function Schedule() {
       const scheduleRef = ref(realtimeDb, `devices/${outletKey}/schedule`)
       const scheduleSnapshot = await get(scheduleRef)
       const existingSchedule = scheduleSnapshot.val() || {}
+      
+      // CRITICAL: Check if this device is part of a combined schedule
+      const isCombinedSchedule = existingSchedule.isCombinedSchedule === true
+      const combinedScheduleId = existingSchedule.combinedScheduleId
+      const selectedOutlets = existingSchedule.selectedOutlets || []
+      
+      // If this device is part of a combined schedule, update other devices in the group
+      if (isCombinedSchedule && combinedScheduleId && selectedOutlets.length > 0) {
+        console.log(`⚠️ Schedule: Device ${outletKey} is part of combined schedule ${combinedScheduleId} with ${selectedOutlets.length} outlets`)
+        
+        // Get all devices to find others with the same combinedScheduleId
+        const devicesRef = ref(realtimeDb, 'devices')
+        const devicesSnapshot = await get(devicesRef)
+        
+        if (devicesSnapshot.exists()) {
+          const devicesData = devicesSnapshot.val()
+          const outletDisplayName = device.outletName // Display format (e.g., "Outlet 1")
+          
+          // Find all other devices in the same combined schedule
+          const otherDevicesInCombinedSchedule: string[] = []
+          
+          for (const [deviceKey, deviceData] of Object.entries(devicesData)) {
+            const deviceSchedule = (deviceData as any)?.schedule
+            if (deviceSchedule && 
+                deviceSchedule.combinedScheduleId === combinedScheduleId &&
+                deviceKey !== outletKey) {
+              otherDevicesInCombinedSchedule.push(deviceKey)
+            }
+          }
+          
+          console.log(`📋 Schedule: Found ${otherDevicesInCombinedSchedule.length} other devices in combined schedule:`, otherDevicesInCombinedSchedule)
+          
+          // Update other devices: Remove this device from their selectedOutlets array
+          for (const otherDeviceKey of otherDevicesInCombinedSchedule) {
+            try {
+              const otherScheduleRef = ref(realtimeDb, `devices/${otherDeviceKey}/schedule`)
+              const otherScheduleSnapshot = await get(otherScheduleRef)
+              const otherSchedule = otherScheduleSnapshot.val() || {}
+              
+              // Get current selectedOutlets (handle both display and Firebase formats)
+              const currentSelectedOutlets = otherSchedule.selectedOutlets || []
+              
+              // Remove this device from the list (check both formats)
+              const updatedSelectedOutlets = currentSelectedOutlets.filter((outlet: string) => {
+                const outletDisplay = outlet.replace(/_/g, ' ')
+                const outletFirebase = outlet.replace(/\s+/g, '_')
+                return outlet !== outletDisplayName && 
+                       outlet !== device.outletName &&
+                       outlet !== outletKey &&
+                       outletFirebase !== outletKey &&
+                       outletDisplay !== outletDisplayName &&
+                       outletDisplay !== device.outletName
+              })
+              
+              // Update the other device's schedule
+              if (updatedSelectedOutlets.length === 0) {
+                // If no outlets left, delete the combined schedule entirely
+                const preservedBasis = otherSchedule.basis || null
+                const preservedDisabledByUnplug = otherSchedule.disabled_by_unplug !== undefined ? otherSchedule.disabled_by_unplug : false
+                
+                if (preservedBasis !== null) {
+                  await update(otherScheduleRef, {
+                    timeRange: null,
+                    startTime: null,
+                    endTime: null,
+                    frequency: null,
+                    selectedDays: null,
+                    combinedScheduleId: null,
+                    isCombinedSchedule: null,
+                    selectedOutlets: null,
+                    enabled: null,
+                    basis: preservedBasis,
+                    disabled_by_unplug: preservedDisabledByUnplug
+                  })
+                } else {
+                  await set(otherScheduleRef, null)
+                }
+                console.log(`🗑️ Schedule: Deleted combined schedule from ${otherDeviceKey} (last device removed)`)
+              } else {
+                // Update selectedOutlets array
+                await update(otherScheduleRef, {
+                  selectedOutlets: updatedSelectedOutlets
+                })
+                console.log(`✅ Schedule: Updated ${otherDeviceKey} - removed ${outletDisplayName} from combined schedule`)
+              }
+            } catch (error) {
+              console.error(`❌ Schedule: Error updating other device ${otherDeviceKey}:`, error)
+              // Continue with other devices even if one fails
+            }
+          }
+        }
+      }
       
       // Preserve basis and disabled_by_unplug for unplug detection (used in SetUp.tsx)
       const preservedBasis = existingSchedule.basis || null
@@ -4050,10 +4206,10 @@ export default function Schedule() {
                   <td>
                     <div className="status-container">
                       {getStatusBadge(device.status)}
-                      {device.schedule.timeRange && (
+                      {device.schedule?.timeRange && (
                         <div 
                                           className={`schedule-indicator ${device.status === 'Active' ? 'active' : 'inactive'}`}
-                title={`Schedule: ${device.schedule.timeRange} (${device.schedule.frequency}) - Currently ${device.status === 'Active' ? 'ACTIVE' : device.status === 'UNPLUG' ? 'UNPLUGGED' : 'INACTIVE'}`}
+                title={`Schedule: ${device.schedule.timeRange} (${device.schedule.frequency || ''}) - Currently ${device.status === 'Active' ? 'ACTIVE' : device.status === 'UNPLUG' ? 'UNPLUGGED' : 'INACTIVE'}`}
                         >
                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                             <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2"/>
@@ -4065,7 +4221,7 @@ export default function Schedule() {
                   </td>
                   <td className="todays-usage">{device.todaysUsage}</td>
                   <td>
-                    {device.schedule.timeRange ? (
+                    {device.schedule?.timeRange ? (
                       <div className="schedule-info">
                         <div className="schedule-time">
                           {device.schedule.timeRange}
@@ -4080,10 +4236,10 @@ export default function Schedule() {
                             </span>
                           )}
                         </div>
-                        <span className={`schedule-frequency ${device.schedule.frequency.toLowerCase() === 'daily' || device.schedule.frequency.toLowerCase() === 'weekdays' || device.schedule.frequency.toLowerCase() === 'weekends' ? device.schedule.frequency.toLowerCase() : 'custom'}`}>
-                          {formatFrequencyDisplay(device.schedule.frequency)}
+                        <span className={`schedule-frequency ${device.schedule.frequency && (device.schedule.frequency.toLowerCase() === 'daily' || device.schedule.frequency.toLowerCase() === 'weekdays' || device.schedule.frequency.toLowerCase() === 'weekends') ? device.schedule.frequency.toLowerCase() : 'custom'}`}>
+                          {formatFrequencyDisplay(device.schedule.frequency || '')}
                           {device.schedule.isCombinedSchedule && (
-                            <span className="combined-label" title={`Combined with: ${device.schedule.selectedOutlets?.map(outlet => outlet.replace('_', ' ')).join(', ')}`}>
+                            <span className="combined-label" title={`Combined with: ${device.schedule.selectedOutlets?.map(outlet => outlet.replace('_', ' ')).join(', ') || 'N/A'}`}>
                               (Combined - {device.schedule.selectedOutlets?.length || 0} outlets)
                             </span>
                           )}
@@ -4109,7 +4265,7 @@ export default function Schedule() {
                         onClick={() => handleEditSchedule(device.id)}
                         title="Edit Schedule"
                       >
-                        {device.schedule.timeRange ? 'Edit Schedule' : 'Set Schedule'}
+                        {device.schedule?.timeRange ? 'Edit Schedule' : 'Set Schedule'}
                       </button>
                       <button
                         className="action-btn delete-btn"

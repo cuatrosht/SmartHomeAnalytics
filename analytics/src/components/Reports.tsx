@@ -1453,10 +1453,12 @@ export default function Reports() {
     enabled: boolean;
     selectedOutlets: string[];
     combinedLimit: number;
+    device_control?: string;
   }>({
     enabled: false,
     selectedOutlets: [],
-    combinedLimit: 0
+    combinedLimit: 0,
+    device_control: 'on'
   })
   const dropdownRef = useRef<HTMLDivElement | null>(null)
 
@@ -2115,33 +2117,41 @@ export default function Reports() {
     }
   }, [])
 
-  // Fetch combined limit info
+  // Real-time listener for combined limit info
   useEffect(() => {
-    const fetchCombinedLimitInfo = async () => {
-      try {
-        const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
-        const snapshot = await get(combinedLimitRef)
-        
-        if (snapshot.exists()) {
-          const data = snapshot.val()
-          setCombinedLimitInfo({
-            enabled: data.enabled || false,
-            selectedOutlets: data.selected_outlets || [],
-            combinedLimit: data.combined_limit_watts !== undefined ? data.combined_limit_watts : 0 // Preserve "No Limit" string or use 0 as default
-          })
-        } else {
-          setCombinedLimitInfo({
-            enabled: false,
-            selectedOutlets: [],
-            combinedLimit: 0
-          })
-        }
-      } catch (error) {
-        console.error('Reports: Error fetching combined limit info:', error)
-      }
-    }
+    const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
     
-    fetchCombinedLimitInfo()
+    // Set up real-time listener
+    const unsubscribe = onValue(combinedLimitRef, (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.val()
+        console.log('Reports: Real-time update - combined limit data:', data)
+        setCombinedLimitInfo({
+          enabled: data.enabled || false,
+          selectedOutlets: data.selected_outlets || [],
+          combinedLimit: data.combined_limit_watts !== undefined ? data.combined_limit_watts : 0,
+          device_control: data.device_control || 'on'
+        })
+      } else {
+        setCombinedLimitInfo({
+          enabled: false,
+          selectedOutlets: [],
+          combinedLimit: 0,
+          device_control: 'on'
+        })
+      }
+    }, (error) => {
+      console.error('Reports: Error listening to combined limit info:', error)
+      setCombinedLimitInfo({
+        enabled: false,
+        selectedOutlets: [],
+        combinedLimit: 0,
+        device_control: 'on'
+      })
+    })
+    
+    // Cleanup listener on unmount
+    return () => unsubscribe()
   }, [])
 
   // Real-time scheduler that checks every minute and updates control.device
@@ -2447,7 +2457,26 @@ export default function Reports() {
               }
             }
             
+            // CRITICAL: Set combined_limit_settings/device_control to "off" to prevent devices from turning back ON
+            const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
+            await update(combinedLimitRef, {
+              device_control: 'off',
+              last_enforcement: new Date().toISOString(),
+              enforcement_reason: 'Monthly limit exceeded'
+            })
+            console.log(`🔒 Reports: Set combined_limit_settings/device_control='off' to prevent re-activation`)
+            
             console.log(`🔒 Reports: MONTHLY LIMIT ENFORCEMENT COMPLETE: ${successCount} turned off, ${skippedCount} skipped (bypass mode), ${failCount} failed`)
+          } else {
+            console.log('✅ Reports: Monthly limit not exceeded - devices can remain active')
+            
+            // Set combined_limit_settings/device_control to "on" to allow devices to turn ON
+            const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
+            await update(combinedLimitRef, {
+              device_control: 'on',
+              enforcement_reason: ''
+            })
+            console.log(`✅ Reports: Set combined_limit_settings/device_control='on' (limit not exceeded)`)
           }
         }
       } catch (error) {

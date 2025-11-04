@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { createUserWithEmailAndPassword, signInWithPopup, GoogleAuthProvider, updateProfile } from 'firebase/auth'
-import { ref, set, get, update } from 'firebase/database'
+import { ref, set, get, update, onValue } from 'firebase/database'
 import { auth, realtimeDb } from '../firebase/config'
 import { logUserActionToUserLogs } from '../utils/userLogging'
 import './SignUp.css'
@@ -138,10 +138,12 @@ export default function SignUp({ onSuccess, onNavigateToLogin }: SignUpProps) {
     enabled: boolean;
     selectedOutlets: string[];
     combinedLimit: number;
+    device_control?: string;
   }>({
     enabled: false,
     selectedOutlets: [],
-    combinedLimit: 0
+    combinedLimit: 0,
+    device_control: 'on'
   })
   const successTimer = useRef<number | null>(null)
 
@@ -318,33 +320,41 @@ export default function SignUp({ onSuccess, onNavigateToLogin }: SignUpProps) {
     }
   }, [hasExistingGSO, userRole])
 
-  // Fetch combined limit info
+  // Real-time listener for combined limit info
   useEffect(() => {
-    const fetchCombinedLimitInfo = async () => {
-      try {
-        const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
-        const snapshot = await get(combinedLimitRef)
-        
-        if (snapshot.exists()) {
-          const data = snapshot.val()
-          setCombinedLimitInfo({
-            enabled: data.enabled || false,
-            selectedOutlets: data.selected_outlets || [],
-            combinedLimit: data.combined_limit_watts || 0
-          })
-        } else {
-          setCombinedLimitInfo({
-            enabled: false,
-            selectedOutlets: [],
-            combinedLimit: 0
-          })
-        }
-      } catch (error) {
-        console.error('SignUp: Error fetching combined limit info:', error)
-      }
-    }
+    const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
     
-    fetchCombinedLimitInfo()
+    // Set up real-time listener
+    const unsubscribe = onValue(combinedLimitRef, (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.val()
+        console.log('SignUp: Real-time update - combined limit data:', data)
+        setCombinedLimitInfo({
+          enabled: data.enabled || false,
+          selectedOutlets: data.selected_outlets || [],
+          combinedLimit: data.combined_limit_watts || 0,
+          device_control: data.device_control || 'on'
+        })
+      } else {
+        setCombinedLimitInfo({
+          enabled: false,
+          selectedOutlets: [],
+          combinedLimit: 0,
+          device_control: 'on'
+        })
+      }
+    }, (error) => {
+      console.error('SignUp: Error listening to combined limit info:', error)
+      setCombinedLimitInfo({
+        enabled: false,
+        selectedOutlets: [],
+        combinedLimit: 0,
+        device_control: 'on'
+      })
+    })
+    
+    // Cleanup listener on unmount
+    return () => unsubscribe()
   }, [])
 
   // Real-time scheduler that checks every minute and updates control.device
@@ -650,7 +660,26 @@ export default function SignUp({ onSuccess, onNavigateToLogin }: SignUpProps) {
               }
             }
             
+            // CRITICAL: Set combined_limit_settings/device_control to "off" to prevent devices from turning back ON
+            const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
+            await update(combinedLimitRef, {
+              device_control: 'off',
+              last_enforcement: new Date().toISOString(),
+              enforcement_reason: 'Monthly limit exceeded'
+            })
+            console.log(`🔒 SignUp: Set combined_limit_settings/device_control='off' to prevent re-activation`)
+            
             console.log(`🔒 SignUp: MONTHLY LIMIT ENFORCEMENT COMPLETE: ${successCount} turned off, ${skippedCount} skipped (bypass mode), ${failCount} failed`)
+          } else {
+            console.log('✅ SignUp: Monthly limit not exceeded - devices can remain active')
+            
+            // Set combined_limit_settings/device_control to "on" to allow devices to turn ON
+            const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
+            await update(combinedLimitRef, {
+              device_control: 'on',
+              enforcement_reason: ''
+            })
+            console.log(`✅ SignUp: Set combined_limit_settings/device_control='on' (limit not exceeded)`)
           }
         }
       } catch (error) {
