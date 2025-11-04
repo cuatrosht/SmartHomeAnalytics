@@ -88,8 +88,8 @@ const calculateCombinedMonthlyEnergy = (devicesData: any, selectedOutlets: strin
       // Mark as processed
       processedOutlets.add(outletKey)
       
-      // Convert display format to Firebase format
-      const firebaseKey = outletKey.replace(' ', '_')
+      // Convert display format to Firebase format - replace ALL spaces/special chars
+      const firebaseKey = outletKey.replace(/\s+/g, '_').replace(/'/g, '')
       const outlet = devicesData[firebaseKey]
       
       console.log(`🔍 Processing outlet ${index + 1}/${selectedOutlets.length}: ${outletKey} -> ${firebaseKey}`)
@@ -168,8 +168,8 @@ const checkCombinedMonthlyLimit = async (devicesData: any, combinedLimitInfo: an
       // Turn off all devices in the combined limit group (respecting override/bypass mode)
       const turnOffPromises = combinedLimitInfo.selectedOutlets.map(async (outletKey: string) => {
         try {
-          // Convert display format to Firebase format
-          const firebaseKey = outletKey.replace(' ', '_')
+          // Convert display format to Firebase format - replace ALL spaces/special chars
+          const firebaseKey = outletKey.replace(/\s+/g, '_').replace(/'/g, '')
           const deviceData = devicesData[firebaseKey]
           
           // RESPECT override/bypass mode - if main_status is 'ON', skip turning off (device is manually overridden)
@@ -767,7 +767,7 @@ function PowerLimitWarningField({
   useEffect(() => {
     const fetchTodayEnergy = async () => {
       try {
-        const outletKey = device.outletName.replace(' ', '_')
+        const outletKey = device.outletName.replace(/\s+/g, '_').replace(/'/g, '')
         const deviceRef = ref(realtimeDb, `devices/${outletKey}`)
         const deviceSnapshot = await get(deviceRef)
         const deviceData = deviceSnapshot.val()
@@ -1207,7 +1207,7 @@ function EditDeviceModal({
         if (device) {
           try {
             // Get today's energy consumption from database
-            const outletKey = device.outletName.replace(' ', '_')
+            const outletKey = device.outletName.replace(/\s+/g, '_').replace(/'/g, '')
             const deviceRef = ref(realtimeDb, `devices/${outletKey}`)
             const deviceSnapshot = await get(deviceRef)
             const deviceData = deviceSnapshot.val()
@@ -1281,7 +1281,7 @@ function EditDeviceModal({
       if (device && powerLimitToValidate > 0) {
         try {
           // Get today's energy consumption from database
-          const outletKey = device.outletName.replace(' ', '_')
+          const outletKey = device.outletName.replace(/\s+/g, '_').replace(/'/g, '')
           const deviceRef = ref(realtimeDb, `devices/${outletKey}`)
           const deviceSnapshot = await get(deviceRef)
           const deviceData = deviceSnapshot.val()
@@ -1322,7 +1322,7 @@ function EditDeviceModal({
       if (formData.enabled && device.schedule && device.schedule.timeRange) {
         try {
           // Get device schedule data from database
-          const outletKey = device.outletName.replace(' ', '_')
+          const outletKey = device.outletName.replace(/\s+/g, '_').replace(/'/g, '')
           const deviceRef = ref(realtimeDb, `devices/${outletKey}`)
           const deviceSnapshot = await get(deviceRef)
           const deviceData = deviceSnapshot.val()
@@ -1447,7 +1447,7 @@ function EditDeviceModal({
         console.log('Edit modal: Office to set:', formData.officeRoom)
         
         // Update Firebase database
-        const outletKey = device.outletName.replace(' ', '_')
+        const outletKey = device.outletName.replace(/\s+/g, '_').replace(/'/g, '')
         // const outletRef = ref(realtimeDb, `devices/${outletKey}`)
         
         // Update power limit and relay status
@@ -2057,7 +2057,7 @@ function CombinedLimitModal({
                 
                 // Check if any of the selected outlets have enable_power_scheduling = true
                 for (const outletName of existingData.selectedOutlets) {
-                  const outletKey = outletName.replace(' ', '_')
+                  const outletKey = outletName.replace(/\s+/g, '_').replace(/'/g, '')
                   const outletData = devicesData[outletKey]
                   
                   if (outletData?.office_info?.enable_power_scheduling === true) {
@@ -5202,7 +5202,7 @@ const checkDailyLimit = (deviceData: any): boolean => {
                 let totalCombinedPower = 0
                 
                 selectedOutlets.forEach((outletName: string) => {
-                  const outletKey = outletName.replace(' ', '_')
+                  const outletKey = outletName.replace(/\s+/g, '_').replace(/'/g, '')
                   const outletData = devicesData[outletKey]
                   
                   if (outletData) {
@@ -5682,8 +5682,8 @@ const checkDailyLimit = (deviceData: any): boolean => {
           
           // Turn OFF all devices that were removed from combined group
           for (const outletName of removedOutlets) {
-            // Handle both formats: "Outlet 1" and "Outlet_1"
-            const outletKey = outletName.includes(' ') ? outletName.replace(' ', '_') : outletName
+            // Handle both formats: "Outlet 1" and "Outlet_1" - replace ALL spaces/special chars
+            const outletKey = outletName.includes(' ') ? outletName.replace(/\s+/g, '_').replace(/'/g, '') : outletName
             
             console.log(`🔧 Processing removal: "${outletName}" -> "${outletKey}"`)
             
@@ -5719,7 +5719,7 @@ const checkDailyLimit = (deviceData: any): boolean => {
       // Update device control for all selected outlets
       console.log('Updating device control for selected outlets:', data.selectedOutlets)
       for (const outletName of data.selectedOutlets) {
-        const outletKey = outletName.replace(' ', '_')
+        const outletKey = outletName.replace(/\s+/g, '_').replace(/'/g, '')
         const controlRef = ref(realtimeDb, `devices/${outletKey}/control`)
         const statusRef = ref(realtimeDb, `devices/${outletKey}`)
         
@@ -5795,7 +5795,7 @@ const checkDailyLimit = (deviceData: any): boolean => {
         
         // Clear individual device schedule data
         for (const outletName of data.selectedOutlets) {
-          const outletKey = outletName.replace(' ', '_')
+          const outletKey = outletName.replace(/\s+/g, '_').replace(/'/g, '')
           
           try {
             // Clear schedule data
@@ -5823,7 +5823,7 @@ const checkDailyLimit = (deviceData: any): boolean => {
         // Enable scheduling if it's checked
         console.log('Enabling scheduling for selected outlets:', data.selectedOutlets)
         for (const outletName of data.selectedOutlets) {
-          const outletKey = outletName.replace(' ', '_')
+          const outletKey = outletName.replace(/\s+/g, '_').replace(/'/g, '')
           
           try {
             // Enable power scheduling flag
@@ -5860,7 +5860,7 @@ const checkDailyLimit = (deviceData: any): boolean => {
       setDeviceTimestamps(prev => {
         const newState = { ...prev }
         data.selectedOutlets.forEach(outletName => {
-          const outletKey = outletName.replace(' ', '_')
+          const outletKey = outletName.replace(/\s+/g, '_').replace(/'/g, '')
           delete newState[outletKey]
         })
         return newState
@@ -5996,7 +5996,7 @@ const checkDailyLimit = (deviceData: any): boolean => {
         const activeDevices: string[] = []
         
         selectedOutlets.forEach((outletName: string) => {
-          const outletKey = outletName.replace(' ', '_')
+          const outletKey = outletName.replace(/\s+/g, '_').replace(/'/g, '')
           const outletData = devicesData[outletKey]
           
           if (outletData) {

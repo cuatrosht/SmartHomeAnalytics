@@ -75,8 +75,8 @@ const calculateCombinedMonthlyEnergy = (devicesData: any, selectedOutlets: strin
       // Mark as processed
       processedOutlets.add(outletKey)
       
-      // Convert display format to Firebase format
-      const firebaseKey = outletKey.replace(' ', '_')
+      // Convert display format to Firebase format - replace ALL spaces/special chars
+      const firebaseKey = outletKey.replace(/\s+/g, '_').replace(/'/g, '')
       const outlet = devicesData[firebaseKey]
       
       console.log(`🔍 Processing outlet ${index + 1}/${selectedOutlets.length}: ${outletKey} -> ${firebaseKey}`)
@@ -176,6 +176,8 @@ const checkMonthlyLimitBeforeTurnOn = async (outletKey: string, combinedLimitInf
 const checkCombinedMonthlyLimit = async (devicesData: any, combinedLimitInfo: any) => {
   try {
     console.log('🔍 ActiveDevice: Monthly limit check - Input data:', {
+      combinedLimitInfo,
+      devicesDataKeys: Object.keys(devicesData || {}),
       enabled: combinedLimitInfo?.enabled,
       selectedOutlets: combinedLimitInfo?.selectedOutlets,
       combinedLimit: combinedLimitInfo?.combinedLimit
@@ -191,17 +193,13 @@ const checkCombinedMonthlyLimit = async (devicesData: any, combinedLimitInfo: an
     
     console.log('📊 ActiveDevice: Monthly limit check results:', {
       totalMonthlyEnergy: `${totalMonthlyEnergy.toFixed(3)}W`,
-      combinedLimitWatts: combinedLimitWatts === "No Limit" ? "No Limit" : `${combinedLimitWatts}W`,
+      combinedLimitWatts: `${combinedLimitWatts}W`,
       selectedOutlets: combinedLimitInfo.selectedOutlets,
-      exceedsLimit: totalMonthlyEnergy >= combinedLimitWatts
+      exceedsLimit: totalMonthlyEnergy >= combinedLimitWatts,
+      percentage: combinedLimitWatts > 0 ? `${((totalMonthlyEnergy / combinedLimitWatts) * 100).toFixed(1)}%` : 'N/A'
     })
     
-    // Skip limit check if "No Limit" is set
-    if (combinedLimitWatts === "No Limit") {
-      console.log('📊 ActiveDevice: Combined limit is set to "No Limit" - skipping monthly limit check')
-      return
-    }
-    
+    // If monthly energy exceeds or equals the combined limit, turn off all devices in the group
     if (totalMonthlyEnergy >= combinedLimitWatts) {
       console.log('🚨 ActiveDevice: MONTHLY LIMIT EXCEEDED!')
       console.log(`📊 Current: ${totalMonthlyEnergy.toFixed(3)}W >= Limit: ${combinedLimitWatts}W`)
@@ -210,9 +208,16 @@ const checkCombinedMonthlyLimit = async (devicesData: any, combinedLimitInfo: an
       // Turn off all devices in the combined limit group (respecting override/bypass mode)
       const turnOffPromises = combinedLimitInfo.selectedOutlets.map(async (outletKey: string) => {
         try {
-          // Convert display format to Firebase format
-          const firebaseKey = outletKey.replace(' ', '_')
+          // Convert display format to Firebase format - replace ALL spaces/special chars
+          const firebaseKey = outletKey.replace(/\s+/g, '_').replace(/'/g, '')
           const deviceData = devicesData[firebaseKey]
+          
+          console.log(`🔍 ActiveDevice: Processing ${outletKey} -> Firebase key: ${firebaseKey}`)
+          
+          if (!deviceData) {
+            console.error(`❌ ActiveDevice: Device ${firebaseKey} not found in Firebase!`)
+            return { outletKey, success: false, error: 'Device not found' }
+          }
           
           // RESPECT override/bypass mode - if main_status is 'ON', skip turning off (device is manually overridden)
           const currentMainStatus = deviceData?.relay_control?.main_status || 'ON'
@@ -224,12 +229,14 @@ const checkCombinedMonthlyLimit = async (devicesData: any, combinedLimitInfo: an
           // Turn off device control
           const controlRef = ref(realtimeDb, `devices/${firebaseKey}/control`)
           await update(controlRef, { device: 'off' })
+          console.log(`✅ ActiveDevice: Set control.device='off' for ${firebaseKey}`)
           
-          // Turn off main status to prevent immediate re-activation
-          const mainStatusRef = ref(realtimeDb, `devices/${firebaseKey}/relay_control`)
-          await update(mainStatusRef, { main_status: 'OFF' })
+          // Turn off status to prevent immediate re-activation
+          const statusRef = ref(realtimeDb, `devices/${firebaseKey}`)
+          await update(statusRef, { status: 'OFF' })
+          console.log(`✅ ActiveDevice: Set status='OFF' for ${firebaseKey}`)
           
-          console.log(`✅ ActiveDevice: TURNED OFF ${outletKey} (${firebaseKey}) due to monthly limit`)
+          console.log(`✅ ActiveDevice: COMPLETELY TURNED OFF ${outletKey} (${firebaseKey}) due to monthly limit`)
           
           return { outletKey, success: true }
         } catch (error) {
@@ -880,7 +887,7 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
 
   // Fetch history data when modal opens
   const fetchHistoryData = async (device: Device) => {
-    const outletKey = device.outletName.replace(' ', '_')
+    const outletKey = device.outletName.replace(/\s+/g, '_').replace(/'/g, '')
     const data = await calculateOutletCost(outletKey, timeSegment)
     setHistoryData(data)
   }
@@ -1295,6 +1302,21 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
         
         if (snapshot.exists()) {
           const devicesData = snapshot.val()
+          
+          // CRITICAL: Check monthly limit FIRST, then re-fetch fresh data
+          await checkCombinedMonthlyLimit(devicesData, combinedLimitInfo)
+          
+          // CRITICAL: Re-fetch device data AFTER monthly limit check
+          // The checkCombinedMonthlyLimit may have set status='OFF' in Firebase
+          // We need fresh data to respect those changes
+          const freshSnapshot = await get(devicesRef)
+          if (!freshSnapshot.exists()) {
+            console.log('ActiveDevice: No device data after monthly limit check')
+            return
+          }
+          const freshDevicesData = freshSnapshot.val()
+          console.log('🔄 ActiveDevice: Re-fetched device data after monthly limit enforcement')
+          
           const now = new Date()
           const currentTime = now.getHours() * 60 + now.getMinutes()
           const currentDay = now.getDay() // 0 = Sunday, 1 = Monday, etc.
@@ -1304,7 +1326,7 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
             currentDay: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][currentDay]
           })
           
-          for (const [outletKey, outletData] of Object.entries(devicesData)) {
+          for (const [outletKey, outletData] of Object.entries(freshDevicesData)) {
             const deviceData = outletData as FirebaseDeviceData
             
             // Only process devices with schedules and power scheduling enabled
@@ -1317,8 +1339,17 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
             if (deviceData.schedule && 
                 (deviceData.schedule.timeRange || deviceData.schedule.startTime)) {
               
+              // Read the device's root status field (set by monthly limit enforcement)
+              const currentStatus = deviceData.status || 'ON'
               const currentControlState = deviceData.control?.device || 'off'
               const currentMainStatus = deviceData.relay_control?.main_status || 'ON'
+              
+              // CRITICAL: Skip device if manually disabled or turned off by monthly limits
+              // This prevents the scheduler from re-activating devices that were just turned off
+              if (currentStatus === 'OFF') {
+                console.log(`⚠️ ActiveDevice: Skipping ${outletKey} - status='OFF' (manually disabled or monthly limit exceeded)`)
+                continue
+              }
               
               // RESPECT disabled_by_unplug - if schedule is disabled by unplug, don't enable it
               if (deviceData.schedule.disabled_by_unplug === true) {
@@ -1890,7 +1921,7 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
       setUpdatingDevices(prev => new Set(prev).add(deviceId))
       setLastToggleTrigger(currentTime)
 
-      const outletKey = device.outletName.replace(' ', '_')
+      const outletKey = device.outletName.replace(/\s+/g, '_').replace(/'/g, '')
       const currentControlState = device.controlState
       const currentMainStatus = device.mainStatus
       

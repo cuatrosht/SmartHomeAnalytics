@@ -4,6 +4,34 @@ import { realtimeDb } from '../firebase/config'
 import { logScheduleActivity } from '../utils/deviceLogging'
 import './Schedule.css'
 
+// Function to calculate monthly energy for a device
+const calculateMonthlyEnergy = (outlet: any): string => {
+  try {
+    const now = new Date()
+    const currentYear = now.getFullYear()
+    const currentMonth = now.getMonth() + 1
+    
+    // Get all days in the current month
+    const daysInMonth = new Date(currentYear, currentMonth, 0).getDate()
+    let totalMonthlyEnergy = 0
+    
+    // Sum up energy for all days in the current month
+    for (let day = 1; day <= daysInMonth; day++) {
+      const dateKey = `day_${currentYear}_${String(currentMonth).padStart(2, '0')}_${String(day).padStart(2, '0')}`
+      const dayData = outlet.daily_logs?.[dateKey]
+      if (dayData && dayData.total_energy) {
+        totalMonthlyEnergy += dayData.total_energy // Already in kW from database
+      }
+    }
+    
+    // Convert to watts and format
+    return `${formatNumber(totalMonthlyEnergy * 1000)} Wh`
+  } catch (error) {
+    console.error('Error calculating monthly energy:', error)
+    return '0.000 Wh'
+  }
+}
+
 // Function to calculate total monthly energy for combined limit group
 const calculateCombinedMonthlyEnergy = (devicesData: any, selectedOutlets: string[]): number => {
   try {
@@ -37,8 +65,8 @@ const calculateCombinedMonthlyEnergy = (devicesData: any, selectedOutlets: strin
       // Mark as processed
       processedOutlets.add(outletKey)
       
-      // Convert display format to Firebase format
-      const firebaseKey = outletKey.replace(' ', '_')
+      // Convert display format to Firebase format - replace ALL spaces/special chars
+      const firebaseKey = outletKey.replace(/\s+/g, '_').replace(/'/g, '')
       const outlet = devicesData[firebaseKey]
       
       console.log(`🔍 Processing outlet ${index + 1}/${selectedOutlets.length}: ${outletKey} -> ${firebaseKey}`)
@@ -116,31 +144,32 @@ const checkCombinedMonthlyLimit = async (devicesData: any, combinedLimitInfo: an
     const combinedLimitWatts = combinedLimitInfo.combinedLimit
     
     console.log('📊 Monthly limit check results:', {
-      totalMonthlyEnergy: `${formatNumber(totalMonthlyEnergy)}W`,
-      combinedLimitWatts: combinedLimitWatts === "No Limit" ? "No Limit" : `${combinedLimitWatts === "No Limit" ? "No Limit" : `${combinedLimitWatts}W`}`,
+      totalMonthlyEnergy: `${totalMonthlyEnergy.toFixed(3)}W`,
+      combinedLimitWatts: `${combinedLimitWatts}W`,
       selectedOutlets: combinedLimitInfo.selectedOutlets,
       exceedsLimit: totalMonthlyEnergy >= combinedLimitWatts,
-      percentage: (combinedLimitWatts !== "No Limit" && combinedLimitWatts > 0) ? `${((totalMonthlyEnergy / combinedLimitWatts) * 100).toFixed(1)}%` : 'N/A'
+      percentage: combinedLimitWatts > 0 ? `${((totalMonthlyEnergy / combinedLimitWatts) * 100).toFixed(1)}%` : 'N/A'
     })
     
     // If monthly energy exceeds or equals the combined limit, turn off all devices in the group
-    // Skip limit check if "No Limit" is set
-    if (combinedLimitWatts === "No Limit") {
-      console.log('📊 Combined limit is set to "No Limit" - skipping monthly limit check')
-      return
-    }
-    
     if (totalMonthlyEnergy >= combinedLimitWatts) {
       console.log('🚨 MONTHLY LIMIT EXCEEDED!')
-      console.log(`📊 Current: ${totalMonthlyEnergy.toFixed(3)}W >= Limit: ${combinedLimitWatts === "No Limit" ? "No Limit" : `${combinedLimitWatts}W`}`)
+      console.log(`📊 Current: ${totalMonthlyEnergy.toFixed(3)}W >= Limit: ${combinedLimitWatts}W`)
       console.log('🔒 TURNING OFF ALL DEVICES IN THE GROUP...')
       
       // Turn off all devices in the combined limit group (respecting override/bypass mode)
       const turnOffPromises = combinedLimitInfo.selectedOutlets.map(async (outletKey: string) => {
         try {
-          // Convert display format to Firebase format
-          const firebaseKey = outletKey.replace(' ', '_')
+          // Convert display format to Firebase format - replace ALL spaces/special chars
+          const firebaseKey = outletKey.replace(/\s+/g, '_').replace(/'/g, '')
           const deviceData = devicesData[firebaseKey]
+          
+          console.log(`🔍 Schedule: Processing ${outletKey} -> Firebase key: ${firebaseKey}`)
+          
+          if (!deviceData) {
+            console.error(`❌ Schedule: Device ${firebaseKey} not found in Firebase!`)
+            return { outletKey, success: false, error: 'Device not found' }
+          }
           
           // RESPECT override/bypass mode - if main_status is 'ON', skip turning off (device is manually overridden)
           const currentMainStatus = deviceData?.relay_control?.main_status || 'ON'
@@ -152,15 +181,14 @@ const checkCombinedMonthlyLimit = async (devicesData: any, combinedLimitInfo: an
           // Turn off device control
           const controlRef = ref(realtimeDb, `devices/${firebaseKey}/control`)
           await update(controlRef, { device: 'off' })
+          console.log(`✅ Schedule: Set control.device='off' for ${firebaseKey}`)
           
-          // Turn off main status to prevent immediate re-activation
-          const mainStatusRef = ref(realtimeDb, `devices/${firebaseKey}/relay_control`)
-          await update(mainStatusRef, { main_status: 'OFF' })
+          // Turn off status to prevent immediate re-activation
+          const statusRef = ref(realtimeDb, `devices/${firebaseKey}`)
+          await update(statusRef, { status: 'OFF' })
+          console.log(`✅ Schedule: Set status='OFF' for ${firebaseKey}`)
           
-          console.log(`✅ Schedule: TURNED OFF ${outletKey} (${firebaseKey}) due to monthly limit`)
-          
-          // Note: Automatic monthly limit enforcement is not logged to avoid cluttering device logs
-          
+          console.log(`✅ Schedule: COMPLETELY TURNED OFF ${outletKey} (${firebaseKey}) due to monthly limit`)
           return { outletKey, success: true }
         } catch (error) {
           console.error(`❌ Schedule: FAILED to turn off ${outletKey}:`, error)
@@ -177,10 +205,68 @@ const checkCombinedMonthlyLimit = async (devicesData: any, combinedLimitInfo: an
       console.log(`🔒 Schedule: MONTHLY LIMIT ENFORCEMENT COMPLETE: ${successCount} turned off, ${skippedCount} skipped (bypass mode), ${failCount} failed`)
     } else {
       console.log('✅ Monthly limit not exceeded - devices can remain active')
-      console.log(`📊 Current: ${totalMonthlyEnergy.toFixed(3)}W < Limit: ${combinedLimitWatts === "No Limit" ? "No Limit" : `${combinedLimitWatts}W`}`)
+      console.log(`📊 Current: ${totalMonthlyEnergy.toFixed(3)}W < Limit: ${combinedLimitWatts}W`)
     }
   } catch (error) {
     console.error('❌ Error checking combined monthly limit:', error)
+  }
+}
+
+// Function to remove a device from combined group when monthly limit is exceeded
+const removeDeviceFromCombinedGroup = async (outletKey: string): Promise<{
+  success: boolean;
+  reason?: string;
+}> => {
+  try {
+    console.log(`🔧 Attempting to remove ${outletKey} from combined group due to monthly limit exceeded`)
+    
+    // Get current combined limit settings
+    const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
+    const combinedLimitSnapshot = await get(combinedLimitRef)
+    
+    if (!combinedLimitSnapshot.exists()) {
+      return { success: false, reason: 'No combined limit settings found' }
+    }
+    
+    const combinedLimitData = combinedLimitSnapshot.val()
+    const currentSelectedOutlets = combinedLimitData.selected_outlets || []
+    
+    // Check if device is actually in the combined group
+    if (!currentSelectedOutlets.includes(outletKey)) {
+      return { success: false, reason: 'Device is not in combined group' }
+    }
+    
+    // Remove the device from the combined group
+    const updatedSelectedOutlets = currentSelectedOutlets.filter((outlet: string) => outlet !== outletKey)
+    
+    // Update the combined limit settings
+    await update(combinedLimitRef, {
+      ...combinedLimitData,
+      selected_outlets: updatedSelectedOutlets
+    })
+    
+    // IMPORTANT: When device is removed from combined group, turn it OFF
+    // This is because it's no longer protected by combined monthly limit
+    // and will now be subject to individual daily limits
+    try {
+      const deviceControlRef = ref(realtimeDb, `devices/${outletKey}/control`)
+      await update(deviceControlRef, { device: 'off' })
+      
+      // Also set status to OFF to prevent automatic turn-on
+      const deviceStatusRef = ref(realtimeDb, `devices/${outletKey}`)
+      await update(deviceStatusRef, { status: 'OFF' })
+      
+      console.log(`🔒 Schedule: Turned OFF ${outletKey} after removing from combined group (now subject to individual daily limits)`)
+    } catch (error) {
+      console.error(`❌ Error turning off device ${outletKey} after removal from combined group:`, error)
+    }
+    
+    console.log(`✅ Successfully removed ${outletKey} from combined group and turned it OFF. Remaining outlets: ${updatedSelectedOutlets.length}`)
+    
+    return { success: true, reason: `Device removed from combined group and turned OFF. Remaining outlets: ${updatedSelectedOutlets.length}` }
+  } catch (error) {
+    console.error('❌ Error removing device from combined group:', error)
+    return { success: false, reason: 'Failed to remove device from combined group' }
   }
 }
 
@@ -192,7 +278,7 @@ const checkMonthlyLimitBeforeTurnOn = async (outletKey: string, combinedLimitInf
   combinedLimit?: number;
 }> => {
   try {
-    if (!combinedLimitInfo?.enabled || !combinedLimitInfo?.selectedOutlets || combinedLimitInfo.selectedOutlets.length === 0) {
+    if (!combinedLimitInfo.enabled || combinedLimitInfo.selectedOutlets.length === 0) {
       return { canTurnOn: true }
     }
     
@@ -222,17 +308,6 @@ const checkMonthlyLimitBeforeTurnOn = async (outletKey: string, combinedLimitInf
     })
     
     // Check if turning ON this device would exceed the monthly limit
-    // Skip limit check if "No Limit" is set
-    if (combinedLimitWatts === "No Limit") {
-      console.log('📊 Combined limit is set to "No Limit" - allowing device to turn on')
-      return {
-        canTurnOn: true,
-        reason: 'No monthly limit set',
-        currentMonthlyEnergy: totalMonthlyEnergy,
-        combinedLimit: combinedLimitWatts
-      }
-    }
-    
     if (totalMonthlyEnergy >= combinedLimitWatts) {
       return {
         canTurnOn: false,
@@ -850,7 +925,7 @@ function EditScheduleModal({ isOpen, onClose, device, onSave, onLimitExceeded }:
       
       // Check limit before saving
       try {
-        const outletKey = device.outletName.replace(' ', '_')
+        const outletKey = device.outletName.replace(/\s+/g, '_').replace(/'/g, '')
         const deviceRef = ref(realtimeDb, `devices/${outletKey}`)
         const deviceSnapshot = await get(deviceRef)
         
@@ -873,43 +948,22 @@ function EditScheduleModal({ isOpen, onClose, device, onSave, onLimitExceeded }:
           const combinedLimitSnapshot = await get(combinedLimitRef)
           const combinedLimitData = combinedLimitSnapshot.exists() ? combinedLimitSnapshot.val() : null
           
-          const combinedLimitWh = combinedLimitData?.combinedLimit || 0
-          const hasValidCombinedLimit = combinedLimitData?.enabled && combinedLimitWh > 0
-          const isInCombinedGroup = hasValidCombinedLimit && 
-            (combinedLimitData?.selectedOutlets?.includes(deviceOutletName) || 
-             combinedLimitData?.selectedOutlets?.includes(deviceOutletNameWithSpace))
+          // Handle both property name formats: selected_outlets (snake_case) or selectedOutlets (camelCase)
+          const combinedLimitWh = combinedLimitData?.combinedLimit || combinedLimitData?.combined_limit_watts || 0
+          const hasValidCombinedLimit = combinedLimitData?.enabled && (typeof combinedLimitWh === 'number' ? combinedLimitWh > 0 : false)
+          const selectedOutletsFromLimit = combinedLimitData?.selected_outlets || combinedLimitData?.selectedOutlets || []
           
-          if (isInCombinedGroup) {
-            // Use combined limit ONLY if device is part of combined group
-            if (todayTotalEnergyWh >= combinedLimitWh) {
-              onLimitExceeded(
-                device.outletName,
-                'combined',
-                todayTotalEnergyWh,
-                combinedLimitWh,
-                timeRange
-              )
-              return
-            }
-          } else {
-            // IMPORTANT: If device is NOT in combined group, always use individual limit
-            // This handles cases where: no combined limit exists, combined limit disabled, or device not in group
-            const powerLimit = deviceData.relay_control?.auto_cutoff?.power_limit || 0
-            const powerLimitWh = powerLimit * 1000 // Convert from kW to Wh
-            
-            if (powerLimitWh > 0 && todayTotalEnergyWh >= powerLimitWh) {
-              onLimitExceeded(
-                device.outletName,
-                'individual',
-                todayTotalEnergyWh,
-                powerLimitWh,
-                timeRange
-              )
-              return
-            }
-          }
+          // Check if device is in combined group using normalized name comparison
+          const isInCombinedGroup = hasValidCombinedLimit && selectedOutletsFromLimit.some((outlet: string) => {
+            const normalizedDeviceName = deviceOutletName.replace(/_/g, ' ').toLowerCase().trim()
+            const normalizedOutletName = outlet.replace(/_/g, ' ').toLowerCase().trim()
+            return normalizedDeviceName === normalizedOutletName ||
+                   deviceOutletName === outlet ||
+                   deviceOutletNameWithSpace === outlet
+          })
           
-          // Check monthly limit if device is in combined group
+          // PRIORITY CHECK #1: Check monthly limit FIRST if device is in combined group
+          // If monthly limit is exceeded, stop here and don't save (leave inactive, don't update database)
           if (isInCombinedGroup && combinedLimitData) {
             const monthlyLimitCheck = await checkMonthlyLimitBeforeTurnOn(outletKey, combinedLimitData)
             if (!monthlyLimitCheck.canTurnOn) {
@@ -924,8 +978,39 @@ function EditScheduleModal({ isOpen, onClose, device, onSave, onLimitExceeded }:
                   monthlyLimitWatts,
                   timeRange
                 )
-                return
+                return // Stop here - don't save schedule, leave device inactive
               }
+            }
+          }
+          
+          // PRIORITY CHECK #2: Check daily limits only if monthly limit is OK or not applicable
+          if (isInCombinedGroup) {
+            // Use combined daily limit ONLY if device is part of combined group
+            if (todayTotalEnergyWh >= combinedLimitWh) {
+              onLimitExceeded(
+                device.outletName,
+                'combined',
+                todayTotalEnergyWh,
+                combinedLimitWh,
+                timeRange
+              )
+              return // Stop here - don't save schedule, leave device inactive
+            }
+          } else {
+            // IMPORTANT: If device is NOT in combined group, check individual daily limit
+            // This handles cases where: no combined limit exists, combined limit disabled, or device not in group
+            const powerLimit = deviceData.relay_control?.auto_cutoff?.power_limit || 0
+            const powerLimitWh = powerLimit * 1000 // Convert from kW to Wh
+            
+            if (powerLimitWh > 0 && todayTotalEnergyWh >= powerLimitWh) {
+              onLimitExceeded(
+                device.outletName,
+                'individual',
+                todayTotalEnergyWh,
+                powerLimitWh,
+                timeRange
+              )
+              return // Stop here - don't save schedule, leave device inactive
             }
           }
         }
@@ -1605,10 +1690,50 @@ function OutletSelectionModal({
             const exceedingOutlets: string[] = []
             let totalEnergyWh = 0
             
-            // Check if combined limit is enabled and has a valid value
-            const combinedLimitWh = combinedLimitData?.combinedLimit || 0
-            const hasValidCombinedLimit = combinedLimitData?.enabled && combinedLimitWh > 0
+            // Handle both property name formats: selected_outlets (snake_case) or selectedOutlets (camelCase)
+            const combinedLimitWh = combinedLimitData?.combinedLimit || combinedLimitData?.combined_limit_watts || 0
+            const hasValidCombinedLimit = combinedLimitData?.enabled && (typeof combinedLimitWh === 'number' ? combinedLimitWh > 0 : false)
+            const selectedOutletsFromLimit = combinedLimitData?.selected_outlets || combinedLimitData?.selectedOutlets || []
             
+            // PRIORITY CHECK #1: Check monthly limit FIRST for outlets in combined group
+            // If monthly limit is exceeded, stop here and don't save (leave inactive, don't update database)
+            if (hasValidCombinedLimit && combinedLimitData) {
+              const outletsInCombinedGroup = selectedOutlets.filter(outletKey => {
+                const outletName = outletKey.replace('_', ' ')
+                const normalizedOutletKey = outletKey.replace(/_/g, ' ').toLowerCase().trim()
+                return selectedOutletsFromLimit.some((limitOutlet: string) => {
+                  const normalizedLimitOutlet = limitOutlet.replace(/_/g, ' ').toLowerCase().trim()
+                  return normalizedOutletKey === normalizedLimitOutlet ||
+                         outletKey === limitOutlet ||
+                         outletName === limitOutlet
+                })
+              })
+              
+              if (outletsInCombinedGroup.length > 0) {
+                // Check monthly limit for the first outlet in combined group (they all share the same monthly limit)
+                const firstOutlet = outletsInCombinedGroup[0]
+                const monthlyLimitCheck = await checkMonthlyLimitBeforeTurnOn(firstOutlet, combinedLimitData)
+                
+                if (!monthlyLimitCheck.canTurnOn) {
+                  const totalMonthlyEnergy = monthlyLimitCheck.currentMonthlyEnergy || 0
+                  const monthlyLimitWatts = monthlyLimitCheck.combinedLimit
+                  
+                  if (typeof monthlyLimitWatts === 'number' && monthlyLimitWatts > 0) {
+                    const outletsInGroupNames = outletsInCombinedGroup.map(key => key.replace('_', ' '))
+                    onLimitExceeded(
+                      `${outletsInGroupNames.join(', ')}`,
+                      'monthly',
+                      totalMonthlyEnergy,
+                      monthlyLimitWatts,
+                      timeRange
+                    )
+                    return // Stop here - don't save schedule, leave devices inactive
+                  }
+                }
+              }
+            }
+            
+            // PRIORITY CHECK #2: Check daily limits only if monthly limit is OK or not applicable
             for (const outletKey of selectedOutlets) {
               const deviceData = devicesData[outletKey]
               if (deviceData) {
@@ -1619,17 +1744,21 @@ function OutletSelectionModal({
                 
                 let outletExceedsLimit = false
                 
-                // Check if this outlet is part of the combined group
+                // Check if this outlet is part of the combined group using normalized comparison
                 const outletName = outletKey.replace('_', ' ')
-                const isOutletInCombinedGroup = hasValidCombinedLimit && 
-                  (combinedLimitData?.selectedOutlets?.includes(outletKey) || 
-                   combinedLimitData?.selectedOutlets?.includes(outletName))
+                const isOutletInCombinedGroup = hasValidCombinedLimit && selectedOutletsFromLimit.some((limitOutlet: string) => {
+                  const normalizedOutletKey = outletKey.replace(/_/g, ' ').toLowerCase().trim()
+                  const normalizedLimitOutlet = limitOutlet.replace(/_/g, ' ').toLowerCase().trim()
+                  return normalizedOutletKey === normalizedLimitOutlet ||
+                         outletKey === limitOutlet ||
+                         outletName === limitOutlet
+                })
                 
                 if (isOutletInCombinedGroup) {
-                  // Use combined limit ONLY if outlet is part of combined group
+                  // Use combined daily limit ONLY if outlet is part of combined group
                   outletExceedsLimit = outletEnergyWh >= combinedLimitWh
                 } else {
-                  // IMPORTANT: If outlet is NOT in combined group, always use individual limit
+                  // IMPORTANT: If outlet is NOT in combined group, check individual daily limit
                   // This handles cases where: no combined limit exists, combined limit disabled, or outlet not in group
                   const individualPowerLimit = deviceData.relay_control?.auto_cutoff?.power_limit || 0
                   const individualPowerLimitWh = individualPowerLimit * 1000 // Convert from kW to Wh
@@ -1646,7 +1775,7 @@ function OutletSelectionModal({
               }
             }
             
-            // If any outlets exceed the limit, show warning for those specific outlets
+            // If any outlets exceed the daily limit, show warning for those specific outlets
             if (exceedingOutlets.length > 0) {
               const exceedingOutletsNames = exceedingOutlets.map(key => key.replace('_', ' '))
               
@@ -1658,9 +1787,13 @@ function OutletSelectionModal({
               if (exceedingOutlets.length > 0) {
                 const firstExceedingOutlet = exceedingOutlets[0]
                 const outletName = firstExceedingOutlet.replace('_', ' ')
-                const isOutletInCombinedGroup = hasValidCombinedLimit && 
-                  (combinedLimitData?.selectedOutlets?.includes(firstExceedingOutlet) || 
-                   combinedLimitData?.selectedOutlets?.includes(outletName))
+                const isOutletInCombinedGroup = hasValidCombinedLimit && selectedOutletsFromLimit.some((limitOutlet: string) => {
+                  const normalizedOutletKey = firstExceedingOutlet.replace(/_/g, ' ').toLowerCase().trim()
+                  const normalizedLimitOutlet = limitOutlet.replace(/_/g, ' ').toLowerCase().trim()
+                  return normalizedOutletKey === normalizedLimitOutlet ||
+                         firstExceedingOutlet === limitOutlet ||
+                         outletName === limitOutlet
+                })
                 
                 if (isOutletInCombinedGroup) {
                   limitType = 'combined'
@@ -1698,39 +1831,7 @@ function OutletSelectionModal({
                 // Continue with saving the non-exceeding outlets
                 await saveNonExceedingOutlets(outletsToSave, exceedingOutletsNames)
               }
-              return
-            }
-            
-            // Check monthly limit for outlets in combined group
-            if (hasValidCombinedLimit && combinedLimitData) {
-              const outletsInCombinedGroup = selectedOutlets.filter(outletKey => {
-                const outletName = outletKey.replace('_', ' ')
-                return combinedLimitData?.selectedOutlets?.includes(outletKey) || 
-                       combinedLimitData?.selectedOutlets?.includes(outletName)
-              })
-              
-              if (outletsInCombinedGroup.length > 0) {
-                // Check monthly limit for the first outlet in combined group (they all share the same monthly limit)
-                const firstOutlet = outletsInCombinedGroup[0]
-                const monthlyLimitCheck = await checkMonthlyLimitBeforeTurnOn(firstOutlet, combinedLimitData)
-                
-                if (!monthlyLimitCheck.canTurnOn) {
-                  const totalMonthlyEnergy = monthlyLimitCheck.currentMonthlyEnergy || 0
-                  const monthlyLimitWatts = monthlyLimitCheck.combinedLimit
-                  
-                  if (typeof monthlyLimitWatts === 'number' && monthlyLimitWatts > 0) {
-                    const outletsInGroupNames = outletsInCombinedGroup.map(key => key.replace('_', ' '))
-                    onLimitExceeded(
-                      `${outletsInGroupNames.join(', ')}`,
-                      'monthly',
-                      totalMonthlyEnergy,
-                      monthlyLimitWatts,
-                      timeRange
-                    )
-                    return
-                  }
-                }
-              }
+              return // Stop here - don't save schedule for exceeding outlets, leave them inactive
             }
           }
         }
@@ -2492,6 +2593,26 @@ export default function Schedule() {
         return false
       }
     }
+    
+    const checkCombinedDailyLimit = (deviceData: any, combinedLimitInfo: any): boolean => {
+      try {
+        if (!combinedLimitInfo?.enabled) return false
+        
+        const combinedLimitWatts = combinedLimitInfo.combinedLimit
+        if (!combinedLimitWatts || combinedLimitWatts === "No Limit" || combinedLimitWatts <= 0) return false
+        
+        const today = new Date()
+        const todayDateKey = `day_${today.getFullYear()}_${String(today.getMonth() + 1).padStart(2, '0')}_${String(today.getDate()).padStart(2, '0')}`
+        const todayLogs = deviceData?.daily_logs?.[todayDateKey]
+        const todayTotalEnergy = todayLogs?.total_energy || 0 // This is in kW
+        const todayTotalEnergyWh = todayTotalEnergy * 1000 // Convert to Wh
+        
+        return todayTotalEnergyWh >= combinedLimitWatts
+      } catch (error) {
+        console.error('Schedule: Error checking combined daily limit:', error)
+        return false
+      }
+    }
 
     const checkScheduleAndUpdateDevices = async () => {
       try {
@@ -2509,10 +2630,21 @@ export default function Schedule() {
           console.log('🔍 Schedule: Running monthly limit check FIRST...')
           await checkCombinedMonthlyLimit(devicesData, combinedLimitInfo)
           
+          // CRITICAL: Re-fetch device data AFTER monthly limit check
+          // The checkCombinedMonthlyLimit may have set status='OFF' in Firebase
+          // We need fresh data to respect those changes
+          const freshSnapshot = await get(devicesRef)
+          if (!freshSnapshot.exists()) {
+            console.log('Schedule: No device data after monthly limit check')
+            return
+          }
+          const freshDevicesData = freshSnapshot.val()
+          console.log('🔄 Schedule: Re-fetched device data after monthly limit enforcement')
+          
           // Check monthly limit status for combined group
           let monthlyLimitExceeded = false
           if (combinedLimitInfo?.enabled && combinedLimitInfo?.selectedOutlets?.length > 0) {
-            const totalMonthlyEnergy = calculateCombinedMonthlyEnergy(devicesData, combinedLimitInfo.selectedOutlets)
+            const totalMonthlyEnergy = calculateCombinedMonthlyEnergy(freshDevicesData, combinedLimitInfo.selectedOutlets)
             const combinedLimitWatts = combinedLimitInfo.combinedLimit
             
             // Skip limit check if "No Limit" is set
@@ -2530,7 +2662,7 @@ export default function Schedule() {
             }
           }
           
-          for (const [outletKey, outletData] of Object.entries(devicesData)) {
+          for (const [outletKey, outletData] of Object.entries(freshDevicesData)) {
             const deviceData = outletData as FirebaseDeviceData
             
             // Only process devices with schedules
@@ -2538,6 +2670,7 @@ export default function Schedule() {
                 (deviceData.schedule.timeRange || deviceData.schedule.startTime)) {
               
               const currentControlState = deviceData.control?.device || 'off'
+              const currentStatus = deviceData.status || 'ON'
               const currentMainStatus = deviceData.relay_control?.main_status || 'ON'
 
               // PRIMARY CHECK: RESPECT disabled_by_unplug from schedule - this is the BASIS for automatically turning devices off
@@ -2567,6 +2700,12 @@ export default function Schedule() {
                   })
                   console.log(`Schedule: Set main_status to OFF for unplugged device ${outletKey}`)
                 }
+                continue
+              }
+
+              // RESPECT manual override - if status is OFF, don't override it (device is manually disabled)
+              if (currentStatus === 'OFF') {
+                console.log(`Schedule: Device ${outletKey} has status = 'OFF' - respecting manual override, skipping schedule check`)
                 continue
               }
 
@@ -2624,63 +2763,58 @@ export default function Schedule() {
               const isInCombinedGroup = combinedLimitInfo?.enabled && 
                                        combinedLimitInfo?.selectedOutlets?.includes(outletDisplayName)
               
-              // HIERARCHY: Only check schedule if monthly and daily limits allow (THIRD priority)
-              // Check if device should be active based on current time and schedule
-              // Skip individual limit check if device is in combined group (combined limit takes precedence)
-              const shouldBeActive = isDeviceActiveBySchedule(deviceData.schedule, 'on', deviceData, isInCombinedGroup)
-              let newControlState = shouldBeActive ? 'on' : 'off'
+              // CRITICAL: Check limits FIRST before any schedule logic
+              // PRIORITY #1: Monthly limit check (for combined group devices)
+              // PRIORITY #2: Combined daily limit check (for combined group devices)
+              // PRIORITY #3: Individual daily limit check (for non-combined group devices)
               
+              let newControlState = 'off' // Default to OFF
+              let limitsExceeded = false
               
-              // AUTOMATIC STATUS UPDATE: Apply limit restrictions to the schedule result
-              if (isInCombinedGroup && monthlyLimitExceeded) {
-                // For devices in combined group when monthly limit is exceeded:
-                // Only allow ON if individual daily limit is OK
-                const isDailyLimitExceeded = checkDailyLimit(deviceData)
-                if (isDailyLimitExceeded) {
-                  newControlState = 'off' // Force OFF if daily limit exceeded
-                  console.log(`🔒 Schedule: AUTOMATIC UPDATE - Forcing ${outletKey} OFF due to individual daily limit exceeded (monthly limit also exceeded)`)
-                } else if (shouldBeActive) {
-                  newControlState = 'on' // Allow ON if schedule says ON and daily limit OK
-                  console.log(`✅ Schedule: AUTOMATIC UPDATE - Allowing ${outletKey} ON (schedule says ON, individual daily limit OK despite monthly limit exceeded)`)
-                }
-              } else if (isInCombinedGroup && !monthlyLimitExceeded) {
-                // For devices in combined group when monthly limit is OK:
-                // ONLY check monthly limit - DO NOT check individual daily limit
-                // The combined monthly limit takes precedence over individual limits
+              if (isInCombinedGroup) {
+                // For devices in combined group: Check monthly limit FIRST
                 const monthlyLimitCheck = await checkMonthlyLimitBeforeTurnOn(outletKey, combinedLimitInfo)
                 if (!monthlyLimitCheck.canTurnOn) {
-                  newControlState = 'off' // Force OFF if monthly limit exceeded
-                  console.log(`🔒 Schedule: AUTOMATIC UPDATE - Forcing ${outletKey} OFF due to monthly limit exceeded`)
-                } else if (shouldBeActive) {
-                  newControlState = 'on' // Allow ON if schedule says ON and monthly limit OK
-                  console.log(`✅ Schedule: AUTOMATIC UPDATE - Allowing ${outletKey} ON (schedule says ON, monthly limit OK - individual daily limit ignored for combined group)`)
+                  // CRITICAL: If monthly limit exceeded, FORCE OFF and skip schedule check entirely
+                  limitsExceeded = true
+                  newControlState = 'off'
+                  console.log(`🔒 Schedule: FORCING ${outletKey} OFF - MONTHLY LIMIT EXCEEDED - SKIPPING SCHEDULE CHECK`)
+                } else {
+                  // Monthly limit OK, now check combined daily limit
+                  const isDailyLimitExceeded = checkCombinedDailyLimit(deviceData, combinedLimitInfo)
+                  if (isDailyLimitExceeded) {
+                    limitsExceeded = true
+                    newControlState = 'off' // Force OFF if combined daily limit exceeded
+                    console.log(`🔒 Schedule: FORCING ${outletKey} OFF - COMBINED DAILY LIMIT EXCEEDED - SKIPPING SCHEDULE CHECK`)
+                  }
                 }
               } else {
-                // For devices NOT in combined group:
-                // Only check individual daily limit
+                // For devices NOT in combined group: Check individual daily limit
                 const isDailyLimitExceeded = checkDailyLimit(deviceData)
                 if (isDailyLimitExceeded) {
+                  limitsExceeded = true
                   newControlState = 'off' // Force OFF if daily limit exceeded
-                  console.log(`🔒 Schedule: AUTOMATIC UPDATE - Forcing ${outletKey} OFF due to daily limit exceeded`)
-                } else if (shouldBeActive) {
-                  newControlState = 'on' // Allow ON if schedule says ON and daily limit OK
-                  console.log(`✅ Schedule: AUTOMATIC UPDATE - Allowing ${outletKey} ON (schedule says ON, daily limit OK)`)
+                  console.log(`🔒 Schedule: FORCING ${outletKey} OFF - INDIVIDUAL DAILY LIMIT EXCEEDED - SKIPPING SCHEDULE CHECK`)
                 }
               }
               
+              // ONLY check schedule if limits are NOT exceeded
+              if (!limitsExceeded) {
+                const shouldBeActive = isDeviceActiveBySchedule(deviceData.schedule, 'on', deviceData, isInCombinedGroup)
+                newControlState = shouldBeActive ? 'on' : 'off'
+                console.log(`✅ Schedule: Limits OK for ${outletKey} - Schedule says: ${shouldBeActive ? 'ON' : 'OFF'}`)
+              }
               
-
               console.log(`Schedule: Final status determination for ${outletKey}:`, {
-                scheduleSays: shouldBeActive ? 'ON' : 'OFF',
+                limitsExceeded: limitsExceeded,
                 finalDecision: newControlState,
                 currentState: currentControlState,
                 needsUpdate: currentControlState !== newControlState,
-                isInCombinedGroup: isInCombinedGroup,
-                monthlyLimitExceeded: monthlyLimitExceeded
+                isInCombinedGroup: isInCombinedGroup
               })
               
               // Log exact time turn-off events
-              if (!shouldBeActive && deviceData.schedule && (deviceData.schedule.timeRange || (deviceData.schedule.startTime && deviceData.schedule.endTime))) {
+              if (newControlState === 'off' && deviceData.schedule && (deviceData.schedule.timeRange || (deviceData.schedule.startTime && deviceData.schedule.endTime))) {
                 const now = new Date()
                 const currentTime = now.getHours() * 60 + now.getMinutes()
                 let endTime: number = 0
@@ -2707,27 +2841,86 @@ export default function Schedule() {
                 }
               }
               
-              // AUTOMATIC STATUS UPDATE: Update device status based on final decision
+              // Only update if status needs to change
               if (currentControlState !== newControlState) {
-                console.log(`Schedule: AUTOMATIC UPDATE - ${outletKey} control state from ${currentControlState} to ${newControlState}`)
+                // FINAL SAFETY CHECK: Never turn ON a device if limits are exceeded
+                // Re-check limits before turning ON to prevent race conditions
+                if (newControlState === 'on') {
+                  console.log(`🔍 Schedule: FINAL SAFETY CHECK before turning ON ${outletKey}`)
+                  
+                  // Re-fetch latest device data
+                  const latestDeviceRef = ref(realtimeDb, `devices/${outletKey}`)
+                  const latestDeviceSnapshot = await get(latestDeviceRef)
+                  const latestDeviceData = latestDeviceSnapshot.val()
+                  
+                  // Check if device is disabled by unplug
+                  if (latestDeviceData?.schedule?.disabled_by_unplug === true) {
+                    console.log(`🔒 Schedule: FINAL SAFETY CHECK - Preventing turn ON for ${outletKey} - device is disabled by unplug`)
+                    // Force it to stay off
+                    await update(ref(realtimeDb, `devices/${outletKey}/control`), {
+                      device: 'off'
+                    })
+                    await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
+                      main_status: 'OFF'
+                    })
+                    continue
+                  }
+                  
+                  // Re-check limits one final time before allowing ON
+                  if (isInCombinedGroup) {
+                    const finalMonthlyCheck = await checkMonthlyLimitBeforeTurnOn(outletKey, combinedLimitInfo)
+                    if (!finalMonthlyCheck.canTurnOn) {
+                      console.log(`🔒 Schedule: FINAL SAFETY CHECK - Preventing turn ON for ${outletKey} - MONTHLY LIMIT EXCEEDED`)
+                      await update(ref(realtimeDb, `devices/${outletKey}/control`), {
+                        device: 'off'
+                      })
+                      await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
+                        main_status: 'OFF'
+                      })
+                      continue
+                    }
+                    
+                    const finalDailyCheck = checkCombinedDailyLimit(latestDeviceData, combinedLimitInfo)
+                    if (finalDailyCheck) {
+                      console.log(`🔒 Schedule: FINAL SAFETY CHECK - Preventing turn ON for ${outletKey} - COMBINED DAILY LIMIT EXCEEDED`)
+                      await update(ref(realtimeDb, `devices/${outletKey}/control`), {
+                        device: 'off'
+                      })
+                      await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
+                        main_status: 'OFF'
+                      })
+                      continue
+                    }
+                  } else {
+                    const finalDailyCheck = checkDailyLimit(latestDeviceData)
+                    if (finalDailyCheck) {
+                      console.log(`🔒 Schedule: FINAL SAFETY CHECK - Preventing turn ON for ${outletKey} - INDIVIDUAL DAILY LIMIT EXCEEDED`)
+                      await update(ref(realtimeDb, `devices/${outletKey}/control`), {
+                        device: 'off'
+                      })
+                      await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
+                        main_status: 'OFF'
+                      })
+                      continue
+                    }
+                  }
+                  
+                  console.log(`✅ Schedule: FINAL SAFETY CHECK PASSED for ${outletKey} - All limits OK, proceeding with turn ON`)
+                }
+                
+                console.log(`Schedule: Real-time update: ${outletKey} control state from ${currentControlState} to ${newControlState}`)
                 
                 await update(ref(realtimeDb, `devices/${outletKey}/control`), {
                   device: newControlState
                 })
                 
-                // CRITICAL: When turning OFF due to schedule expiration, set main_status to 'OFF' to prevent re-activation
+                // CRITICAL: When turning OFF, set main_status to 'OFF' to prevent re-activation
                 if (newControlState === 'off') {
                   await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
                     main_status: 'OFF'
                   })
-                  console.log(`🔒 Schedule: Set main_status to 'OFF' for ${outletKey} to prevent re-activation after schedule expiration`)
-                } else {
-                  console.log(`✅ Schedule: Device ${outletKey} turned ON by schedule - main_status unchanged`)
+                  console.log(`🔒 Schedule: Set main_status to 'OFF' for ${outletKey} to prevent re-activation`)
                 }
-                
-                console.log(`✅ Schedule: AUTOMATIC UPDATE COMPLETE - ${outletKey} updated to ${newControlState}`)
-                
-                // Note: Automatic system activities are not logged to avoid cluttering device logs
               } else {
                 console.log(`Schedule: No update needed for ${outletKey} - control state already ${currentControlState}`)
               }
@@ -3105,7 +3298,7 @@ export default function Schedule() {
       if (!device) return
       
       // Convert outlet name back to Firebase key format
-      const outletKey = device.outletName.replace(' ', '_')
+      const outletKey = device.outletName.replace(/\s+/g, '_').replace(/'/g, '')
       
       // Helper function to convert 12-hour time to 24-hour
       const convertTo24Hour = (time12h: string) => {
@@ -4542,7 +4735,7 @@ export default function Schedule() {
     console.log('\n🔍 SCHEDULE - Testing individual device limits in combined group...')
     
     for (const outletKey of combinedLimitInfo.selectedOutlets) {
-      const deviceData = devicesData[outletKey.replace(' ', '_')]
+      const deviceData = devicesData[outletKey.replace(/\s+/g, '_').replace(/'/g, '')]
       
       if (!deviceData) {
         console.log(`❌ SCHEDULE - Device ${outletKey} not found`)

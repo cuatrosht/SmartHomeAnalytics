@@ -37,8 +37,8 @@ const calculateCombinedMonthlyEnergy = (devicesData: any, selectedOutlets: strin
       // Mark as processed
       processedOutlets.add(outletKey)
       
-      // Convert display format to Firebase format
-      const firebaseKey = outletKey.replace(' ', '_')
+      // Convert display format to Firebase format - replace ALL spaces/special chars
+      const firebaseKey = outletKey.replace(/\s+/g, '_').replace(/'/g, '')
       const outlet = devicesData[firebaseKey]
       
       console.log(`🔍 Processing outlet ${index + 1}/${selectedOutlets.length}: ${outletKey} -> ${firebaseKey}`)
@@ -356,6 +356,21 @@ export default function SignUp({ onSuccess, onNavigateToLogin }: SignUpProps) {
         
         if (snapshot.exists()) {
           const devicesData = snapshot.val()
+          
+          // CRITICAL: Check monthly limit FIRST, then re-fetch fresh data
+          await checkMonthlyLimitAndTurnOffDevices()
+          
+          // CRITICAL: Re-fetch device data AFTER monthly limit check
+          // The monthly limit function may have set status='OFF' in Firebase
+          // We need fresh data to respect those changes
+          const freshSnapshot = await get(devicesRef)
+          if (!freshSnapshot.exists()) {
+            console.log('SignUp: No device data after initial fetch')
+            return
+          }
+          const freshDevicesData = freshSnapshot.val()
+          console.log('🔄 SignUp: Re-fetched device data to ensure fresh status')
+          
           const now = new Date()
           const currentTime = now.getHours() * 60 + now.getMinutes()
           const currentDay = now.getDay() // 0 = Sunday, 1 = Monday, etc.
@@ -365,7 +380,7 @@ export default function SignUp({ onSuccess, onNavigateToLogin }: SignUpProps) {
             currentDay: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][currentDay]
           })
           
-          for (const [outletKey, outletData] of Object.entries(devicesData)) {
+          for (const [outletKey, outletData] of Object.entries(freshDevicesData)) {
             const deviceData = outletData as any
             
             // Only process devices with schedules and power scheduling enabled
@@ -378,8 +393,17 @@ export default function SignUp({ onSuccess, onNavigateToLogin }: SignUpProps) {
             if (deviceData.schedule && 
                 (deviceData.schedule.timeRange || deviceData.schedule.startTime)) {
               
+              // Read the device's root status field (set by monthly limit enforcement)
+              const currentStatus = deviceData.status || 'ON'
               const currentControlState = deviceData.control?.device || 'off'
               const currentMainStatus = deviceData.relay_control?.main_status || 'ON'
+              
+              // CRITICAL: Skip device if manually disabled or turned off by monthly limits
+              // This prevents the scheduler from re-activating devices that were just turned off
+              if (currentStatus === 'OFF') {
+                console.log(`⚠️ SignUp: Skipping ${outletKey} - status='OFF' (manually disabled or monthly limit exceeded)`)
+                continue
+              }
               
               // RESPECT disabled_by_unplug - if schedule is disabled by unplug, don't enable it
               if (deviceData.schedule.disabled_by_unplug === true) {
@@ -598,7 +622,7 @@ export default function SignUp({ onSuccess, onNavigateToLogin }: SignUpProps) {
             let failCount = 0
             
             for (const outletKey of combinedLimitInfo.selectedOutlets) {
-              const firebaseKey = outletKey.replace(' ', '_')
+              const firebaseKey = outletKey.replace(/\s+/g, '_').replace(/'/g, '')
               const deviceData = devicesData[firebaseKey]
               
               try {

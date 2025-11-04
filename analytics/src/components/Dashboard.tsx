@@ -81,8 +81,8 @@ const calculateCombinedMonthlyEnergy = (devicesData: any, selectedOutlets: strin
       // Mark as processed
       processedOutlets.add(outletKey)
       
-      // Convert display format to Firebase format
-      const firebaseKey = outletKey.replace(' ', '_')
+      // Convert display format to Firebase format - replace ALL spaces/special chars
+      const firebaseKey = outletKey.replace(/\s+/g, '_').replace(/'/g, '')
       const outlet = devicesData[firebaseKey]
       
       console.log(`🔍 Processing outlet ${index + 1}/${selectedOutlets.length}: ${outletKey} -> ${firebaseKey}`)
@@ -1296,6 +1296,21 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
         
         if (snapshot.exists()) {
           const devicesData = snapshot.val()
+          
+          // CRITICAL: Check monthly limit FIRST, then re-fetch fresh data
+          await checkMonthlyLimitAndTurnOffDevices()
+          
+          // CRITICAL: Re-fetch device data AFTER monthly limit check
+          // The monthly limit function may have set status='OFF' in Firebase
+          // We need fresh data to respect those changes
+          const freshSnapshot = await get(devicesRef)
+          if (!freshSnapshot.exists()) {
+            console.log('Dashboard: No device data after initial fetch')
+            return
+          }
+          const freshDevicesData = freshSnapshot.val()
+          console.log('🔄 Dashboard: Re-fetched device data to ensure fresh status')
+          
           const now = new Date()
           const currentTime = now.getHours() * 60 + now.getMinutes()
           const currentDay = now.getDay() // 0 = Sunday, 1 = Monday, etc.
@@ -1305,7 +1320,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
             currentDay: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][currentDay]
           })
           
-          for (const [outletKey, outletData] of Object.entries(devicesData)) {
+          for (const [outletKey, outletData] of Object.entries(freshDevicesData)) {
             const deviceData = outletData as FirebaseDeviceData
             
             // Only process devices with schedules and power scheduling enabled
@@ -1318,8 +1333,17 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
             if (deviceData.schedule && 
                 (deviceData.schedule.timeRange || deviceData.schedule.startTime)) {
               
+              // Read the device's root status field (set by monthly limit enforcement)
+              const currentStatus = deviceData.status || 'ON'
               const currentControlState = deviceData.control?.device || 'off'
               const currentMainStatus = deviceData.relay_control?.main_status || 'ON'
+              
+              // CRITICAL: Skip device if manually disabled or turned off by monthly limits
+              // This prevents the scheduler from re-activating devices that were just turned off
+              if (currentStatus === 'OFF') {
+                console.log(`⚠️ Dashboard: Skipping ${outletKey} - status='OFF' (manually disabled or monthly limit exceeded)`)
+                continue
+              }
               
               // RESPECT disabled_by_unplug - if schedule is disabled by unplug, don't enable it
               if (deviceData.schedule.disabled_by_unplug === true) {
@@ -1512,7 +1536,14 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     // Monthly limit check for combined groups
     const checkMonthlyLimitAndTurnOffDevices = async () => {
       try {
+        console.log('🔍 Dashboard: Monthly limit check - Input data:', {
+          enabled: combinedLimitInfo?.enabled,
+          selectedOutlets: combinedLimitInfo?.selectedOutlets,
+          combinedLimit: combinedLimitInfo?.combinedLimit
+        })
+        
         if (!combinedLimitInfo?.enabled || combinedLimitInfo?.selectedOutlets?.length === 0) {
+          console.log('🚫 Dashboard: Monthly limit check skipped - not enabled or no outlets selected')
           return
         }
 
@@ -1525,12 +1556,20 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
           // Calculate total monthly energy for combined group
           const totalMonthlyEnergy = calculateCombinedMonthlyEnergy(devicesData, combinedLimitInfo.selectedOutlets)
           const combinedLimitWatts = combinedLimitInfo.combinedLimit
-          const combinedLimitkW = combinedLimitWatts / 1000 // Convert to kW
           
-          console.log(`Dashboard: Monthly limit check - Total: ${(totalMonthlyEnergy * 1000).toFixed(0)}W / Limit: ${combinedLimitWatts}W`)
+          console.log('📊 Dashboard: Monthly limit check results:', {
+            totalMonthlyEnergy: `${totalMonthlyEnergy.toFixed(3)}W`,
+            combinedLimitWatts: `${combinedLimitWatts}W`,
+            selectedOutlets: combinedLimitInfo.selectedOutlets,
+            exceedsLimit: totalMonthlyEnergy >= combinedLimitWatts,
+            percentage: combinedLimitWatts > 0 ? `${((totalMonthlyEnergy / combinedLimitWatts) * 100).toFixed(1)}%` : 'N/A'
+          })
           
-          if (totalMonthlyEnergy >= combinedLimitkW) {
-            console.log(`Dashboard: Monthly limit exceeded! Turning off all devices in combined group.`)
+          // If monthly energy exceeds or equals the combined limit, turn off all devices in the group
+          if (totalMonthlyEnergy >= combinedLimitWatts) {
+            console.log('🚨 Dashboard: MONTHLY LIMIT EXCEEDED!')
+            console.log(`📊 Current: ${totalMonthlyEnergy.toFixed(3)}W >= Limit: ${combinedLimitWatts}W`)
+            console.log('🔒 TURNING OFF ALL DEVICES IN THE GROUP...')
             
             // Turn off all devices in the combined group (respecting override/bypass mode)
             let successCount = 0
@@ -1538,8 +1577,16 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
             let failCount = 0
             
             for (const outletKey of combinedLimitInfo.selectedOutlets) {
-              const firebaseKey = outletKey.replace(' ', '_')
+              const firebaseKey = outletKey.replace(/\s+/g, '_').replace(/'/g, '')
               const deviceData = devicesData[firebaseKey]
+              
+              console.log(`🔍 Dashboard: Processing ${outletKey} -> Firebase key: ${firebaseKey}`)
+              
+              if (!deviceData) {
+                console.error(`❌ Dashboard: Device ${firebaseKey} not found in Firebase!`)
+                failCount++
+                continue
+              }
               
               try {
                 // RESPECT override/bypass mode - if main_status is 'ON', skip turning off (device is manually overridden)
@@ -1553,12 +1600,14 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                 // Turn off device control
                 const controlRef = ref(realtimeDb, `devices/${firebaseKey}/control`)
                 await update(controlRef, { device: 'off' })
+                console.log(`✅ Dashboard: Set control.device='off' for ${firebaseKey}`)
                 
-                // Turn off main status to prevent immediate re-activation
-                const mainStatusRef = ref(realtimeDb, `devices/${firebaseKey}/relay_control`)
-                await update(mainStatusRef, { main_status: 'OFF' })
+                // Turn off status to prevent immediate re-activation
+                const statusRef = ref(realtimeDb, `devices/${firebaseKey}`)
+                await update(statusRef, { status: 'OFF' })
+                console.log(`✅ Dashboard: Set status='OFF' for ${firebaseKey}`)
                 
-                console.log(`✅ Dashboard: TURNED OFF ${outletKey} (${firebaseKey}) due to monthly limit`)
+                console.log(`✅ Dashboard: COMPLETELY TURNED OFF ${outletKey} (${firebaseKey}) due to monthly limit`)
                 successCount++
               } catch (error) {
                 console.error(`❌ Dashboard: FAILED to turn off ${outletKey}:`, error)
@@ -1567,10 +1616,13 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
             }
             
             console.log(`🔒 Dashboard: MONTHLY LIMIT ENFORCEMENT COMPLETE: ${successCount} turned off, ${skippedCount} skipped (bypass mode), ${failCount} failed`)
+          } else {
+            console.log('✅ Dashboard: Monthly limit not exceeded - devices can remain active')
+            console.log(`📊 Current: ${totalMonthlyEnergy.toFixed(3)}W < Limit: ${combinedLimitWatts}W`)
           }
         }
       } catch (error) {
-        console.error('Dashboard: Error in monthly limit check:', error)
+        console.error('❌ Dashboard: Error checking combined monthly limit:', error)
       }
     }
 
