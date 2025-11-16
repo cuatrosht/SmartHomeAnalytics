@@ -1,7 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ref, onValue, off, update, remove, get } from 'firebase/database';
 import { realtimeDb } from '../firebase/config';
+import { logDeviceActivity } from '../utils/deviceLogging';
+import { auth } from '../firebase/config';
 import './UserManagment.css';
+
+// Helper function to get department-specific combined limit path
+const getDepartmentCombinedLimitPath = (department: string) => {
+  if (!department) return 'combined_limit_settings'
+  return `combined_limit_settings/${department}`
+}
 
 // Function to calculate total monthly energy for combined limit group
 const calculateCombinedMonthlyEnergy = (devicesData: any, selectedOutlets: string[]): number => {
@@ -173,9 +181,9 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [selectedOption, setSelectedOption] = useState(
     currentView === 'userLogs' ? 'UserLogs' : 
-    currentView === 'deviceLogs' ? 'Device Logs' : 
+    currentView === 'deviceLogs' ? 'User Activity' : 
     currentView === 'offices' ? 'Offices' :
-    'UserManagement'
+    'User & Management'
   );
   const [combinedLimitInfo, setCombinedLimitInfo] = useState<{
     enabled: boolean;
@@ -188,6 +196,14 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
     combinedLimit: 0,
     device_control: 'on'
   });
+  // Track all department combined limits
+  const [allDepartmentCombinedLimits, setAllDepartmentCombinedLimits] = useState<Record<string, {
+    enabled: boolean;
+    selectedOutlets: string[];
+    combinedLimit: number;
+    device_control?: string;
+    department?: string;
+  }>>({});
   const [offices, setOffices] = useState<Array<{id: string, department: string, office: string}>>([]);
   const [newOffice, setNewOffice] = useState({ department: '', office: '' });
   const [editOffice, setEditOffice] = useState({ id: '', department: '', office: '' });
@@ -195,6 +211,40 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
   const [existingDepartments, setExistingDepartments] = useState<string[]>([]);
   const [departmentDropdownOpen, setDepartmentDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const [currentElectricityRate, setCurrentElectricityRate] = useState<string>(''); // Current rate from database (for display)
+  const [electricityRate, setElectricityRate] = useState<string>(''); // Input field value (for editing)
+  const [electricityRateLoading, setElectricityRateLoading] = useState(false);
+  const [electricityRateSaving, setElectricityRateSaving] = useState(false);
+  const [electricityRateSuccessModal, setElectricityRateSuccessModal] = useState(false);
+
+  // Load electricity rate from database
+  useEffect(() => {
+    const electricityRateRef = ref(realtimeDb, 'settings/electricity_rate');
+    setElectricityRateLoading(true);
+    
+    const unsubscribe = onValue(electricityRateRef, (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.val();
+        const rateValue = data.rate ? data.rate.toString() : '';
+        setCurrentElectricityRate(rateValue); // Update display value from database
+        // Only update input field if it's empty (initial load)
+        if (!electricityRate) {
+          setElectricityRate(rateValue);
+        }
+      } else {
+        setCurrentElectricityRate('');
+        if (!electricityRate) {
+          setElectricityRate('');
+        }
+      }
+      setElectricityRateLoading(false);
+    }, (error) => {
+      console.error('Error loading electricity rate:', error);
+      setElectricityRateLoading(false);
+    });
+    
+    return () => off(electricityRateRef, 'value', unsubscribe);
+  }, []);
 
   useEffect(() => {
     const usersRef = ref(realtimeDb, 'users');
@@ -302,37 +352,184 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
                 continue
               }
               
-              // Check if device should be active based on current time and schedule
-              // Skip individual limit check if device is in combined group (combined limit takes precedence)
-              const outletDisplayName = outletKey.replace('_', ' ')
-              const isInCombinedGroup = combinedLimitInfo?.enabled && 
-                                       combinedLimitInfo?.selectedOutlets?.includes(outletDisplayName)
-              const shouldBeActive = isDeviceActiveBySchedule(deviceData.schedule, 'on', deviceData, isInCombinedGroup)
-              let newControlState = shouldBeActive ? 'on' : 'off'
+              // Check if device is in any department's combined group (normalize outlet names for comparison)
+              const normalizedOutletKey = outletKey.replace(/_/g, ' ').toLowerCase().trim()
               
-              // Additional individual daily limit checking for devices NOT in combined groups
-              if (!isInCombinedGroup && newControlState === 'on') {
-                // Check individual daily limit for devices not in combined groups
-                const powerLimit = deviceData.relay_control?.auto_cutoff?.power_limit || 0
-                if (powerLimit > 0) {
-                  const today = new Date()
-                  const todayDateKey = `day_${today.getFullYear()}_${String(today.getMonth() + 1).padStart(2, '0')}_${String(today.getDate()).padStart(2, '0')}`
-                  const todayLogs = deviceData?.daily_logs?.[todayDateKey]
-                  const todayTotalEnergy = todayLogs?.total_energy || 0 // This is in kW
+              // Find which department this device belongs to and if it's in that department's combined limit
+              let deviceDepartmentLimit: { department: string; limitInfo: any; device_control?: string } | null = null
+              
+              // First, get the device's department (from office_info, which may have department field)
+              const deviceDept = (deviceData.office_info as any)?.department
+              const deviceDeptKey = deviceDept ? deviceDept.toLowerCase().replace(/\s+/g, '-') : null
+              
+              // Check if device's department has combined limits and if device is included
+              if (deviceDeptKey && allDepartmentCombinedLimits[deviceDeptKey]) {
+                const deptLimitInfo = allDepartmentCombinedLimits[deviceDeptKey]
+                if (deptLimitInfo.enabled && deptLimitInfo.selectedOutlets) {
+                  const isInDeptLimit = deptLimitInfo.selectedOutlets.some((selectedOutlet: string) => {
+                    const normalizedSelected = selectedOutlet.replace(/_/g, ' ').toLowerCase().trim()
+                    return normalizedSelected === normalizedOutletKey || 
+                           selectedOutlet === outletKey ||
+                           selectedOutlet.replace(/_/g, ' ') === outletKey.replace(/_/g, ' ')
+                  })
                   
-                  if (todayTotalEnergy >= powerLimit) {
-                    newControlState = 'off' // Force OFF if daily limit exceeded
-                    console.log(`🔒 UserManagement: AUTOMATIC UPDATE - Forcing ${outletKey} OFF due to individual daily limit exceeded (${(todayTotalEnergy * 1000).toFixed(3)}W >= ${(powerLimit * 1000)}W)`)
+                  if (isInDeptLimit) {
+                    // Get the department's device_control from database
+                    const deptPath = getDepartmentCombinedLimitPath(deviceDeptKey)
+                    const deptRef = ref(realtimeDb, deptPath)
+                    const deptSnapshot = await get(deptRef)
+                    const deptDeviceControl = deptSnapshot.exists() ? deptSnapshot.val()?.device_control : 'on'
+                    
+                    deviceDepartmentLimit = {
+                      department: deviceDeptKey,
+                      limitInfo: deptLimitInfo,
+                      device_control: deptDeviceControl
+                    }
                   }
                 }
               }
               
-              console.log(`UserManagement: Schedule check for ${outletKey}:`, {
-                currentControlState,
-                shouldBeActive,
-                newControlState,
+              // Fallback: Check all departments if device department not found (backward compatibility)
+              if (!deviceDepartmentLimit) {
+                for (const [deptKey, deptLimitInfo] of Object.entries(allDepartmentCombinedLimits)) {
+                  const typedDeptLimitInfo = deptLimitInfo as {
+                    enabled: boolean;
+                    selectedOutlets: string[];
+                    combinedLimit: number;
+                    device_control?: string;
+                    department?: string;
+                  }
+                  
+                  if (typedDeptLimitInfo.enabled && typedDeptLimitInfo.selectedOutlets) {
+                    const isInDeptLimit = typedDeptLimitInfo.selectedOutlets.some((selectedOutlet: string) => {
+                      const normalizedSelected = selectedOutlet.replace(/_/g, ' ').toLowerCase().trim()
+                      return normalizedSelected === normalizedOutletKey || 
+                             selectedOutlet === outletKey ||
+                             selectedOutlet.replace(/_/g, ' ') === outletKey.replace(/_/g, ' ')
+                    })
+                    
+                    if (isInDeptLimit) {
+                      // Get the department's device_control from database
+                      const deptPath = getDepartmentCombinedLimitPath(deptKey)
+                      const deptRef = ref(realtimeDb, deptPath)
+                      const deptSnapshot = await get(deptRef)
+                      const deptDeviceControl = deptSnapshot.exists() ? deptSnapshot.val()?.device_control : 'on'
+                      
+                      deviceDepartmentLimit = {
+                        department: deptKey,
+                        limitInfo: typedDeptLimitInfo,
+                        device_control: deptDeviceControl
+                      }
+                      break
+                    }
+                  }
+                }
+              }
+              
+              // Check if device is in old combined limit structure (backward compatibility)
+              const outletDisplayName = outletKey.replace('_', ' ')
+              const isInOldCombinedGroup = combinedLimitInfo?.enabled && 
+                                         combinedLimitInfo?.selectedOutlets?.some((selectedOutlet: string) => {
+                                           const normalizedSelected = selectedOutlet.replace(/_/g, ' ').toLowerCase().trim()
+                                           return normalizedSelected === normalizedOutletKey || 
+                                                  selectedOutlet === outletKey ||
+                                                  selectedOutlet.replace(/_/g, ' ') === outletKey.replace(/_/g, ' ')
+                                         })
+              
+              const isInCombinedGroup = !!deviceDepartmentLimit || isInOldCombinedGroup
+              
+              // CRITICAL: Check limits FIRST before any schedule logic
+              // PRIORITY #1: Monthly limit check (for combined group devices)
+              // PRIORITY #2: Combined monthly limit check (for combined group devices)
+              // PRIORITY #3: Individual monthly limit check (for non-combined group devices)
+              
+              // CRITICAL: Initialize newControlState to current state from database, not 'off'
+              // This prevents devices from being turned off by default before schedule/limit checks
+              // If a device is idle (control='on'), it should stay 'on' unless schedule/limits say otherwise
+              let newControlState = currentControlState // Start with current state from database
+              let limitsExceeded = false
+              
+              if (isInCombinedGroup && deviceDepartmentLimit) {
+                // For devices in department-based combined group: Check monthly limit FIRST
+                const totalMonthlyEnergy = calculateCombinedMonthlyEnergy(devicesData, deviceDepartmentLimit.limitInfo.selectedOutlets)
+                const combinedLimitWatts = deviceDepartmentLimit.limitInfo.combinedLimit
+                const combinedLimitkW = combinedLimitWatts / 1000 // Convert to kW
+                
+                if (totalMonthlyEnergy >= combinedLimitkW) {
+                  // CRITICAL: If monthly limit exceeded, FORCE OFF and skip schedule check entirely
+                  limitsExceeded = true
+                  newControlState = 'off'
+                  console.log(`🔒 UserManagement: FORCING ${outletKey} OFF - MONTHLY LIMIT EXCEEDED for department ${deviceDepartmentLimit.department} - SKIPPING SCHEDULE CHECK`)
+                  
+                  // CRITICAL: Always update device control to 'off' when monthly limit is exceeded
+                  // This ensures devices are automatically turned off even if they're already on
+                  await update(ref(realtimeDb, `devices/${outletKey}/control`), {
+                    device: 'off'
+                  })
+                  await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
+                    main_status: 'OFF'
+                  })
+                  console.log(`🔒 UserManagement: Enforced device_control='off' for ${outletKey} due to monthly limit exceeded in department ${deviceDepartmentLimit.department}`)
+                }
+              } else if (isInOldCombinedGroup && combinedLimitInfo?.enabled) {
+                // For devices in old combined limit structure (backward compatibility): Check old combined limits
+                const totalMonthlyEnergy = calculateCombinedMonthlyEnergy(devicesData, combinedLimitInfo.selectedOutlets)
+                const combinedLimitWatts = combinedLimitInfo.combinedLimit
+                const combinedLimitkW = combinedLimitWatts / 1000 // Convert to kW
+                
+                if (totalMonthlyEnergy >= combinedLimitkW) {
+                  limitsExceeded = true
+                  newControlState = 'off'
+                  console.log(`🔒 UserManagement: FORCING ${outletKey} OFF - OLD COMBINED MONTHLY LIMIT EXCEEDED - SKIPPING SCHEDULE CHECK`)
+                }
+              } else if (!isInCombinedGroup) {
+                // CRITICAL: Only check individual monthly limit if device is NOT in any combined group
+                // This ensures devices in department-based or old combined limits skip individual limit checks
+                const powerLimit = deviceData.relay_control?.auto_cutoff?.power_limit || 0
+                if (powerLimit > 0) {
+                  const now = new Date()
+                  const currentYear = now.getFullYear()
+                  const currentMonth = now.getMonth() + 1
+                  const daysInMonth = new Date(currentYear, currentMonth, 0).getDate()
+                  let totalMonthlyEnergy = 0
+                  
+                  for (let day = 1; day <= daysInMonth; day++) {
+                    const dateKey = `day_${currentYear}_${String(currentMonth).padStart(2, '0')}_${String(day).padStart(2, '0')}`
+                    const dayData = deviceData.daily_logs?.[dateKey]
+                    if (dayData && dayData.total_energy) {
+                      totalMonthlyEnergy += dayData.total_energy
+                    }
+                  }
+                  
+                  if (totalMonthlyEnergy >= powerLimit) {
+                    limitsExceeded = true
+                    newControlState = 'off' // Force OFF if monthly limit exceeded
+                    console.log(`🔒 UserManagement: FORCING ${outletKey} OFF - INDIVIDUAL MONTHLY LIMIT EXCEEDED - SKIPPING SCHEDULE CHECK`)
+                  }
+                }
+              } else {
+                // Device is in combined group but detection failed - log warning and skip individual check
+                console.log(`⚠️ UserManagement: Device ${outletKey} detection issue - isInCombinedGroup=${isInCombinedGroup}, deviceDepartmentLimit=${!!deviceDepartmentLimit}, isInOldCombinedGroup=${isInOldCombinedGroup} - SKIPPING INDIVIDUAL LIMIT CHECK`)
+              }
+              
+              // ONLY check schedule if limits are NOT exceeded
+              // IMPORTANT: Each device is processed independently - unplugged devices don't block others
+              if (!limitsExceeded) {
+                // CRITICAL: Pass currentControlState instead of 'on' so that isDeviceActiveBySchedule
+                // can use it as fallback if schedule parsing fails, preserving current state
+                const shouldBeActive = isDeviceActiveBySchedule(deviceData.schedule, currentControlState, deviceData, isInCombinedGroup)
+                // Only update newControlState if schedule check determines a change is needed
+                // If schedule says it should be active, set to 'on', otherwise set to 'off'
+                newControlState = shouldBeActive ? 'on' : 'off'
+                console.log(`✅ UserManagement: Limits OK for ${outletKey} - Current state: ${currentControlState}, Schedule says: ${shouldBeActive ? 'ON' : 'OFF'}, New state: ${newControlState}`)
+              }
+              
+              console.log(`UserManagement: Final status determination for ${outletKey}:`, {
+                limitsExceeded: limitsExceeded,
+                finalDecision: newControlState,
+                currentState: currentControlState,
                 needsUpdate: currentControlState !== newControlState,
-                isInCombinedGroup
+                isInCombinedGroup: isInCombinedGroup
               })
               
               // Only update if status needs to change
@@ -385,7 +582,7 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
             const isInCombinedGroup = combinedLimitInfo?.enabled && 
                                      combinedLimitInfo?.selectedOutlets?.includes(outletDisplayName)
             
-            // Only check individual daily limit if device is NOT in combined group
+            // Only check individual monthly limit if device is NOT in combined group
             // For devices in combined groups, the monthly limit check handles the power limit enforcement
             if (!isInCombinedGroup) {
               console.log(`UserManagement: Device ${outletKey} main status is ${currentMainStatus} - checking individual power limits`)
@@ -394,24 +591,33 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
               const powerLimit = deviceData.relay_control?.auto_cutoff?.power_limit || 0
               
               if (powerLimit > 0) {
-                // Get today's total energy consumption from daily_logs
-                const today = new Date()
-                const todayDateKey = `day_${today.getFullYear()}_${String(today.getMonth() + 1).padStart(2, '0')}_${String(today.getDate()).padStart(2, '0')}`
-                const todayLogs = deviceData?.daily_logs?.[todayDateKey]
-                const todayTotalEnergy = todayLogs?.total_energy || 0 // This is in kW
+                // Calculate monthly total energy consumption from daily_logs
+                const now = new Date()
+                const currentYear = now.getFullYear()
+                const currentMonth = now.getMonth() + 1
+                const daysInMonth = new Date(currentYear, currentMonth, 0).getDate()
+                let totalMonthlyEnergy = 0
+                
+                for (let day = 1; day <= daysInMonth; day++) {
+                  const dateKey = `day_${currentYear}_${String(currentMonth).padStart(2, '0')}_${String(day).padStart(2, '0')}`
+                  const dayData = deviceData.daily_logs?.[dateKey]
+                  if (dayData && dayData.total_energy) {
+                    totalMonthlyEnergy += dayData.total_energy
+                  }
+                }
                 
                 console.log(`UserManagement: Power limit check for ${outletKey}:`, {
                   powerLimit: `${(powerLimit * 1000)}W`,
-                  todayTotalEnergy: `${(todayTotalEnergy * 1000)}W`,
-                  todayDateKey: todayDateKey,
-                  exceedsLimit: todayTotalEnergy >= powerLimit,
+                  totalMonthlyEnergy: `${(totalMonthlyEnergy * 1000)}W`,
+                  currentMonth: `${currentYear}-${String(currentMonth).padStart(2, '0')}`,
+                  exceedsLimit: totalMonthlyEnergy >= powerLimit,
                   currentControlState: currentControlState,
                   isInCombinedGroup: isInCombinedGroup
                 })
                 
-                // If today's energy exceeds power limit, turn off the device
-                if (todayTotalEnergy >= powerLimit) {
-                  console.log(`UserManagement: POWER LIMIT EXCEEDED - Turning OFF ${outletKey} (${(todayTotalEnergy * 1000).toFixed(3)}W >= ${(powerLimit * 1000)}W)`)
+                // If monthly energy exceeds power limit, turn off the device
+                if (totalMonthlyEnergy >= powerLimit) {
+                  console.log(`UserManagement: POWER LIMIT EXCEEDED - Turning OFF ${outletKey} (${(totalMonthlyEnergy * 1000).toFixed(3)}W >= ${(powerLimit * 1000)}W)`)
                   
                   await update(ref(realtimeDb, `devices/${outletKey}/control`), {
                     device: 'off'
@@ -521,12 +727,18 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
             
             // CRITICAL: Set combined_limit_settings/device_control to "off" to prevent devices from turning back ON
             const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
-            await update(combinedLimitRef, {
-              device_control: 'off',
-              last_enforcement: new Date().toISOString(),
-              enforcement_reason: 'Monthly limit exceeded'
-            })
-            console.log(`🔒 UserManagement: Set combined_limit_settings/device_control='off' to prevent re-activation`)
+            const currentSettings = await get(combinedLimitRef)
+            const currentDeviceControl = currentSettings.val()?.device_control
+            
+            // Only update if device_control is not already 'off' (avoid unnecessary writes)
+            if (currentDeviceControl !== 'off') {
+              await update(combinedLimitRef, {
+                device_control: 'off',
+                last_enforcement: new Date().toISOString(),
+                enforcement_reason: 'Monthly limit exceeded'
+              })
+              console.log(`🔒 UserManagement: Set combined_limit_settings/device_control='off' to prevent re-activation`)
+            }
             
             console.log(`🔒 UserManagement: MONTHLY LIMIT ENFORCEMENT COMPLETE: ${successCount} turned off, ${skippedCount} skipped (bypass mode), ${failCount} failed`)
           } else {
@@ -534,11 +746,18 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
             
             // Set combined_limit_settings/device_control to "on" to allow devices to turn ON
             const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
-            await update(combinedLimitRef, {
-              device_control: 'on',
-              enforcement_reason: ''
-            })
-            console.log(`✅ UserManagement: Set combined_limit_settings/device_control='on' (limit not exceeded)`)
+            const currentSettings = await get(combinedLimitRef)
+            const currentDeviceControl = currentSettings.val()?.device_control
+            const currentEnforcementReason = currentSettings.val()?.enforcement_reason
+            
+            // Only update if device_control is not already 'on' or enforcement_reason is not empty (avoid unnecessary writes)
+            if (currentDeviceControl !== 'on' || currentEnforcementReason !== '') {
+              await update(combinedLimitRef, {
+                device_control: 'on',
+                enforcement_reason: ''
+              })
+              console.log(`✅ UserManagement: Set combined_limit_settings/device_control='on' (limit not exceeded)`)
+            }
           }
         }
       } catch (error) {
@@ -546,14 +765,13 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
       }
     }
 
-    // Re-enable schedule checking with bypass support
-    checkScheduleAndUpdateDevices()
-    
-    // Run power limit check
-    checkPowerLimitsAndTurnOffDevices()
-    
-    // Run monthly limit check
-    checkMonthlyLimitAndTurnOffDevices()
+    // CRITICAL: Add a small delay before first run to ensure database state is fully loaded
+    // This prevents devices from being incorrectly turned off when navigating to UserManagement.tsx
+    const initialDelay = setTimeout(() => {
+      checkScheduleAndUpdateDevices()
+      checkPowerLimitsAndTurnOffDevices()
+      checkMonthlyLimitAndTurnOffDevices()
+    }, 500) // 500ms delay to ensure database state is ready
     
     // Add manual test function for debugging
     ;(window as any).testUserManagementSchedule = checkScheduleAndUpdateDevices
@@ -572,16 +790,17 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
     
     // Set up intervals for automatic checking
     const scheduleInterval = setInterval(checkScheduleAndUpdateDevices, 10000) // 10 seconds (more frequent for short schedules)
-    const powerLimitInterval = setInterval(checkPowerLimitsAndTurnOffDevices, 30000) // 30 seconds (more frequent for power limits)
-    const monthlyLimitInterval = setInterval(checkMonthlyLimitAndTurnOffDevices, 60000) // 1 minute for monthly limit check
+    const powerLimitInterval = setInterval(checkPowerLimitsAndTurnOffDevices, 12000) // 12 seconds (more frequent for power limits)
+    const monthlyLimitInterval = setInterval(checkMonthlyLimitAndTurnOffDevices, 10000) // 10 seconds for monthly limit check
     
-    // Cleanup intervals on unmount
+    // Cleanup intervals and initial delay on unmount
     return () => {
+      clearTimeout(initialDelay)
       clearInterval(scheduleInterval)
       clearInterval(powerLimitInterval)
       clearInterval(monthlyLimitInterval)
     }
-  }, []);
+  }, [allDepartmentCombinedLimits]);
 
   // Fetch user logs data
   useEffect(() => {
@@ -667,30 +886,77 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
     if (currentView === 'userLogs') {
       setSelectedOption('UserLogs');
     } else if (currentView === 'deviceLogs') {
-      setSelectedOption('Device Logs');
+      setSelectedOption('User Activity');
     } else if (currentView === 'offices') {
       setSelectedOption('Offices');
     } else if (currentView === 'users') {
-      setSelectedOption('UserManagement');
+      setSelectedOption('User & Management');
     }
   }, [currentView]);
 
-  // Real-time listener for combined limit info
+  // Real-time listener for combined limit info - listens to all departments
   useEffect(() => {
     const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
     
-    // Set up real-time listener
+    // Set up real-time listener for all departments
     const unsubscribe = onValue(combinedLimitRef, (snapshot) => {
       if (snapshot.exists()) {
-        const data = snapshot.val()
-        console.log('UserManagement: Real-time update - combined limit data:', data)
-        setCombinedLimitInfo({
-          enabled: data.enabled || false,
-          selectedOutlets: data.selected_outlets || [],
-          combinedLimit: data.combined_limit_watts || 0,
-          device_control: data.device_control || 'on'
-        })
+        const allDepartmentsData = snapshot.val()
+        console.log('UserManagement: Real-time update - all departments combined limit data:', allDepartmentsData)
+        
+        // Store all department combined limits
+        const departmentLimitsMap: Record<string, {
+          enabled: boolean;
+          selectedOutlets: string[];
+          combinedLimit: number;
+          device_control?: string;
+          department?: string;
+        }> = {}
+        
+        const departmentKeys = Object.keys(allDepartmentsData)
+        for (const deptKey of departmentKeys) {
+          const deptData = allDepartmentsData[deptKey]
+          if (deptData) {
+            departmentLimitsMap[deptKey] = {
+              enabled: deptData.enabled || false,
+              selectedOutlets: deptData.selected_outlets || [],
+              combinedLimit: deptData.combined_limit_watts || 0,
+              device_control: deptData.device_control || 'on',
+              department: deptKey
+            }
+          }
+        }
+        
+        setAllDepartmentCombinedLimits(departmentLimitsMap)
+        
+        // Find the first enabled department for backward compatibility
+        let foundData = null
+        for (const deptKey of departmentKeys) {
+          const deptData = allDepartmentsData[deptKey]
+          if (deptData && deptData.enabled) {
+            foundData = { ...deptData, department: deptKey }
+            break
+          }
+        }
+        
+        if (foundData) {
+          setCombinedLimitInfo({
+            enabled: foundData.enabled || false,
+            selectedOutlets: foundData.selected_outlets || [],
+            combinedLimit: foundData.combined_limit_watts !== undefined ? foundData.combined_limit_watts : 0,
+            device_control: foundData.device_control || 'on'
+          })
+        } else {
+          setCombinedLimitInfo({
+            enabled: false,
+            selectedOutlets: [],
+            combinedLimit: 0,
+            device_control: 'on'
+          })
+        }
       } else {
+        console.log('UserManagement: No combined limit settings found')
+        setAllDepartmentCombinedLimits({})
         setCombinedLimitInfo({
           enabled: false,
           selectedOutlets: [],
@@ -700,6 +966,7 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
       }
     }, (error) => {
       console.error('UserManagement: Error listening to combined limit info:', error)
+      setAllDepartmentCombinedLimits({})
       setCombinedLimitInfo({
         enabled: false,
         selectedOutlets: [],
@@ -855,34 +1122,82 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
     // Parse schedule time range
     let startTime: number, endTime: number
     
-    if (schedule.startTime && schedule.endTime) {
-      // Use startTime and endTime from database (24-hour format)
-      const [startHours, startMinutes] = schedule.startTime.split(':').map(Number)
-      const [endHours, endMinutes] = schedule.endTime.split(':').map(Number)
-      startTime = startHours * 60 + startMinutes
-      endTime = endHours * 60 + endMinutes
-    } else if (schedule.timeRange) {
-      // Parse timeRange format (e.g., "8:36 PM - 8:40 PM")
-      const timeRange = schedule.timeRange
-      const [startTimeStr, endTimeStr] = timeRange.split(' - ')
-      
-      // Convert 12-hour format to 24-hour format
-      const convertTo24Hour = (time12h: string): number => {
-        const [time, modifier] = time12h.split(' ')
-        let [hours, minutes] = time.split(':').map(Number)
+    if (schedule.startTime && schedule.endTime && 
+        typeof schedule.startTime === 'string' && typeof schedule.endTime === 'string') {
+      try {
+        // Use startTime and endTime from database (24-hour format)
+        const [startHours, startMinutes] = schedule.startTime.split(':').map(Number)
+        const [endHours, endMinutes] = schedule.endTime.split(':').map(Number)
         
-        if (hours === 12) {
-          hours = 0
-        }
-        if (modifier === 'PM') {
-          hours += 12
+        // Validate parsed values
+        if (isNaN(startHours) || isNaN(startMinutes) || isNaN(endHours) || isNaN(endMinutes)) {
+          return controlState === 'on'
         }
         
-        return hours * 60 + minutes
+        startTime = startHours * 60 + startMinutes
+        endTime = endHours * 60 + endMinutes
+      } catch (error) {
+        // If parsing fails, return current control state
+        return controlState === 'on'
       }
-      
-      startTime = convertTo24Hour(startTimeStr)
-      endTime = convertTo24Hour(endTimeStr)
+    } else if (schedule.timeRange && typeof schedule.timeRange === 'string') {
+      try {
+        // Parse timeRange format (e.g., "8:36 PM - 8:40 PM")
+        const timeRange = schedule.timeRange
+        if (!timeRange.includes(' - ')) {
+          return controlState === 'on'
+        }
+        
+        const [startTimeStr, endTimeStr] = timeRange.split(' - ')
+        
+        // Validate split results
+        if (!startTimeStr || !endTimeStr) {
+          return controlState === 'on'
+        }
+        
+        // Convert 12-hour format to 24-hour format
+        const convertTo24Hour = (time12h: string): number => {
+          if (!time12h || typeof time12h !== 'string') {
+            throw new Error('Invalid time format')
+          }
+          
+          const parts = time12h.split(' ')
+          if (parts.length < 2) {
+            throw new Error('Invalid time format - missing AM/PM')
+          }
+          
+          const [time, modifier] = parts
+          if (!time || !modifier) {
+            throw new Error('Invalid time format')
+          }
+          
+          const timeParts = time.split(':')
+          if (timeParts.length < 2) {
+            throw new Error('Invalid time format - missing minutes')
+          }
+          
+          let [hours, minutes] = timeParts.map(Number)
+          
+          if (isNaN(hours) || isNaN(minutes)) {
+            throw new Error('Invalid time format - non-numeric values')
+          }
+          
+          if (hours === 12) {
+            hours = 0
+          }
+          if (modifier === 'PM') {
+            hours += 12
+          }
+          
+          return hours * 60 + minutes
+        }
+        
+        startTime = convertTo24Hour(startTimeStr)
+        endTime = convertTo24Hour(endTimeStr)
+      } catch (error) {
+        // If parsing fails, return current control state
+        return controlState === 'on'
+      }
     } else {
       return controlState === 'on'
     }
@@ -895,30 +1210,39 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
     const frequency = schedule.frequency || ''
     let isCorrectDay = false
 
-    if (frequency.toLowerCase() === 'daily') {
+    if (!frequency || typeof frequency !== 'string') {
+      // If no frequency or invalid type, assume daily (always active)
+      isCorrectDay = true
+    } else if (frequency.toLowerCase() === 'daily') {
       isCorrectDay = true
     } else if (frequency.toLowerCase() === 'weekdays') {
       isCorrectDay = currentDay >= 1 && currentDay <= 5 // Monday to Friday
     } else if (frequency.toLowerCase() === 'weekends') {
       isCorrectDay = currentDay === 0 || currentDay === 6 // Sunday or Saturday
-    } else if (frequency.includes(',')) {
-      // Handle comma-separated days (e.g., "M,T,W,TH,F,SAT" or "MONDAY, WEDNESDAY, FRIDAY")
-      const dayMap: { [key: string]: number } = {
-        'monday': 1, 'tuesday': 2, 'wednesday': 3, 'thursday': 4, 
-        'friday': 5, 'saturday': 6, 'sunday': 0,
-        'mon': 1, 'tue': 2, 'wed': 3, 'thu': 4, 
-        'fri': 5, 'sat': 6, 'sun': 0,
-        'm': 1, 't': 2, 'w': 3, 'th': 4, 
-        'f': 5, 's': 6
+    } else if (frequency && typeof frequency === 'string' && frequency.includes(',')) {
+      try {
+        // Handle comma-separated days (e.g., "M,T,W,TH,F,SAT" or "MONDAY, WEDNESDAY, FRIDAY")
+        const dayMap: { [key: string]: number } = {
+          'monday': 1, 'tuesday': 2, 'wednesday': 3, 'thursday': 4, 
+          'friday': 5, 'saturday': 6, 'sunday': 0,
+          'mon': 1, 'tue': 2, 'wed': 3, 'thu': 4, 
+          'fri': 5, 'sat': 6, 'sun': 0,
+          'm': 1, 't': 2, 'w': 3, 'th': 4, 
+          'f': 5, 's': 6
+        }
+        
+        const scheduledDays = frequency.split(',').map((day: string) => {
+          if (!day || typeof day !== 'string') return undefined
+          const trimmedDay = day.trim().toLowerCase()
+          return dayMap[trimmedDay]
+        }).filter((day: number | undefined) => day !== undefined)
+        
+        isCorrectDay = scheduledDays.includes(currentDay)
+      } catch (error) {
+        // If frequency parsing fails, return current control state
+        return controlState === 'on'
       }
-      
-      const scheduledDays = frequency.split(',').map((day: string) => {
-        const trimmedDay = day.trim().toLowerCase()
-        return dayMap[trimmedDay]
-      }).filter((day: number | undefined) => day !== undefined)
-      
-      isCorrectDay = scheduledDays.includes(currentDay)
-    } else if (frequency) {
+    } else if (frequency && typeof frequency === 'string') {
       // Handle single day or other formats
       const dayMap: { [key: string]: number } = {
         'monday': 1, 'tuesday': 2, 'wednesday': 3, 'thursday': 4, 
@@ -939,20 +1263,29 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
     if (deviceData && !skipIndividualLimitCheck) {
       const powerLimit = deviceData.relay_control?.auto_cutoff?.power_limit || 0 // Power limit in kW
       
-      // Get today's total energy consumption from daily_logs
-      const today = new Date()
-      const todayDateKey = `day_${today.getFullYear()}_${String(today.getMonth() + 1).padStart(2, '0')}_${String(today.getDate()).padStart(2, '0')}`
-      const todayLogs = deviceData?.daily_logs?.[todayDateKey]
-      const todayTotalEnergy = todayLogs?.total_energy || 0 // This is in kW
+      // Get monthly total energy consumption from daily_logs
+      const now = new Date()
+      const currentYear = now.getFullYear()
+      const currentMonth = now.getMonth() + 1
+      const daysInMonth = new Date(currentYear, currentMonth, 0).getDate()
+      let totalMonthlyEnergy = 0
       
-      // If device has a power limit and today's energy exceeds it, don't activate
-      if (powerLimit > 0 && todayTotalEnergy >= powerLimit) {
-        console.log(`UserManagement: Schedule check - Device power limit exceeded:`, {
-          todayTotalEnergy: `${formatNumber(todayTotalEnergy * 1000)}W`,
+      for (let day = 1; day <= daysInMonth; day++) {
+        const dateKey = `day_${currentYear}_${String(currentMonth).padStart(2, '0')}_${String(day).padStart(2, '0')}`
+        const dayData = deviceData.daily_logs?.[dateKey]
+        if (dayData && dayData.total_energy) {
+          totalMonthlyEnergy += dayData.total_energy
+        }
+      }
+      
+      // If device has a power limit and monthly energy exceeds it, don't activate
+      if (powerLimit > 0 && totalMonthlyEnergy >= powerLimit) {
+        console.log(`UserManagement: Schedule check - Device monthly power limit exceeded:`, {
+          totalMonthlyEnergy: `${formatNumber(totalMonthlyEnergy * 1000)}W`,
           powerLimit: `${(powerLimit * 1000)}W`,
-          todayDateKey: todayDateKey,
+          currentMonth: `${currentYear}-${String(currentMonth).padStart(2, '0')}`,
           scheduleResult: false,
-          reason: 'Today\'s energy consumption exceeded power limit'
+          reason: 'Monthly energy consumption exceeded power limit'
         })
         return false
       }
@@ -1147,11 +1480,11 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
     // Handle navigation based on selected option
     if (option === 'UserLogs' && onNavigate) {
       onNavigate('userLogs');
-    } else if (option === 'Device Logs' && onNavigate) {
+    } else if ((option === 'Device Logs' || option === 'User Activity') && onNavigate) {
       onNavigate('deviceLogs');
     } else if (option === 'Offices' && onNavigate) {
       onNavigate('offices');
-    } else if (option === 'UserManagement' && onNavigate) {
+    } else if ((option === 'UserManagement' || option === 'User & Management') && onNavigate) {
       onNavigate('users');
     }
   };
@@ -1171,9 +1504,9 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
             </svg>
             <span>
               {currentView === 'userLogs' ? 'User Logs' : 
-               currentView === 'deviceLogs' ? 'Device Logs' : 
+               currentView === 'deviceLogs' ? 'User Activity' : 
                currentView === 'offices' ? 'Offices' :
-               'User Management'}
+               'User & Management'}
             </span>
           </div>
         </div>
@@ -1192,10 +1525,10 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
             {dropdownOpen && (
               <div className="um-dropdown-menu">
                 <button 
-                  className={`um-dropdown-item ${selectedOption === 'UserManagement' ? 'active' : ''}`}
-                  onClick={() => handleDropdownSelect('UserManagement')}
+                  className={`um-dropdown-item ${selectedOption === 'User & Management' ? 'active' : ''}`}
+                  onClick={() => handleDropdownSelect('User & Management')}
                 >
-                  UserManagement
+                  User & Management
                 </button>
                 <button 
                   className={`um-dropdown-item ${selectedOption === 'UserLogs' ? 'active' : ''}`}
@@ -1204,10 +1537,10 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
                   UserLogs
                 </button>
                 <button 
-                  className={`um-dropdown-item ${selectedOption === 'Device Logs' ? 'active' : ''}`}
-                  onClick={() => handleDropdownSelect('Device Logs')}
+                  className={`um-dropdown-item ${selectedOption === 'User Activity' ? 'active' : ''}`}
+                  onClick={() => handleDropdownSelect('User Activity')}
                 >
-                  Device Logs
+                  User Activity
                 </button>
                 <button 
                   className={`um-dropdown-item ${selectedOption === 'Offices' ? 'active' : ''}`}
@@ -1222,6 +1555,237 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
       </div>
 
       <div className="um-content">
+        {/* Electricity Rate Settings Container - Only show in User & Management view */}
+        {currentView === 'users' && (
+        <div style={{ 
+          display: 'flex', 
+          gap: '20px', 
+          marginBottom: '20px',
+          flexWrap: 'wrap'
+        }}>
+          {/* Current Electricity Rate Display */}
+          <div style={{
+            background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+            borderRadius: '12px',
+            padding: '24px',
+            boxShadow: '0 4px 6px rgba(0,0,0,0.1), 0 2px 4px rgba(0,0,0,0.06)',
+            border: 'none',
+            flex: '1',
+            minWidth: '250px',
+            position: 'relative',
+            overflow: 'hidden'
+          }}>
+            <div style={{
+              position: 'absolute',
+              top: '-50%',
+              right: '-50%',
+              width: '200%',
+              height: '200%',
+              background: 'radial-gradient(circle, rgba(255,255,255,0.1) 0%, transparent 70%)',
+              borderRadius: '50%'
+            }}></div>
+            <div style={{ position: 'relative', zIndex: 1 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
+                <div style={{
+                  width: '40px',
+                  height: '40px',
+                  borderRadius: '10px',
+                  background: 'rgba(255,255,255,0.2)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  backdropFilter: 'blur(10px)'
+                }}>
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ color: '#fff' }}>
+                    <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                </div>
+                <h3 style={{ margin: 0, fontSize: '14px', fontWeight: '600', color: '#fff', opacity: 0.9 }}>Current Rate</h3>
+              </div>
+              <div style={{ fontSize: '32px', fontWeight: '700', color: '#fff', marginTop: '8px', lineHeight: '1.2' }}>
+                {electricityRateLoading ? (
+                  <span style={{ fontSize: '16px', opacity: 0.8 }}>Loading...</span>
+                ) : currentElectricityRate ? (
+                  <>₱{parseFloat(currentElectricityRate).toFixed(2)}<span style={{ fontSize: '16px', fontWeight: '400', opacity: 0.8, marginLeft: '4px' }}>/kWh</span></>
+                ) : (
+                  <span style={{ fontSize: '16px', opacity: 0.8 }}>Not set</span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Electricity Rate Settings */}
+          <div style={{
+            backgroundColor: '#fff',
+            borderRadius: '12px',
+            padding: '24px',
+            boxShadow: '0 4px 6px rgba(0,0,0,0.1), 0 2px 4px rgba(0,0,0,0.06)',
+            border: '1px solid #e5e7eb',
+            flex: '1',
+            minWidth: '300px'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
+              <div style={{
+                width: '40px',
+                height: '40px',
+                borderRadius: '10px',
+                background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ color: '#fff' }}>
+                  <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  <path d="M17 21v-8H7v8M7 3v5h8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </div>
+              <h3 style={{ margin: 0, fontSize: '18px', fontWeight: '600', color: '#1f2937' }}>Update Rate</h3>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'flex-end', gap: '12px', flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', flex: '1', minWidth: '180px' }}>
+                <label style={{ fontSize: '14px', fontWeight: '500', color: '#374151' }}>
+                  New Rate (₱/kWh)
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={electricityRate}
+                  onChange={(e) => setElectricityRate(e.target.value)}
+                  placeholder="e.g., 9.38"
+                  style={{
+                    padding: '12px 16px',
+                    border: '2px solid #e5e7eb',
+                    borderRadius: '8px',
+                    fontSize: '14px',
+                    outline: 'none',
+                    transition: 'all 0.2s',
+                    background: '#fafafa',
+                    fontWeight: '500'
+                  }}
+                  onFocus={(e) => {
+                    e.target.style.borderColor = '#6366f1';
+                    e.target.style.background = '#fff';
+                    e.target.style.boxShadow = '0 0 0 3px rgba(99, 102, 241, 0.1)';
+                  }}
+                  onBlur={(e) => {
+                    e.target.style.borderColor = '#e5e7eb';
+                    e.target.style.background = '#fafafa';
+                    e.target.style.boxShadow = 'none';
+                  }}
+                  disabled={electricityRateSaving}
+                />
+              </div>
+              <button
+                onClick={async () => {
+                  if (!electricityRate || parseFloat(electricityRate) <= 0) {
+                    setFeedback({ success: false, message: 'Please enter a valid electricity rate (greater than 0)' });
+                    setModalType('feedback');
+                    setModalOpen(true);
+                    return;
+                  }
+                  setElectricityRateSaving(true);
+                  try {
+                    const electricityRateRef = ref(realtimeDb, 'settings/electricity_rate');
+                    const savedRate = parseFloat(electricityRate);
+                    
+                    // Get current user info for logging
+                    let currentUserName = 'Unknown User';
+                    if (auth.currentUser) {
+                      currentUserName = auth.currentUser.displayName || auth.currentUser.email || 'Authenticated User';
+                    } else {
+                      const userData = localStorage.getItem('currentUser');
+                      if (userData) {
+                        const parsedUser = JSON.parse(userData);
+                        currentUserName = parsedUser.displayName || parsedUser.email || 'Unknown User';
+                      }
+                    }
+                    
+                    await update(electricityRateRef, {
+                      rate: savedRate,
+                      unit: 'PHP/kWh',
+                      updated_at: new Date().toISOString(),
+                      updated_by: currentUserName
+                    });
+                    
+                    // Log the electricity rate update to device_logs (User Activity)
+                    await logDeviceActivity(
+                      `Updated electricity rate to ₱${savedRate.toFixed(2)}/kWh`,
+                      'System Settings',
+                      'System',
+                      'Electricity Rate',
+                      currentUserName
+                    );
+                    
+                    // Update current rate display after successful save
+                    setCurrentElectricityRate(savedRate.toString());
+                    setElectricityRateSuccessModal(true);
+                  } catch (error) {
+                    console.error('Error saving electricity rate:', error);
+                    setFeedback({ success: false, message: 'Failed to save electricity rate. Please try again.' });
+                    setModalType('feedback');
+                    setModalOpen(true);
+                  } finally {
+                    setElectricityRateSaving(false);
+                  }
+                }}
+                disabled={electricityRateSaving || !electricityRate}
+                style={{
+                  padding: '12px 24px',
+                  background: electricityRateSaving || !electricityRate 
+                    ? 'linear-gradient(135deg, #9ca3af 0%, #6b7280 100%)' 
+                    : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: '8px',
+                  fontSize: '14px',
+                  fontWeight: '600',
+                  cursor: electricityRateSaving || !electricityRate ? 'not-allowed' : 'pointer',
+                  transition: 'all 0.2s',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  whiteSpace: 'nowrap',
+                  boxShadow: electricityRateSaving || !electricityRate ? 'none' : '0 4px 6px rgba(102, 126, 234, 0.3)'
+                }}
+                onMouseEnter={(e) => {
+                  if (!electricityRateSaving && electricityRate) {
+                    e.currentTarget.style.transform = 'translateY(-2px)';
+                    e.currentTarget.style.boxShadow = '0 6px 12px rgba(102, 126, 234, 0.4)';
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  if (!electricityRateSaving && electricityRate) {
+                    e.currentTarget.style.transform = 'translateY(0)';
+                    e.currentTarget.style.boxShadow = '0 4px 6px rgba(102, 126, 234, 0.3)';
+                  }
+                }}
+              >
+                {electricityRateSaving ? (
+                  <>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2" strokeDasharray="32" strokeDashoffset="32">
+                        <animate attributeName="stroke-dasharray" dur="2s" values="0 32;16 16;0 32;0 32" repeatCount="indefinite"/>
+                        <animate attributeName="stroke-dashoffset" dur="2s" values="0;-16;-32;-32" repeatCount="indefinite"/>
+                      </circle>
+                    </svg>
+                    Saving...
+                  </>
+                ) : (
+                  <>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                      <path d="M17 21v-8H7v8M7 3v5h8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                    Save Rate
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+        )}
+
         {currentView === 'offices' ? (
           <>
             <div className="um-content-header">
@@ -1490,7 +2054,7 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
         ) : currentView === 'deviceLogs' ? (
           <>
             <div className="um-content-header">
-              <h2>Device Activity</h2>
+              <h2>User Activity</h2>
               <div className="um-controls">
                 <div className="um-search">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -2340,8 +2904,51 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
           </div>
         </div>
       )}
+
+      {/* Electricity Rate Success Modal */}
+      {electricityRateSuccessModal && (
+        <div className="um-modal-overlay" onClick={() => setElectricityRateSuccessModal(false)}>
+          <div className="um-modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '420px' }}>
+            <div className="um-modal-header success">
+              <span className="um-modal-icon" aria-hidden="true">
+                <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M5 13l4 4L19 7"/>
+                </svg>
+              </span>
+              <h3 className="um-modal-title">Success</h3>
+              <button 
+                className="um-modal-close" 
+                onClick={() => setElectricityRateSuccessModal(false)} 
+                aria-label="Close modal"
+              >
+                &times;
+              </button>
+            </div>
+            <div className="um-modal-body">
+              <p style={{ fontSize: '16px', marginBottom: '8px', fontWeight: '500' }}>Electricity rate saved successfully!</p>
+              <p style={{ fontSize: '14px', color: '#6b7280', margin: 0 }}>
+                The new rate of <strong style={{ color: '#1f2937' }}>₱{currentElectricityRate ? parseFloat(currentElectricityRate).toFixed(2) : '0.00'}/kWh</strong> has been updated in the database.
+              </p>
+            </div>
+            <div className="um-modal-actions">
+              <button 
+                className="um-modal-btn primary" 
+                onClick={() => setElectricityRateSuccessModal(false)}
+                style={{
+                  background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                  border: 'none',
+                  color: '#fff'
+                }}
+              >
+                OK
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
 
 export default UserManagment;
+

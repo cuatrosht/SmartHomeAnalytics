@@ -177,7 +177,7 @@ export default function SideBar({ onLogout, onNavigate, isOpen = true, onToggle,
                 </svg>
               }/>
               <div className="sb-rule" />
-              <Item k="users" label="User Management" icon={
+              <Item k="users" label="User & Management" icon={
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                   <circle cx="12" cy="8" r="3.2" stroke="currentColor" strokeWidth="1.6"/>
                   <path d="M4.5 20c1.8-3.5 5-5.3 7.5-5.3S17.7 16.5 19.5 20" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>

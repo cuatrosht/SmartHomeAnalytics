@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react'
 import { ref, onValue, off, update, remove, get } from 'firebase/database'
 import { realtimeDb } from '../firebase/config'
 import { logCombinedLimitActivity, logIndividualLimitActivity, logScheduleActivity, logDeviceControlActivity } from '../utils/deviceLogging'
+import { logger, throttledLog } from '../utils/logger'
 import './SetUp.css'
 
 // Helper function to format numbers with commas
@@ -132,6 +133,12 @@ const calculateCombinedMonthlyEnergy = (devicesData: any, selectedOutlets: strin
   }
 }
 
+// Helper function to get department-specific combined limit path
+const getDepartmentCombinedLimitPath = (department: string) => {
+  if (!department) return 'combined_limit_settings'
+  return `combined_limit_settings/${department}`
+}
+
 // Function to check and enforce combined monthly limits
 const checkCombinedMonthlyLimit = async (devicesData: any, combinedLimitInfo: any) => {
   try {
@@ -140,7 +147,8 @@ const checkCombinedMonthlyLimit = async (devicesData: any, combinedLimitInfo: an
       devicesDataKeys: Object.keys(devicesData || {}),
       enabled: combinedLimitInfo?.enabled,
       selectedOutlets: combinedLimitInfo?.selectedOutlets,
-      combinedLimit: combinedLimitInfo?.combinedLimit
+      combinedLimit: combinedLimitInfo?.combinedLimit,
+      department: combinedLimitInfo?.department
     })
     
     if (!combinedLimitInfo?.enabled || !combinedLimitInfo?.selectedOutlets || combinedLimitInfo.selectedOutlets.length === 0) {
@@ -148,8 +156,34 @@ const checkCombinedMonthlyLimit = async (devicesData: any, combinedLimitInfo: an
       return
     }
     
+    if (!combinedLimitInfo?.department) {
+      console.log('🚫 Monthly limit check skipped - no department specified')
+      return
+    }
+    
     const totalMonthlyEnergy = calculateCombinedMonthlyEnergy(devicesData, combinedLimitInfo.selectedOutlets)
     const combinedLimitWatts = combinedLimitInfo.combinedLimit
+    
+    const departmentPath = getDepartmentCombinedLimitPath(combinedLimitInfo.department)
+    
+    // CRITICAL: Handle "No Limit" case - always allow devices to be ON
+    if (String(combinedLimitWatts) === "No Limit" || combinedLimitWatts === 0 || combinedLimitWatts <= 0) {
+      console.log('✅ SetUp: Combined limit is set to "No Limit" or 0 - setting device_control to "on"')
+      const combinedLimitRef = ref(realtimeDb, departmentPath)
+      const currentSettings = await get(combinedLimitRef)
+      const currentDeviceControl = currentSettings.val()?.device_control
+      const currentEnforcementReason = currentSettings.val()?.enforcement_reason
+      
+      // Only update if device_control is not already 'on' or enforcement_reason is not empty
+      if (currentDeviceControl !== 'on' || currentEnforcementReason !== '') {
+        await update(combinedLimitRef, {
+          device_control: 'on',
+          enforcement_reason: ''
+        })
+        console.log(`✅ SetUp: Set ${departmentPath}/device_control='on' (No Limit set)`)
+      }
+      return
+    }
     
     console.log('📊 Monthly limit check results:', {
       totalMonthlyEnergy: `${totalMonthlyEnergy.toFixed(3)}W`,
@@ -161,6 +195,18 @@ const checkCombinedMonthlyLimit = async (devicesData: any, combinedLimitInfo: an
     
     // If monthly energy exceeds or equals the combined limit, turn off all devices in the group
     if (totalMonthlyEnergy >= combinedLimitWatts) {
+      // CRITICAL: Check if limit is already enforced BEFORE doing anything
+      // This prevents spamming last_enforcement when limit is already exceeded
+      const combinedLimitRef = ref(realtimeDb, departmentPath)
+      const currentSettings = await get(combinedLimitRef)
+      const currentDeviceControl = currentSettings.val()?.device_control
+      
+      // If device_control is already 'off', skip all updates to prevent spam
+      if (currentDeviceControl === 'off') {
+        console.log(`✅ SetUp: Monthly limit already enforced (device_control='off') - skipping update to prevent spam`)
+        return
+      }
+      
       console.log('🚨 MONTHLY LIMIT EXCEEDED!')
       console.log(`📊 Current: ${totalMonthlyEnergy.toFixed(3)}W >= Limit: ${combinedLimitWatts}W`)
       console.log('🔒 TURNING OFF ALL DEVICES IN THE GROUP...')
@@ -179,15 +225,25 @@ const checkCombinedMonthlyLimit = async (devicesData: any, combinedLimitInfo: an
             return { outletKey, success: true, skipped: true, reason: 'Bypass mode active' }
           }
           
+          // Get current control state before turning off
+          const currentControlState = deviceData?.control?.device || 'off'
+          
           // Turn off device control
           const controlRef = ref(realtimeDb, `devices/${firebaseKey}/control`)
           await update(controlRef, { device: 'off' })
           
-          // Turn off status to prevent immediate re-activation
-          const statusRef = ref(realtimeDb, `devices/${firebaseKey}`)
-          await update(statusRef, { status: 'OFF' })
-          
-          console.log(`✅ SetUp: TURNED OFF ${outletKey} (${firebaseKey}) due to monthly limit`)
+          // CRITICAL: Only set status='OFF' if device is not currently idle (control was 'on')
+          // If device was idle (control='on' but no activity), setting status='OFF' would override idle detection
+          // For idle devices, leave status as is - the display logic will show "Inactive" when control='off'
+          if (currentControlState === 'on') {
+            // Device was on (possibly idle) - don't set status='OFF', let display logic handle it
+            console.log(`✅ SetUp: Device ${outletKey} (${firebaseKey}) was ON (possibly idle) - not setting status='OFF' to preserve idle detection`)
+          } else {
+            // Device was already off - safe to set status='OFF'
+            const statusRef = ref(realtimeDb, `devices/${firebaseKey}`)
+            await update(statusRef, { status: 'OFF' })
+            console.log(`✅ SetUp: TURNED OFF ${outletKey} (${firebaseKey}) due to monthly limit`)
+          }
           return { outletKey, success: true }
         } catch (error) {
           console.error(`❌ SetUp: FAILED to turn off ${outletKey}:`, error)
@@ -201,27 +257,46 @@ const checkCombinedMonthlyLimit = async (devicesData: any, combinedLimitInfo: an
       const skippedCount = results.filter(r => r.skipped).length
       const failCount = results.filter(r => !r.success && !r.skipped).length
       
-      // CRITICAL: Set combined_limit_settings/device_control to "off" to prevent devices from turning back ON
-      const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
-      await update(combinedLimitRef, {
-        device_control: 'off',
-        last_enforcement: new Date().toISOString(),
-        enforcement_reason: 'Monthly limit exceeded'
-      })
-      console.log(`🔒 SetUp: Set combined_limit_settings/device_control='off' to prevent re-activation`)
+      // CRITICAL: Set department-specific combined_limit_settings/device_control to "off" to prevent devices from turning back ON
+      // We already checked above, but double-check to be safe
+      const finalSettings = await get(combinedLimitRef)
+      const finalDeviceControl = finalSettings.val()?.device_control
+      
+      // Only update if device_control is not already 'off' (avoid unnecessary writes)
+      if (finalDeviceControl !== 'off') {
+        await update(combinedLimitRef, {
+          device_control: 'off',
+          last_enforcement: new Date().toISOString(),
+          enforcement_reason: 'Monthly limit exceeded'
+        })
+        console.log(`🔒 SetUp: Set ${departmentPath}/device_control='off' to prevent re-activation`)
+      } else {
+        console.log(`✅ SetUp: device_control already 'off' - skipping update to prevent spam`)
+      }
       
       console.log(`🔒 SetUp: MONTHLY LIMIT ENFORCEMENT COMPLETE: ${successCount} turned off, ${skippedCount} skipped (bypass mode), ${failCount} failed`)
     } else {
       console.log('✅ Monthly limit not exceeded - devices can remain active')
       console.log(`📊 Current: ${totalMonthlyEnergy.toFixed(3)}W < Limit: ${combinedLimitWatts}W`)
       
-      // Set combined_limit_settings/device_control to "on" to allow devices to turn ON
-      const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
-      await update(combinedLimitRef, {
-        device_control: 'on',
-        enforcement_reason: ''
-      })
-      console.log(`✅ SetUp: Set combined_limit_settings/device_control='on' (limit not exceeded)`)
+      // Set department-specific combined_limit_settings/device_control to "on" to allow devices to turn ON
+      const combinedLimitRef = ref(realtimeDb, departmentPath)
+      const currentSettings = await get(combinedLimitRef)
+      const currentDeviceControl = currentSettings.val()?.device_control
+      const currentEnforcementReason = currentSettings.val()?.enforcement_reason
+      
+      // CRITICAL: Always update device_control to 'on' when limit is not exceeded
+      // This ensures devices can turn ON based on schedule
+      // Only skip if already 'on' AND enforcement_reason is already empty (to prevent spam)
+      if (currentDeviceControl !== 'on' || (currentEnforcementReason && currentEnforcementReason !== '')) {
+        await update(combinedLimitRef, {
+          device_control: 'on',
+          enforcement_reason: ''
+        })
+        console.log(`✅ SetUp: Set ${departmentPath}/device_control='on' (limit not exceeded) - allowing devices to turn ON`)
+      } else {
+        console.log(`✅ SetUp: device_control already 'on' and enforcement_reason already cleared - no update needed`)
+      }
     }
   } catch (error) {
     console.error('❌ Error checking combined monthly limit:', error)
@@ -229,19 +304,24 @@ const checkCombinedMonthlyLimit = async (devicesData: any, combinedLimitInfo: an
 }
 
 // Function to remove a device from combined group when monthly limit is exceeded
-const removeDeviceFromCombinedGroup = async (outletKey: string): Promise<{
+const removeDeviceFromCombinedGroup = async (outletKey: string, department?: string): Promise<{
   success: boolean;
   reason?: string;
 }> => {
   try {
     console.log(`🔧 Attempting to remove ${outletKey} from combined group due to monthly limit exceeded`)
     
-    // Get current combined limit settings
-    const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
+    if (!department) {
+      return { success: false, reason: 'No department specified' }
+    }
+    
+    // Get current combined limit settings for the department
+    const departmentPath = getDepartmentCombinedLimitPath(department)
+    const combinedLimitRef = ref(realtimeDb, departmentPath)
     const combinedLimitSnapshot = await get(combinedLimitRef)
     
     if (!combinedLimitSnapshot.exists()) {
-      return { success: false, reason: 'No combined limit settings found' }
+      return { success: false, reason: 'No combined limit settings found for department' }
     }
     
     const combinedLimitData = combinedLimitSnapshot.val()
@@ -263,16 +343,27 @@ const removeDeviceFromCombinedGroup = async (outletKey: string): Promise<{
     
     // IMPORTANT: When device is removed from combined group, turn it OFF
     // This is because it's no longer protected by combined monthly limit
-    // and will now be subject to individual daily limits
+    // and will now be subject to individual monthly limits
     try {
+      // Get current control state before turning off
+      const deviceRef = ref(realtimeDb, `devices/${outletKey}`)
+      const deviceSnapshot = await get(deviceRef)
+      const currentControlState = deviceSnapshot.val()?.control?.device || 'off'
+      
       const deviceControlRef = ref(realtimeDb, `devices/${outletKey}/control`)
       await update(deviceControlRef, { device: 'off' })
       
-      // Also set status to OFF to prevent automatic turn-on
-      const deviceStatusRef = ref(realtimeDb, `devices/${outletKey}`)
-      await update(deviceStatusRef, { status: 'OFF' })
-      
-      console.log(`🔒 SetUp: Turned OFF ${outletKey} after removing from combined group (now subject to individual daily limits)`)
+      // CRITICAL: Only set status='OFF' if device is not currently idle (control was 'on')
+      // If device was idle (control='on' but no activity), setting status='OFF' would override idle detection
+      if (currentControlState === 'on') {
+        // Device was on (possibly idle) - don't set status='OFF', let display logic handle it
+        console.log(`✅ SetUp: Device ${outletKey} was ON (possibly idle) - not setting status='OFF' to preserve idle detection`)
+      } else {
+        // Device was already off - safe to set status='OFF'
+        const deviceStatusRef = ref(realtimeDb, `devices/${outletKey}`)
+        await update(deviceStatusRef, { status: 'OFF' })
+        console.log(`🔒 SetUp: Turned OFF ${outletKey} after removing from combined group (now subject to individual monthly limits)`)
+      }
     } catch (error) {
       console.error(`❌ Error turning off device ${outletKey} after removal from combined group:`, error)
     }
@@ -407,6 +498,7 @@ interface Device {
   todayUsage: string
   monthUsage?: string
   status: 'Active' | 'Inactive' | 'Warning' | 'Idle' | 'UNPLUG'
+  department?: string
   schedule?: {
     timeRange: string
     frequency: string
@@ -695,7 +787,7 @@ function NoPowerLimitWarningModal({
 
   // Determine the warning type and message
   const hasNoLimit = !(device as any).powerLimit || (device as any).powerLimit <= 0
-  const exceedsLimit = !hasNoLimit && (device as any).todayTotalEnergy >= (device as any).powerLimit
+  const exceedsLimit = !hasNoLimit && (device as any).monthlyEnergy >= (device as any).powerLimit
 
   let title = ''
   let message = ''
@@ -715,12 +807,12 @@ function NoPowerLimitWarningModal({
     warningMessage = 'For safety reasons, devices must have a power limit before they can be activated. Please set a power limit in the Setup section.'
   } else if (exceedsLimit) {
     title = 'Power Limit Exceeded!'
-    message = `"${device.outletName}" cannot be turned ON because today's energy consumption has exceeded the power limit.`
-    statusLabel = 'Today\'s Energy:'
+    message = `"${device.outletName}" cannot be turned ON because monthly energy consumption has exceeded the power limit.`
+    statusLabel = 'Monthly Energy:'
     statusValue = `${formatNumber(((device as any).todayTotalEnergy * 1000) || 0)} Wh`
     actionLabel = 'Power Limit:'
     actionValue = `${((device as any).powerLimit * 1000) || '0'} Wh`
-    warningMessage = 'Today\'s total energy consumption has reached or exceeded the daily power limit. The device cannot be activated until tomorrow or the power limit is increased.'
+    warningMessage = 'Monthly total energy consumption has reached or exceeded the monthly power limit. The device cannot be activated until next month or the power limit is increased.'
   }
 
   return (
@@ -778,48 +870,63 @@ function PowerLimitWarningField({
   device: Device; 
   newPowerLimit: number; 
 }) {
-  const [todayEnergy, setTodayEnergy] = useState<number | null>(null)
+  const [monthlyEnergy, setMonthlyEnergy] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    const fetchTodayEnergy = async () => {
+    const fetchMonthlyEnergy = async () => {
       try {
         const outletKey = device.outletName.replace(/\s+/g, '_').replace(/'/g, '')
         const deviceRef = ref(realtimeDb, `devices/${outletKey}`)
         const deviceSnapshot = await get(deviceRef)
         const deviceData = deviceSnapshot.val()
         
-        const today = new Date()
-        const todayDateKey = `day_${today.getFullYear()}_${String(today.getMonth() + 1).padStart(2, '0')}_${String(today.getDate()).padStart(2, '0')}`
-        const todayLogs = deviceData?.daily_logs?.[todayDateKey]
-        const todayTotalEnergy = todayLogs?.total_energy || 0
-        
-        setTodayEnergy(todayTotalEnergy)
+        if (deviceData && deviceData.daily_logs) {
+          // Calculate monthly energy from daily logs
+          const now = new Date()
+          const currentYear = now.getFullYear()
+          const currentMonth = now.getMonth() + 1
+          const daysInMonth = new Date(currentYear, currentMonth, 0).getDate()
+          let totalMonthlyEnergy = 0
+          
+          // Sum up energy for all days in the current month
+          for (let day = 1; day <= daysInMonth; day++) {
+            const dateKey = `day_${currentYear}_${String(currentMonth).padStart(2, '0')}_${String(day).padStart(2, '0')}`
+            const dayData = deviceData.daily_logs[dateKey]
+            if (dayData && dayData.total_energy) {
+              totalMonthlyEnergy += dayData.total_energy // Already in kW from database
+            }
+          }
+          
+          setMonthlyEnergy(totalMonthlyEnergy)
+        } else {
+          setMonthlyEnergy(0)
+        }
       } catch (error) {
-        console.error('Error fetching today\'s energy data:', error)
+        console.error('Error fetching monthly energy data:', error)
         // Fallback to current usage
         const currentPowerUsage = device.powerUsage.includes('kW') ? 
           parseFloat(device.powerUsage.replace(' kW', '')) : 
           parseFloat(device.powerUsage.replace(' Wh', '')) / 1000
-        setTodayEnergy(currentPowerUsage)
+        setMonthlyEnergy(currentPowerUsage)
       } finally {
         setLoading(false)
       }
     }
 
-    fetchTodayEnergy()
+    fetchMonthlyEnergy()
   }, [device])
 
   if (loading) return null
 
-  if (todayEnergy !== null && newPowerLimit < todayEnergy) {
+  if (monthlyEnergy !== null && newPowerLimit < monthlyEnergy) {
     return (
       <div className="field-warning field-warning-error">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
           <circle cx="12" cy="12" r="10" fill="#fef2f2" stroke="#dc2626" strokeWidth="2"/>
           <path d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" fill="#dc2626"/>
         </svg>
-        <span>Power limit ({(newPowerLimit * 1000).toFixed(3)} Wh) is below today's energy consumption ({(todayEnergy * 1000).toFixed(3)} Wh). Increase the limit or reduce usage first.</span>
+        <span>Power limit ({(newPowerLimit * 1000).toFixed(3)} Wh) is below monthly energy consumption ({(monthlyEnergy * 1000).toFixed(3)} Wh). Increase the limit or reduce usage first.</span>
       </div>
     )
   }
@@ -1220,27 +1327,46 @@ function EditDeviceModal({
       if (enablePowerLimit && (!formData.powerLimit || (formData.powerLimit !== 'No Limit' && parseFloat(formData.powerLimit) <= 0))) {
         newErrors.powerLimit = 'Power limit must be greater than 0 Wh'
       } else if (enablePowerLimit && formData.powerLimit !== 'No Limit') {
-        // Check if power limit is less than today's energy consumption
+        // Check if power limit is less than monthly energy consumption
         if (device) {
           try {
-            // Get today's energy consumption from database
+            // Get monthly energy consumption from database
             const outletKey = device.outletName.replace(/\s+/g, '_').replace(/'/g, '')
             const deviceRef = ref(realtimeDb, `devices/${outletKey}`)
             const deviceSnapshot = await get(deviceRef)
             const deviceData = deviceSnapshot.val()
             
-            const today = new Date()
-            const todayDateKey = `day_${today.getFullYear()}_${String(today.getMonth() + 1).padStart(2, '0')}_${String(today.getDate()).padStart(2, '0')}`
-            const todayLogs = deviceData?.daily_logs?.[todayDateKey]
-            const todayTotalEnergy = todayLogs?.total_energy || 0 // This is in kW
+            // Calculate monthly energy from daily logs
+            const now = new Date()
+            const currentYear = now.getFullYear()
+            const currentMonth = now.getMonth() + 1
+            const daysInMonth = new Date(currentYear, currentMonth, 0).getDate()
+            let totalMonthlyEnergy = 0
+            
+            // Sum up energy for all days in the current month
+            for (let day = 1; day <= daysInMonth; day++) {
+              const dateKey = `day_${currentYear}_${String(currentMonth).padStart(2, '0')}_${String(day).padStart(2, '0')}`
+              const dayData = deviceData?.daily_logs?.[dateKey]
+              if (dayData && dayData.total_energy) {
+                totalMonthlyEnergy += dayData.total_energy // Already in kW from database
+              }
+            }
             
             const newPowerLimitkW = parseFloat(formData.powerLimit) / 1000 // Convert from Wh to kW
             
-            if (newPowerLimitkW < todayTotalEnergy) {
-              newErrors.powerLimit = `Power limit (${(newPowerLimitkW * 1000).toFixed(3)} Wh) cannot be less than today's energy consumption (${(todayTotalEnergy * 1000).toFixed(3)} Wh)`
+            // Check if new limit is less than current monthly energy
+            if (newPowerLimitkW < totalMonthlyEnergy) {
+              const currentPowerLimit = deviceData?.relay_control?.auto_cutoff?.power_limit || 0
+              
+              // Provide a more specific error message if monthly energy already exceeds the current limit
+              if (currentPowerLimit > 0 && totalMonthlyEnergy >= currentPowerLimit) {
+                newErrors.powerLimit = `Monthly energy consumption (${(totalMonthlyEnergy * 1000).toFixed(3)} Wh) already exceeds the current limit (${(currentPowerLimit * 1000).toFixed(3)} Wh). Please increase the limit to at least ${(totalMonthlyEnergy * 1000).toFixed(3)} Wh to save changes.`
+              } else {
+                newErrors.powerLimit = `Power limit (${(newPowerLimitkW * 1000).toFixed(3)} Wh) cannot be less than current monthly energy consumption (${(totalMonthlyEnergy * 1000).toFixed(3)} Wh). Please increase the limit to at least ${(totalMonthlyEnergy * 1000).toFixed(3)} Wh to save changes.`
+              }
             }
           } catch (error) {
-            console.error('Error fetching today\'s energy data:', error)
+            console.error('Error fetching monthly energy data:', error)
             // Fallback to current usage if database fetch fails
             const currentPowerUsage = device.powerUsage.includes('kW') ? 
               parseFloat(device.powerUsage.replace(' kW', '')) : 
@@ -1294,31 +1420,46 @@ function EditDeviceModal({
         return
       }
       
-      // Additional validation: prevent setting power limit below today's energy consumption
+      // Additional validation: prevent setting power limit below monthly energy consumption
+      // Note: This is a duplicate check - the main validation in validateForm already handles this
+      // Keeping this for extra safety, but it should match the validateForm logic
       if (device && powerLimitToValidate > 0) {
         try {
-          // Get today's energy consumption from database
+          // Get monthly energy consumption from database
           const outletKey = device.outletName.replace(/\s+/g, '_').replace(/'/g, '')
           const deviceRef = ref(realtimeDb, `devices/${outletKey}`)
           const deviceSnapshot = await get(deviceRef)
           const deviceData = deviceSnapshot.val()
           
-          const today = new Date()
-          const todayDateKey = `day_${today.getFullYear()}_${String(today.getMonth() + 1).padStart(2, '0')}_${String(today.getDate()).padStart(2, '0')}`
-          const todayLogs = deviceData?.daily_logs?.[todayDateKey]
-          const todayTotalEnergy = todayLogs?.total_energy || 0 // This is in kW
-          
-          const newPowerLimitkW = powerLimitToValidate / 1000 // Convert from Wh to kW
-          
-          if (newPowerLimitkW < todayTotalEnergy) {
-            setErrors(prev => ({ 
-              ...prev, 
-              powerLimit: `Power limit (${(newPowerLimitkW * 1000).toFixed(3)} Wh) cannot be less than today's energy consumption (${(todayTotalEnergy * 1000).toFixed(3)} Wh)` 
-            }))
-            return
+          if (deviceData && deviceData.daily_logs) {
+            // Calculate monthly energy from daily logs
+            const now = new Date()
+            const currentYear = now.getFullYear()
+            const currentMonth = now.getMonth() + 1
+            const daysInMonth = new Date(currentYear, currentMonth, 0).getDate()
+            let totalMonthlyEnergy = 0
+            
+            // Sum up energy for all days in the current month
+            for (let day = 1; day <= daysInMonth; day++) {
+              const dateKey = `day_${currentYear}_${String(currentMonth).padStart(2, '0')}_${String(day).padStart(2, '0')}`
+              const dayData = deviceData.daily_logs[dateKey]
+              if (dayData && dayData.total_energy) {
+                totalMonthlyEnergy += dayData.total_energy // Already in kW from database
+              }
+            }
+            
+            const newPowerLimitkW = powerLimitToValidate / 1000 // Convert from Wh to kW
+            
+            if (newPowerLimitkW < totalMonthlyEnergy) {
+              setErrors(prev => ({ 
+                ...prev, 
+                powerLimit: `Power limit (${(newPowerLimitkW * 1000).toFixed(3)} Wh) cannot be less than monthly energy consumption (${(totalMonthlyEnergy * 1000).toFixed(3)} Wh)` 
+              }))
+              return
+            }
           }
         } catch (error) {
-          console.error('Error fetching today\'s energy data:', error)
+          console.error('Error fetching monthly energy data:', error)
           // Fallback to current usage if database fetch fails
           const currentPowerUsage = device.powerUsage.includes('kW') ? 
             parseFloat(device.powerUsage.replace(' kW', '')) : 
@@ -1353,34 +1494,79 @@ function EditDeviceModal({
             // Parse schedule time range
             let startTime: number, endTime: number
             
-            if (schedule.startTime && schedule.endTime) {
-              // Use startTime and endTime from database (24-hour format)
-              const [startHours, startMinutes] = schedule.startTime.split(':').map(Number)
-              const [endHours, endMinutes] = schedule.endTime.split(':').map(Number)
-              startTime = startHours * 60 + startMinutes
-              endTime = endHours * 60 + endMinutes
-            } else if (schedule.timeRange && schedule.timeRange !== 'No schedule') {
-              // Parse timeRange format (e.g., "8:36 PM - 8:40 PM")
-              const timeRange = schedule.timeRange
-              const [startTimeStr, endTimeStr] = timeRange.split(' - ')
-              
-              // Convert 12-hour format to 24-hour format
-              const convertTo24Hour = (time12h: string): number => {
-                const [time, modifier] = time12h.split(' ')
-                let [hours, minutes] = time.split(':').map(Number)
+            if (schedule.startTime && schedule.endTime &&
+                typeof schedule.startTime === 'string' && typeof schedule.endTime === 'string') {
+              try {
+                // Use startTime and endTime from database (24-hour format)
+                const [startHours, startMinutes] = schedule.startTime.split(':').map(Number)
+                const [endHours, endMinutes] = schedule.endTime.split(':').map(Number)
                 
-                if (hours === 12) {
-                  hours = 0
-                }
-                if (modifier === 'PM') {
-                  hours += 12
+                // Validate parsed values
+                if (isNaN(startHours) || isNaN(startMinutes) || isNaN(endHours) || isNaN(endMinutes)) {
+                  return
                 }
                 
-                return hours * 60 + minutes
+                startTime = startHours * 60 + startMinutes
+                endTime = endHours * 60 + endMinutes
+              } catch (error) {
+                // If parsing fails, skip this check
+                return
               }
-              
-              startTime = convertTo24Hour(startTimeStr)
-              endTime = convertTo24Hour(endTimeStr)
+            } else if (schedule.timeRange && schedule.timeRange !== 'No schedule' && 
+                       typeof schedule.timeRange === 'string' && schedule.timeRange.includes(' - ')) {
+              try {
+                // Parse timeRange format (e.g., "8:36 PM - 8:40 PM")
+                const timeRange = schedule.timeRange
+                const [startTimeStr, endTimeStr] = timeRange.split(' - ')
+                
+                // Validate split results
+                if (!startTimeStr || !endTimeStr) {
+                  return
+                }
+                
+                // Convert 12-hour format to 24-hour format
+                const convertTo24Hour = (time12h: string): number => {
+                  if (!time12h || typeof time12h !== 'string') {
+                    throw new Error('Invalid time format')
+                  }
+                  
+                  const parts = time12h.split(' ')
+                  if (parts.length < 2) {
+                    throw new Error('Invalid time format - missing AM/PM')
+                  }
+                  
+                  const [time, modifier] = parts
+                  if (!time || !modifier) {
+                    throw new Error('Invalid time format')
+                  }
+                  
+                  const timeParts = time.split(':')
+                  if (timeParts.length < 2) {
+                    throw new Error('Invalid time format - missing minutes')
+                  }
+                  
+                  let [hours, minutes] = timeParts.map(Number)
+                  
+                  if (isNaN(hours) || isNaN(minutes)) {
+                    throw new Error('Invalid time format - non-numeric values')
+                  }
+                  
+                  if (hours === 12) {
+                    hours = 0
+                  }
+                  if (modifier === 'PM') {
+                    hours += 12
+                  }
+                  
+                  return hours * 60 + minutes
+                }
+                
+                startTime = convertTo24Hour(startTimeStr)
+                endTime = convertTo24Hour(endTimeStr)
+              } catch (error) {
+                // If parsing fails, skip this check
+                return
+              }
             } else {
               // No valid schedule time found
               return
@@ -1393,30 +1579,38 @@ function EditDeviceModal({
             const frequency = schedule.frequency || ''
             let isCorrectDay = false
             
-            if (frequency.toLowerCase() === 'daily') {
+            if (!frequency || typeof frequency !== 'string') {
+              // If no frequency or invalid type, assume daily (always active)
+              isCorrectDay = true
+            } else if (frequency.toLowerCase() === 'daily') {
               isCorrectDay = true
             } else if (frequency.toLowerCase() === 'weekdays') {
               isCorrectDay = currentDay >= 1 && currentDay <= 5 // Monday to Friday
             } else if (frequency.toLowerCase() === 'weekends') {
               isCorrectDay = currentDay === 0 || currentDay === 6 // Sunday or Saturday
             } else if (frequency.includes(',')) {
-              // Handle comma-separated days (e.g., "M,T,W,TH,F,SAT" or "MONDAY, WEDNESDAY, FRIDAY")
-              const dayMap: { [key: string]: number } = {
-                'monday': 1, 'tuesday': 2, 'wednesday': 3, 'thursday': 4, 
-                'friday': 5, 'saturday': 6, 'sunday': 0,
-                'mon': 1, 'tue': 2, 'wed': 3, 'thu': 4, 
-                'fri': 5, 'sat': 6, 'sun': 0,
-                'm': 1, 't': 2, 'w': 3, 'th': 4, 
-                'f': 5, 's': 6
+              try {
+                // Handle comma-separated days (e.g., "M,T,W,TH,F,SAT" or "MONDAY, WEDNESDAY, FRIDAY")
+                const dayMap: { [key: string]: number } = {
+                  'monday': 1, 'tuesday': 2, 'wednesday': 3, 'thursday': 4, 
+                  'friday': 5, 'saturday': 6, 'sunday': 0,
+                  'mon': 1, 'tue': 2, 'wed': 3, 'thu': 4, 
+                  'fri': 5, 'sat': 6, 'sun': 0,
+                  'm': 1, 't': 2, 'w': 3, 'th': 4, 
+                  'f': 5, 's': 6
+                }
+                
+                const scheduledDays = frequency.split(',').map((day: string) => {
+                  if (!day || typeof day !== 'string') return undefined
+                  const trimmedDay = day.trim().toLowerCase()
+                  return dayMap[trimmedDay]
+                }).filter((day: number | undefined) => day !== undefined)
+              
+                isCorrectDay = scheduledDays.includes(currentDay)
+              } catch (error) {
+                // If frequency parsing fails, skip this check
               }
-              
-              const scheduledDays = frequency.split(',').map((day: string) => {
-                const trimmedDay = day.trim().toLowerCase()
-                return dayMap[trimmedDay]
-              }).filter((day: number | undefined) => day !== undefined)
-              
-              isCorrectDay = scheduledDays.includes(currentDay)
-            } else if (frequency) {
+            } else if (frequency && typeof frequency === 'string') {
               // Handle single day or other formats
               const dayMap: { [key: string]: number } = {
                 'monday': 1, 'tuesday': 2, 'wednesday': 3, 'thursday': 4, 
@@ -1547,11 +1741,10 @@ function EditDeviceModal({
             })
           }
         } else {
-          // If setting device control to 'off', update status to OFF
-          const deviceStatusRef = ref(realtimeDb, `devices/${outletKey}`)
-          await update(deviceStatusRef, {
-            status: 'OFF'
-          })
+          // If setting device control to 'off' manually from Edit modal, DO NOT change root status
+          // Only update control.device - leave root status as is
+          // This preserves the current status (could be 'ON', 'OFF', 'UNPLUG', 'Idle', etc.)
+          console.log(`✅ SetUp: Device ${outletKey} control set to 'off' from Edit modal - leaving root status unchanged`)
         }
 
         // Update office information with scheduling settings
@@ -1692,22 +1885,44 @@ function EditDeviceModal({
   // Check if form can be saved
   const canSaveForm = () => {
     const hasPowerLimitIssue = formData.enabled && enablePowerLimit && (!formData.powerLimit || (formData.powerLimit !== 'No Limit' && parseFloat(formData.powerLimit) <= 0))
-    const hasUsageExceedLimit = device && formData.powerLimit && formData.powerLimit !== 'No Limit' && parseFloat(formData.powerLimit) > 0 && 
-      parseFloat(formData.powerLimit) < (device.powerUsage.includes('kW') ? 
-        parseFloat(device.powerUsage.replace(' kW', '')) : 
-        parseFloat(device.powerUsage.replace(' Wh', '')) / 1000)
+    
+    // Check if monthly energy exceeds the new limit
+    let hasUsageExceedLimit = false
+    if (device && formData.powerLimit && formData.powerLimit !== 'No Limit' && parseFloat(formData.powerLimit) > 0 && device.monthUsage) {
+      // Parse monthly energy from device.monthUsage (format: "14.700 Wh")
+      const monthlyEnergyStr = device.monthUsage.replace(' Wh', '').replace(' W', '').trim()
+      const monthlyEnergy = parseFloat(monthlyEnergyStr) || 0
+      const newLimit = parseFloat(formData.powerLimit)
+      
+      // Check if new limit is less than monthly energy
+      if (newLimit < monthlyEnergy) {
+        hasUsageExceedLimit = true
+      }
+    }
+    
     return !hasPowerLimitIssue && !hasUsageExceedLimit
   }
 
   const getSaveButtonTitle = () => {
     const hasPowerLimitIssue = formData.enabled && enablePowerLimit && (!formData.powerLimit || (formData.powerLimit !== 'No Limit' && parseFloat(formData.powerLimit) <= 0))
-    const hasUsageExceedLimit = device && formData.powerLimit && formData.powerLimit !== 'No Limit' && parseFloat(formData.powerLimit) > 0 && 
-      parseFloat(formData.powerLimit) < (device.powerUsage.includes('kW') ? 
-        parseFloat(device.powerUsage.replace(' kW', '')) : 
-        parseFloat(device.powerUsage.replace(' Wh', '')) / 1000)
+    
+    // Check if monthly energy exceeds the new limit
+    let hasUsageExceedLimit = false
+    let monthlyEnergy = 0
+    if (device && formData.powerLimit && formData.powerLimit !== 'No Limit' && parseFloat(formData.powerLimit) > 0 && device.monthUsage) {
+      // Parse monthly energy from device.monthUsage (format: "14.700 Wh")
+      const monthlyEnergyStr = device.monthUsage.replace(' Wh', '').replace(' W', '').trim()
+      monthlyEnergy = parseFloat(monthlyEnergyStr) || 0
+      const newLimit = parseFloat(formData.powerLimit)
+      
+      // Check if new limit is less than monthly energy
+      if (newLimit < monthlyEnergy) {
+        hasUsageExceedLimit = true
+      }
+    }
     
     if (hasPowerLimitIssue) return 'Cannot save: Power limit is required to turn ON device'
-    if (hasUsageExceedLimit) return 'Cannot save: Power limit is below today\'s energy consumption'
+    if (hasUsageExceedLimit) return `Cannot save: Power limit (${parseFloat(formData.powerLimit).toFixed(3)} Wh) is below monthly energy consumption (${monthlyEnergy.toFixed(3)} Wh)`
     return 'Save changes'
   }
 
@@ -1797,7 +2012,7 @@ function EditDeviceModal({
                       <div className="field-hint">
                         {enableScheduling && !enablePowerLimit 
                           ? "Devices will only turn off based on the schedule set. No power limit is applied."
-                          : "Enter value in Wh (watt-hours). This limit will be applied to today's energy consumption."
+                          : "Enter value in Wh (watt-hours). This limit will be applied to monthly energy consumption."
                         }
                       </div>
                       {errors.powerLimit && <span className="error-message">{errors.powerLimit}</span>}
@@ -1817,7 +2032,7 @@ function EditDeviceModal({
                 </div>
               )}
               
-              {/* Show warning when power limit is below today's energy consumption */}
+              {/* Show warning when power limit is below monthly energy consumption */}
               {device && formData.powerLimit && parseFloat(formData.powerLimit) > 0 && (
                 <PowerLimitWarningField 
                   device={device} 
@@ -2009,17 +2224,22 @@ function CombinedLimitModal({
 }: { 
   isOpen: boolean; 
   onClose: () => void; 
-  onSave: (data: { selectedOutlets: string[]; combinedLimit: number; deviceControl: string; enableScheduling: boolean }) => void;
+  onSave: (data: { selectedOutlets: string[]; combinedLimit: number; deviceControl: string; enableScheduling: boolean; department?: string }) => void;
   existingData?: {
     enabled: boolean;
     selectedOutlets: string[];
     combinedLimit: number;
+    department?: string;
   };
 }) {
   const [selectedOutlets, setSelectedOutlets] = useState<string[]>([])
   const [combinedLimit, setCombinedLimit] = useState('')
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [availableOutlets, setAvailableOutlets] = useState<string[]>([])
+  const [allOutlets, setAllOutlets] = useState<any>({})
+  const [selectedDepartment, setSelectedDepartment] = useState<string>('')
+  const [departments, setDepartments] = useState<Array<{value: string, label: string}>>([])
+  const [officesData, setOfficesData] = useState<any>({})
   const [isFormInitialized, setIsFormInitialized] = useState(false)
   const [isUserEditing, setIsUserEditing] = useState(false)
   const [enableScheduling, setEnableScheduling] = useState(false)
@@ -2032,6 +2252,79 @@ function CombinedLimitModal({
     { value: 'off', label: 'Turn OFF (Inactive)', description: 'Device will be turned off' }
   ]
 
+  // Fetch departments and offices from database
+  useEffect(() => {
+    if (isOpen) {
+      const fetchDepartmentsAndOffices = async () => {
+        try {
+          const officesRef = ref(realtimeDb, 'offices')
+          const snapshot = await get(officesRef)
+          
+          if (snapshot.exists()) {
+            const officesData = snapshot.val()
+            setOfficesData(officesData)
+            
+            const departmentsSet = new Set<string>()
+            
+            // Extract unique departments
+            Object.values(officesData).forEach((office: any) => {
+              if (office.department) {
+                departmentsSet.add(office.department)
+              }
+            })
+            
+            // Convert departments set to array
+            const departmentsList = Array.from(departmentsSet).map(dept => ({
+              value: dept.toLowerCase().replace(/\s+/g, '-'),
+              label: dept
+            }))
+            
+            setDepartments(departmentsList)
+          }
+        } catch (error) {
+          console.error('Error fetching departments and offices:', error)
+        }
+      }
+      
+      fetchDepartmentsAndOffices()
+    }
+  }, [isOpen])
+
+  // Function to filter outlets based on selected department
+  const getFilteredOutlets = (devicesData: any, department: string) => {
+    if (!department || !devicesData) {
+      return []
+    }
+    
+    const filteredOutlets: string[] = []
+    
+    Object.keys(devicesData).forEach((outletKey) => {
+      const outletData = devicesData[outletKey]
+      const outletDepartment = outletData?.office_info?.department
+      
+      if (outletDepartment) {
+        const departmentKey = outletDepartment.toLowerCase().replace(/\s+/g, '-')
+        if (departmentKey === department) {
+          filteredOutlets.push(outletKey.replace(/_/g, ' '))
+        }
+      }
+    })
+    
+    return filteredOutlets
+  }
+
+  // Handle department selection change
+  const handleDepartmentChange = (department: string) => {
+    setSelectedDepartment(department)
+    setIsUserEditing(true)
+    // Clear selected outlets when department changes
+    setSelectedOutlets([])
+    // Clear error when user makes changes
+    if (errors.department) {
+      setErrors(prev => ({ ...prev, department: '' }))
+    }
+  }
+
   // Fetch available outlets from database and populate existing data
   useEffect(() => {
     const fetchOutlets = async () => {
@@ -2041,10 +2334,19 @@ function CombinedLimitModal({
         
         if (snapshot.exists()) {
           const devicesData = snapshot.val()
-          const outlets = Object.keys(devicesData).map(outletKey => 
-            outletKey.replace('_', ' ')
-          )
-          setAvailableOutlets(outlets)
+          setAllOutlets(devicesData)
+          
+          // Filter outlets based on selected department
+          if (selectedDepartment) {
+            const filtered = getFilteredOutlets(devicesData, selectedDepartment)
+            setAvailableOutlets(filtered)
+          } else {
+            // If no department selected, show all outlets
+            const outlets = Object.keys(devicesData).map(outletKey => 
+              outletKey.replace(/_/g, ' ')
+            )
+            setAvailableOutlets(outlets)
+          }
         }
       } catch (error) {
         console.error('Error fetching outlets:', error)
@@ -2061,6 +2363,11 @@ function CombinedLimitModal({
           setSelectedOutlets(existingData.selectedOutlets)
           setCombinedLimit(existingData.combinedLimit.toString())
           setEnablePowerLimit(String(existingData.combinedLimit) !== "No Limit") // Enable power limit if not "No Limit"
+          
+          // Set department if it exists in existing data
+          if (existingData.department) {
+            setSelectedDepartment(existingData.department)
+          }
           
           // Check actual database state for enable scheduling
           const checkSchedulingState = async () => {
@@ -2106,6 +2413,7 @@ function CombinedLimitModal({
           setEnablePowerLimit(false)
           setEnableScheduling(false)
           setDeviceControl('on')
+          setSelectedDepartment('')
         }
         setIsFormInitialized(true)
       }
@@ -2114,7 +2422,7 @@ function CombinedLimitModal({
       setIsFormInitialized(false)
       setIsUserEditing(false)
     }
-  }, [isOpen, existingData, isFormInitialized])
+  }, [isOpen, existingData, isFormInitialized, selectedDepartment])
 
   // Close control dropdown when clicking outside
   useEffect(() => {
@@ -2187,6 +2495,11 @@ function CombinedLimitModal({
   const validateForm = async () => {
     const newErrors: Record<string, string> = {}
     
+    // Require department selection
+    if (!selectedDepartment) {
+      newErrors.department = 'Please select a department'
+    }
+    
     // Only require outlets when creating a new combined limit, not when editing (allowing disable)
     if (!existingData && selectedOutlets.length === 0) {
       newErrors.outlets = 'Please select at least one outlet'
@@ -2230,7 +2543,8 @@ function CombinedLimitModal({
         selectedOutlets,
         combinedLimit: combinedLimit === 'No Limit' ? 0 : parseFloat(combinedLimit),
         deviceControl,
-        enableScheduling
+        enableScheduling,
+        department: selectedDepartment
       })
     }
   }
@@ -2242,6 +2556,7 @@ function CombinedLimitModal({
     setEnableScheduling(false)
     setDeviceControl('on')
     setControlDropdownOpen(false)
+    setSelectedDepartment('')
     setErrors({})
     onClose()
   }
@@ -2267,43 +2582,82 @@ function CombinedLimitModal({
 
         <form onSubmit={handleSubmit}>
           <div className="modal-body">
+            {/* Department Selection */}
+            <div className={`field-group ${errors.department ? 'error' : ''}`}>
+              <label htmlFor="department">
+                Select Department <span className="required">*</span>
+              </label>
+              <select
+                id="department"
+                value={selectedDepartment}
+                onChange={(e) => handleDepartmentChange(e.target.value)}
+                className={errors.department ? 'error' : ''}
+                required
+              >
+                <option value="">-- Select Department --</option>
+                {departments.map((dept) => (
+                  <option key={dept.value} value={dept.value}>
+                    {dept.label}
+                  </option>
+                ))}
+              </select>
+              {errors.department && <span className="error-message">{errors.department}</span>}
+              <p className="field-description">
+                Select a department to filter available outlets
+              </p>
+            </div>
+
             {/* Outlet Selection */}
-            <div className={`field-group ${errors.outlets ? 'error' : ''}`}>
+            <div className={`field-group ${errors.outlets ? 'error' : ''} ${!selectedDepartment ? 'disabled' : ''}`}>
               <label>
                 Select Outlets <span className="required">*</span>
               </label>
-              <div className="outlet-selection">
-                <div className="select-all-container">
-                  <button
-                    type="button"
-                    className="select-all-btn"
-                    onClick={handleSelectAll}
-                  >
-                    {selectedOutlets.length === availableOutlets.length ? 'Deselect All' : 'Select All'}
-                  </button>
-                  <span className="selection-count">
-                    {selectedOutlets.length} of {availableOutlets.length} selected
-                  </span>
+              {!selectedDepartment ? (
+                <div className="outlet-selection-disabled">
+                  <p className="field-description">
+                    Please select a department first to view available outlets
+                  </p>
                 </div>
-                <div className="outlet-grid">
-                  {availableOutlets.map((outlet) => (
-                    <div
-                      key={outlet}
-                      className={`outlet-option ${selectedOutlets.includes(outlet) ? 'selected' : ''}`}
-                      onClick={() => handleOutletToggle(outlet)}
+              ) : (
+                <div className="outlet-selection">
+                  <div className="select-all-container">
+                    <button
+                      type="button"
+                      className="select-all-btn"
+                      onClick={handleSelectAll}
                     >
-                      <div className="outlet-checkbox">
-                        {selectedOutlets.includes(outlet) && (
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                            <polyline points="20,6 9,17 4,12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                          </svg>
-                        )}
-                      </div>
-                      <span className="outlet-label">{outlet}</span>
-                    </div>
-                  ))}
+                      {selectedOutlets.length === availableOutlets.length ? 'Deselect All' : 'Select All'}
+                    </button>
+                    <span className="selection-count">
+                      {selectedOutlets.length} of {availableOutlets.length} selected
+                    </span>
+                  </div>
+                  <div className="outlet-grid">
+                    {availableOutlets.length > 0 ? (
+                      availableOutlets.map((outlet) => (
+                        <div
+                          key={outlet}
+                          className={`outlet-option ${selectedOutlets.includes(outlet) ? 'selected' : ''}`}
+                          onClick={() => handleOutletToggle(outlet)}
+                        >
+                          <div className="outlet-checkbox">
+                            {selectedOutlets.includes(outlet) && (
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <polyline points="20,6 9,17 4,12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                              </svg>
+                            )}
+                          </div>
+                          <span className="outlet-label">{outlet}</span>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="field-description">
+                        No outlets available for the selected department
+                      </p>
+                    )}
+                  </div>
                 </div>
-              </div>
+              )}
               {errors.outlets && <span className="error-message">{errors.outlets}</span>}
             </div>
 
@@ -2439,10 +2793,16 @@ function CombinedLimitModal({
             )}
 
             {/* Summary */}
-            {selectedOutlets.length > 0 && (enablePowerLimit || enableScheduling) && (
+            {selectedOutlets.length > 0 && (enablePowerLimit || enableScheduling) && selectedDepartment && (
               <div className="limit-summary">
                 <h4>Summary</h4>
                 <div className="summary-details">
+                  <div className="summary-item">
+                    <span className="label">Department:</span>
+                    <span className="value">
+                      {departments.find(d => d.value === selectedDepartment)?.label || selectedDepartment}
+                    </span>
+                  </div>
                   <div className="summary-item">
                     <span className="label">Selected Outlets:</span>
                     <span className="value">{selectedOutlets.length} outlets</span>
@@ -2481,7 +2841,7 @@ function CombinedLimitModal({
             <button
               type="submit"
               className="btn-primary"
-              disabled={!existingData && (selectedOutlets.length === 0 || !combinedLimit)}
+              disabled={!existingData && (!selectedDepartment || selectedOutlets.length === 0 || !combinedLimit)}
             >
               {existingData && existingData.enabled ? 'Update Combined Limit' : 'Set Combined Limit'}
             </button>
@@ -2808,7 +3168,7 @@ function AddDeviceModal({ isOpen, onClose, onSave }: AddDeviceModalProps) {
     }
   }
 
-  const validateForm = () => {
+  const validateForm = async () => {
     const newErrors: Record<string, string> = {}
     
     if (!formData.deviceType) newErrors.deviceType = 'Device type is required'
@@ -2819,6 +3179,52 @@ function AddDeviceModal({ isOpen, onClose, onSave }: AddDeviceModalProps) {
     }
     if (!formData.appliance) newErrors.appliance = 'Appliance type is required'
     
+    // Check if power limit is less than monthly energy consumption
+    if (enablePowerLimit && formData.powerLimit && formData.powerLimit !== 'No Limit' && parseFloat(formData.powerLimit) > 0) {
+      try {
+        // Get monthly energy consumption from database for the device being added
+        const outletKey = formData.deviceType.replace(/\s+/g, '_').replace(/'/g, '')
+        const deviceRef = ref(realtimeDb, `devices/${outletKey}`)
+        const deviceSnapshot = await get(deviceRef)
+        const deviceData = deviceSnapshot.val()
+        
+        if (deviceData && deviceData.daily_logs) {
+          // Calculate monthly energy from daily logs
+          const now = new Date()
+          const currentYear = now.getFullYear()
+          const currentMonth = now.getMonth() + 1
+          const daysInMonth = new Date(currentYear, currentMonth, 0).getDate()
+          let totalMonthlyEnergy = 0
+          
+          // Sum up energy for all days in the current month
+          for (let day = 1; day <= daysInMonth; day++) {
+            const dateKey = `day_${currentYear}_${String(currentMonth).padStart(2, '0')}_${String(day).padStart(2, '0')}`
+            const dayData = deviceData.daily_logs[dateKey]
+            if (dayData && dayData.total_energy) {
+              totalMonthlyEnergy += dayData.total_energy // Already in kW from database
+            }
+          }
+          
+          const newPowerLimitkW = parseFloat(formData.powerLimit) / 1000 // Convert from Wh to kW
+          
+          // Check if new limit is less than current monthly energy
+          if (newPowerLimitkW < totalMonthlyEnergy) {
+            const currentPowerLimit = deviceData?.relay_control?.auto_cutoff?.power_limit || 0
+            
+            // Provide a more specific error message if monthly energy already exceeds the current limit
+            if (currentPowerLimit > 0 && totalMonthlyEnergy >= currentPowerLimit) {
+              newErrors.powerLimit = `Monthly energy consumption (${(totalMonthlyEnergy * 1000).toFixed(3)} Wh) already exceeds the current limit (${(currentPowerLimit * 1000).toFixed(3)} Wh). Please increase the limit to at least ${(totalMonthlyEnergy * 1000).toFixed(3)} Wh to save changes.`
+            } else {
+              newErrors.powerLimit = `Power limit (${(newPowerLimitkW * 1000).toFixed(3)} Wh) cannot be less than current monthly energy consumption (${(totalMonthlyEnergy * 1000).toFixed(3)} Wh). Please increase the limit to at least ${(totalMonthlyEnergy * 1000).toFixed(3)} Wh to save changes.`
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Error fetching monthly energy data:', error)
+        // Don't block the form if we can't fetch the data, but log the error
+      }
+    }
+    
     setErrors(newErrors)
     return Object.keys(newErrors).length === 0
   }
@@ -2826,7 +3232,7 @@ function AddDeviceModal({ isOpen, onClose, onSave }: AddDeviceModalProps) {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     
-    if (validateForm()) {
+    if (await validateForm()) {
       try {
         console.log('Starting database update for:', formData.deviceType)
         console.log('Power limit to set (Wh):', formData.powerLimit)
@@ -3218,7 +3624,7 @@ function AddDeviceModal({ isOpen, onClose, onSave }: AddDeviceModalProps) {
                     <div className="field-hint">
                       {enableScheduling && !enablePowerLimit 
                         ? "Devices will only turn off based on the schedule set. No power limit is applied."
-                        : "Enter value in Wh (watt-hours). This limit will be applied to today's energy consumption."
+                        : "Enter value in Wh (watt-hours). This limit will be applied to monthly energy consumption."
                       }
                     </div>
                     {errors.powerLimit && <span className="error-message">{errors.powerLimit}</span>}
@@ -3301,34 +3707,82 @@ const isDeviceActiveBySchedule = (schedule: any, controlState: string, deviceDat
   // Parse schedule time range
   let startTime: number, endTime: number
   
-  if (schedule.startTime && schedule.endTime) {
-    // Use startTime and endTime from database (24-hour format)
-    const [startHours, startMinutes] = schedule.startTime.split(':').map(Number)
-    const [endHours, endMinutes] = schedule.endTime.split(':').map(Number)
-    startTime = startHours * 60 + startMinutes
-    endTime = endHours * 60 + endMinutes
-  } else if (schedule.timeRange) {
-    // Parse timeRange format (e.g., "8:36 PM - 8:40 PM")
-    const timeRange = schedule.timeRange
-    const [startTimeStr, endTimeStr] = timeRange.split(' - ')
-    
-    // Convert 12-hour format to 24-hour format
-    const convertTo24Hour = (time12h: string): number => {
-      const [time, modifier] = time12h.split(' ')
-      let [hours, minutes] = time.split(':').map(Number)
+  if (schedule.startTime && schedule.endTime && 
+      typeof schedule.startTime === 'string' && typeof schedule.endTime === 'string') {
+    try {
+      // Use startTime and endTime from database (24-hour format)
+      const [startHours, startMinutes] = schedule.startTime.split(':').map(Number)
+      const [endHours, endMinutes] = schedule.endTime.split(':').map(Number)
       
-      if (hours === 12) {
-        hours = 0
-      }
-      if (modifier === 'PM') {
-        hours += 12
+      // Validate parsed values
+      if (isNaN(startHours) || isNaN(startMinutes) || isNaN(endHours) || isNaN(endMinutes)) {
+        return controlState === 'on'
       }
       
-      return hours * 60 + minutes
+      startTime = startHours * 60 + startMinutes
+      endTime = endHours * 60 + endMinutes
+    } catch (error) {
+      // If parsing fails, return current control state
+      return controlState === 'on'
     }
-    
-    startTime = convertTo24Hour(startTimeStr)
-    endTime = convertTo24Hour(endTimeStr)
+  } else if (schedule.timeRange && typeof schedule.timeRange === 'string') {
+    try {
+      // Parse timeRange format (e.g., "8:36 PM - 8:40 PM")
+      const timeRange = schedule.timeRange
+      if (!timeRange.includes(' - ')) {
+        return controlState === 'on'
+      }
+      
+      const [startTimeStr, endTimeStr] = timeRange.split(' - ')
+      
+      // Validate split results
+      if (!startTimeStr || !endTimeStr) {
+        return controlState === 'on'
+      }
+      
+      // Convert 12-hour format to 24-hour format
+      const convertTo24Hour = (time12h: string): number => {
+        if (!time12h || typeof time12h !== 'string') {
+          throw new Error('Invalid time format')
+        }
+        
+        const parts = time12h.split(' ')
+        if (parts.length < 2) {
+          throw new Error('Invalid time format - missing AM/PM')
+        }
+        
+        const [time, modifier] = parts
+        if (!time || !modifier) {
+          throw new Error('Invalid time format')
+        }
+        
+        const timeParts = time.split(':')
+        if (timeParts.length < 2) {
+          throw new Error('Invalid time format - missing minutes')
+        }
+        
+        let [hours, minutes] = timeParts.map(Number)
+        
+        if (isNaN(hours) || isNaN(minutes)) {
+          throw new Error('Invalid time format - non-numeric values')
+        }
+        
+        if (hours === 12) {
+          hours = 0
+        }
+        if (modifier === 'PM') {
+          hours += 12
+        }
+        
+        return hours * 60 + minutes
+      }
+      
+      startTime = convertTo24Hour(startTimeStr)
+      endTime = convertTo24Hour(endTimeStr)
+    } catch (error) {
+      // If parsing fails, return current control state
+      return controlState === 'on'
+    }
   } else {
     return controlState === 'on'
   }
@@ -3341,30 +3795,39 @@ const isDeviceActiveBySchedule = (schedule: any, controlState: string, deviceDat
   const frequency = schedule.frequency || ''
   let isCorrectDay = false
 
-  if (frequency.toLowerCase() === 'daily') {
+  // If no frequency or invalid type, assume daily (always active)
+  if (!frequency || typeof frequency !== 'string' || frequency.trim() === '') {
+    isCorrectDay = true
+  } else if (frequency.toLowerCase() === 'daily') {
     isCorrectDay = true
   } else if (frequency.toLowerCase() === 'weekdays') {
     isCorrectDay = currentDay >= 1 && currentDay <= 5 // Monday to Friday
   } else if (frequency.toLowerCase() === 'weekends') {
     isCorrectDay = currentDay === 0 || currentDay === 6 // Sunday or Saturday
   } else if (frequency.includes(',')) {
-    // Handle comma-separated days (e.g., "M,T,W,TH,F,SAT" or "MONDAY, WEDNESDAY, FRIDAY")
-    const dayMap: { [key: string]: number } = {
-      'monday': 1, 'tuesday': 2, 'wednesday': 3, 'thursday': 4, 
-      'friday': 5, 'saturday': 6, 'sunday': 0,
-      'mon': 1, 'tue': 2, 'wed': 3, 'thu': 4, 
-      'fri': 5, 'sat': 6, 'sun': 0,
-      'm': 1, 't': 2, 'w': 3, 'th': 4, 
-      'f': 5, 's': 6
+    try {
+      // Handle comma-separated days (e.g., "M,T,W,TH,F,SAT" or "MONDAY, WEDNESDAY, FRIDAY")
+      const dayMap: { [key: string]: number } = {
+        'monday': 1, 'tuesday': 2, 'wednesday': 3, 'thursday': 4, 
+        'friday': 5, 'saturday': 6, 'sunday': 0,
+        'mon': 1, 'tue': 2, 'wed': 3, 'thu': 4, 
+        'fri': 5, 'sat': 6, 'sun': 0,
+        'm': 1, 't': 2, 'w': 3, 'th': 4, 
+        'f': 5, 's': 6
+      }
+      
+      const scheduledDays = frequency.split(',').map((day: string) => {
+        if (!day || typeof day !== 'string') return undefined
+        const trimmedDay = day.trim().toLowerCase()
+        return dayMap[trimmedDay]
+      }).filter((day: number | undefined) => day !== undefined)
+      
+      isCorrectDay = scheduledDays.includes(currentDay)
+    } catch (error) {
+      // If frequency parsing fails, return current control state
+      return controlState === 'on'
     }
-    
-    const scheduledDays = frequency.split(',').map((day: string) => {
-      const trimmedDay = day.trim().toLowerCase()
-      return dayMap[trimmedDay]
-    }).filter((day: number | undefined) => day !== undefined)
-    
-    isCorrectDay = scheduledDays.includes(currentDay)
-  } else if (frequency) {
+  } else if (frequency && typeof frequency === 'string') {
     // Handle single day or other formats
     const dayMap: { [key: string]: number } = {
       'monday': 1, 'tuesday': 2, 'wednesday': 3, 'thursday': 4, 
@@ -3378,6 +3841,11 @@ const isDeviceActiveBySchedule = (schedule: any, controlState: string, deviceDat
     const dayNumber = dayMap[frequency.toLowerCase()]
     if (dayNumber !== undefined) {
       isCorrectDay = dayNumber === currentDay
+    } else {
+      // If frequency doesn't match any pattern, default to true (assume daily)
+      // This prevents devices from being stuck off due to unrecognized frequency formats
+      console.warn(`SetUp: Unrecognized frequency format: "${frequency}" - defaulting to daily`)
+      isCorrectDay = true
     }
   }
 
@@ -3385,22 +3853,33 @@ const isDeviceActiveBySchedule = (schedule: any, controlState: string, deviceDat
   if (deviceData && !skipIndividualLimitCheck) {
     const powerLimit = deviceData.relay_control?.auto_cutoff?.power_limit || 0 // Power limit in kW
     
-    // Get today's total energy consumption from daily_logs
-    const today = new Date()
-    const todayDateKey = `day_${today.getFullYear()}_${String(today.getMonth() + 1).padStart(2, '0')}_${String(today.getDate()).padStart(2, '0')}`
-    const todayLogs = deviceData?.daily_logs?.[todayDateKey]
-    const todayTotalEnergy = todayLogs?.total_energy || 0 // This is in kW
-    
-    // If device has a power limit and today's energy exceeds it, don't activate
-    if (powerLimit > 0 && todayTotalEnergy >= powerLimit) {
-      console.log(`Schedule check: Device ${deviceData.outletName || 'Unknown'} power limit exceeded:`, {
-        todayTotalEnergy: `${(todayTotalEnergy * 1000).toFixed(3)}W`,
-        powerLimit: `${(powerLimit * 1000)}W`,
-        todayDateKey: todayDateKey,
-        scheduleResult: false,
-        reason: 'Today\'s energy consumption exceeded power limit'
-      })
-      return false
+    // Calculate monthly energy from daily logs
+    if (deviceData.daily_logs) {
+      const now = new Date()
+      const currentYear = now.getFullYear()
+      const currentMonth = now.getMonth() + 1
+      const daysInMonth = new Date(currentYear, currentMonth, 0).getDate()
+      let totalMonthlyEnergy = 0
+      
+      // Sum up energy for all days in the current month
+      for (let day = 1; day <= daysInMonth; day++) {
+        const dateKey = `day_${currentYear}_${String(currentMonth).padStart(2, '0')}_${String(day).padStart(2, '0')}`
+        const dayData = deviceData.daily_logs[dateKey]
+        if (dayData && dayData.total_energy) {
+          totalMonthlyEnergy += dayData.total_energy // Already in kW from database
+        }
+      }
+      
+      // If device has a power limit and monthly energy exceeds it, don't activate
+      if (powerLimit > 0 && totalMonthlyEnergy >= powerLimit) {
+        console.log(`Schedule check: Device ${deviceData.outletName || 'Unknown'} power limit exceeded:`, {
+          monthlyEnergy: `${(totalMonthlyEnergy * 1000).toFixed(3)}W`,
+          powerLimit: `${(powerLimit * 1000)}W`,
+          scheduleResult: false,
+          reason: 'Monthly energy consumption exceeded power limit'
+        })
+        return false
+      }
     }
   }
 
@@ -3491,12 +3970,23 @@ export default function SetUp() {
     selectedOutlets: string[];
     combinedLimit: number;
     device_control?: string;
+    department?: string;
   }>({
     enabled: false,
     selectedOutlets: [],
     combinedLimit: 0,
-    device_control: 'on'
+    device_control: 'on',
+    department: ''
   })
+  
+  // Track all department combined limits
+  const [allDepartmentCombinedLimits, setAllDepartmentCombinedLimits] = useState<Record<string, {
+    enabled: boolean;
+    selectedOutlets: string[];
+    combinedLimit: number;
+    device_control?: string;
+    department?: string;
+  }>>({})
   const [deleteSuccessModal, setDeleteSuccessModal] = useState<{
     isOpen: boolean;
     deviceName: string;
@@ -3557,11 +4047,12 @@ export default function SetUp() {
     const devicesRef = ref(realtimeDb, 'devices')
     
     const unsubscribe = onValue(devicesRef, (snapshot) => {
-      console.log(`SetUp: Firebase data updated at ${new Date().toLocaleTimeString()}`)
-      const data = snapshot.val()
-      console.log('SetUp: Firebase data received:', data)
-      
-      if (data) {
+      try {
+        console.log(`SetUp: Firebase data updated at ${new Date().toLocaleTimeString()}`)
+        const data = snapshot.val()
+        console.log('SetUp: Firebase data received:', data)
+        
+        if (data) {
         const devicesArray: Device[] = []
         let deviceId = 1
 
@@ -3640,12 +4131,35 @@ export default function SetUp() {
 
               // Parse schedule time range (e.g., "8:00 AM - 5:00 PM")
               const timeRange = schedule.timeRange
+              if (!timeRange || typeof timeRange !== 'string' || !timeRange.includes(' - ')) {
+                return controlState === 'on'
+              }
+              
               const [startTimeStr, endTimeStr] = timeRange.split(' - ')
+              
+              // Validate split results
+              if (!startTimeStr || !endTimeStr) {
+                return controlState === 'on'
+              }
               
               // Convert 12-hour format to 24-hour format
               const convertTo24Hour = (time12h: string): number => {
-                const [time, modifier] = time12h.split(' ')
-                let [hours, minutes] = time.split(':').map(Number)
+                if (!time12h || typeof time12h !== 'string') {
+                  throw new Error('Invalid time format')
+                }
+                const parts = time12h.split(' ')
+                if (parts.length < 2 || !parts[0] || !parts[1]) {
+                  throw new Error('Invalid time format - missing AM/PM')
+                }
+                const [time, modifier] = parts
+                const timeParts = time.split(':')
+                if (timeParts.length < 2 || !timeParts[0] || !timeParts[1]) {
+                  throw new Error('Invalid time format - missing minutes')
+                }
+                let [hours, minutes] = timeParts.map(Number)
+                if (isNaN(hours) || isNaN(minutes)) {
+                  throw new Error('Invalid time format - non-numeric values')
+                }
                 
                 if (hours === 12) {
                   hours = 0
@@ -3658,31 +4172,48 @@ export default function SetUp() {
                 return hours * 60 + minutes
               }
 
-              const startTime = convertTo24Hour(startTimeStr)
-              const endTime = convertTo24Hour(endTimeStr)
+              let startTime: number, endTime: number
+              try {
+                startTime = convertTo24Hour(startTimeStr)
+                endTime = convertTo24Hour(endTimeStr)
+              } catch (error) {
+                return controlState === 'on'
+              }
 
               // Check if current time is within schedule
               // Turn off exactly at end time - device is active only when current time is less than end time
               const isWithinTimeRange = currentTime >= startTime && currentTime < endTime
 
               // Check if current day is in schedule
-              const frequency = schedule.frequency?.toLowerCase() || ''
+              const frequency = schedule.frequency
               let isCorrectDay = false
 
-              if (frequency === 'daily') {
-                isCorrectDay = true
-              } else if (frequency === 'weekdays') {
-                isCorrectDay = currentDay >= 1 && currentDay <= 5 // Monday to Friday
-              } else if (frequency === 'weekends') {
-                isCorrectDay = currentDay === 0 || currentDay === 6 // Sunday or Saturday
-              } else if (frequency.includes(',')) {
-                // Custom days (e.g., "MONDAY, WEDNESDAY, FRIDAY")
-                const dayMap: { [key: string]: number } = {
-                  'monday': 1, 'tuesday': 2, 'wednesday': 3, 'thursday': 4, 
-                  'friday': 5, 'saturday': 6, 'sunday': 0
+              if (!frequency || typeof frequency !== 'string' || frequency.trim() === '') {
+                isCorrectDay = true // Default to daily if no frequency
+              } else {
+                const frequencyLower = frequency.toLowerCase()
+                if (frequencyLower === 'daily') {
+                  isCorrectDay = true
+                } else if (frequencyLower === 'weekdays') {
+                  isCorrectDay = currentDay >= 1 && currentDay <= 5 // Monday to Friday
+                } else if (frequencyLower === 'weekends') {
+                  isCorrectDay = currentDay === 0 || currentDay === 6 // Sunday or Saturday
+                } else if (frequency.includes(',')) {
+                  try {
+                    // Custom days (e.g., "MONDAY, WEDNESDAY, FRIDAY")
+                    const dayMap: { [key: string]: number } = {
+                      'monday': 1, 'tuesday': 2, 'wednesday': 3, 'thursday': 4, 
+                      'friday': 5, 'saturday': 6, 'sunday': 0
+                    }
+                    const scheduledDays = frequency.split(',').map((day: string) => {
+                      if (!day || typeof day !== 'string') return undefined
+                      return dayMap[day.trim().toLowerCase()]
+                    }).filter((day: number | undefined) => day !== undefined) as number[]
+                    isCorrectDay = scheduledDays.includes(currentDay)
+                  } catch (error) {
+                    isCorrectDay = true // Default to daily if parsing fails
+                  }
                 }
-                const scheduledDays = frequency.split(',').map((day: string) => dayMap[day.trim().toLowerCase()])
-                isCorrectDay = scheduledDays.includes(currentDay)
               }
 
               return isWithinTimeRange && isCorrectDay
@@ -3788,6 +4319,11 @@ export default function SetUp() {
             const currentAmpere = outlet.sensor_data?.current || 0
             const currentAmpereDisplay = `${currentAmpere.toFixed(2)}A`
             
+            // Get department from office_info
+            const deviceDepartment = outlet.office_info?.department ? 
+              outlet.office_info.department.toLowerCase().replace(/\s+/g, '-') : 
+              undefined
+            
             const deviceData: Device = {
               id: String(deviceId).padStart(3, '0'),
               outletName: outletKey, // Use the actual outlet key from Firebase
@@ -3800,17 +4336,26 @@ export default function SetUp() {
               todayUsage: todayEnergyDisplay, // Use the new display format
               monthUsage: calculateMonthlyEnergy(outlet), // Calculate monthly energy
               status: deviceStatus,
+              department: deviceDepartment,
               schedule: outlet.schedule && (outlet.schedule.timeRange || outlet.schedule.startTime || outlet.schedule.frequency) ? {
-                timeRange: outlet.schedule.timeRange || (outlet.schedule.startTime && outlet.schedule.endTime ? 
+                timeRange: outlet.schedule.timeRange || (outlet.schedule.startTime && outlet.schedule.endTime && 
+                  typeof outlet.schedule.startTime === 'string' && typeof outlet.schedule.endTime === 'string' ? 
                   (() => {
                     // Convert 24-hour format to 12-hour format for display
                     const convertTo12Hour = (time24h: string) => {
-                      if (!time24h) return ''
-                      const [hours, minutes] = time24h.split(':')
-                      const hour = parseInt(hours, 10)
-                      const ampm = hour >= 12 ? 'PM' : 'AM'
-                      const hour12 = hour % 12 || 12
-                      return `${hour12}:${minutes} ${ampm}`
+                      if (!time24h || typeof time24h !== 'string') return ''
+                      try {
+                        const parts = time24h.split(':')
+                        if (parts.length < 2 || !parts[0] || !parts[1]) return ''
+                        const hour = parseInt(parts[0], 10)
+                        if (isNaN(hour)) return ''
+                        const minutes = parts[1]
+                        const ampm = hour >= 12 ? 'PM' : 'AM'
+                        const hour12 = hour % 12 || 12
+                        return `${hour12}:${minutes} ${ampm}`
+                      } catch (error) {
+                        return ''
+                      }
                     }
                     const startTime12 = convertTo12Hour(outlet.schedule.startTime)
                     const endTime12 = convertTo12Hour(outlet.schedule.endTime)
@@ -3827,47 +4372,95 @@ export default function SetUp() {
         console.log('SetUp: Setting devices array:', devicesArray)
         setDevices(devicesArray)
         
-        // Check combined monthly limits after setting devices
-        checkCombinedMonthlyLimit(data, combinedLimitInfo)
+        // NOTE: Monthly limit checking is handled by the scheduler useEffect (checkScheduleAndUpdateDevices)
+        // Do NOT call checkCombinedMonthlyLimit here to avoid spamming database updates
       } else {
         console.log('SetUp: No data in Firebase - all devices deleted or database empty')
         setDevices([])
       }
+      } catch (error) {
+        console.error('SetUp: Error processing Firebase data:', error)
+        // Don't crash the app - just log the error
+      }
     })
 
-    return () => off(devicesRef, 'value', unsubscribe)
-  }, [combinedLimitInfo])
+      return () => off(devicesRef, 'value', unsubscribe)
+   }, [allDepartmentCombinedLimits])
 
-  // Function to check daily limits
+  // Function to check monthly limits
   // IMPORTANT: This function checks daily logs ONLY for power limit enforcement
 // It does NOT check for unplug detection - unplug detection is based on disabled_by_unplug in schedule
-const checkDailyLimit = (deviceData: any): boolean => {
+const checkMonthlyLimit = (deviceData: any): boolean => {
     try {
       // NOTE: This function uses daily_logs ONLY for power limit checks
       // Unplug detection is based on disabled_by_unplug in schedule, NOT daily logs
       const powerLimit = deviceData.relay_control?.auto_cutoff?.power_limit || 0
-      if (powerLimit <= 0) return false // No daily limit set
+      if (powerLimit <= 0) return false // No monthly limit set
       
-      const today = new Date()
-      const todayDateKey = `day_${today.getFullYear()}_${String(today.getMonth() + 1).padStart(2, '0')}_${String(today.getDate()).padStart(2, '0')}`
-      const todayLogs = deviceData.daily_logs?.[todayDateKey]
-      const todayTotalEnergy = todayLogs?.total_energy || 0 // This is in kW
+      // Calculate monthly energy from daily logs
+      const now = new Date()
+      const currentYear = now.getFullYear()
+      const currentMonth = now.getMonth() + 1
+      const daysInMonth = new Date(currentYear, currentMonth, 0).getDate()
+      let totalMonthlyEnergy = 0
       
-      console.log('SetUp: Daily limit check:', {
+      // Sum up energy for all days in the current month
+      for (let day = 1; day <= daysInMonth; day++) {
+        const dateKey = `day_${currentYear}_${String(currentMonth).padStart(2, '0')}_${String(day).padStart(2, '0')}`
+        const dayData = deviceData.daily_logs?.[dateKey]
+        if (dayData && dayData.total_energy) {
+          totalMonthlyEnergy += dayData.total_energy // Already in kW from database
+        }
+      }
+      
+      console.log('SetUp: Monthly limit check:', {
         powerLimit: `${powerLimit}kW`,
-        todayTotalEnergy: `${todayTotalEnergy}kW`,
-        exceeded: todayTotalEnergy >= powerLimit
+        monthlyTotalEnergy: `${totalMonthlyEnergy}kW`,
+        exceeded: totalMonthlyEnergy >= powerLimit
       })
       
-      return todayTotalEnergy >= powerLimit
+      return totalMonthlyEnergy >= powerLimit
     } catch (error) {
-      console.error('SetUp: Error checking daily limit:', error)
+      console.error('SetUp: Error checking monthly limit:', error)
       return false
     }
   }
 
   // Real-time scheduler that checks every minute and updates control.device
   useEffect(() => {
+    // Helper function to check if combined monthly limit is exceeded for a single device (returns boolean)
+    const checkCombinedMonthlyLimitHelper = (deviceData: any, combinedLimitInfo: any): boolean => {
+      try {
+        if (!combinedLimitInfo?.enabled) return false
+        
+        const combinedLimitWatts = combinedLimitInfo.combinedLimit
+        if (!combinedLimitWatts || combinedLimitWatts === "No Limit" || combinedLimitWatts <= 0) return false
+        
+        // Calculate monthly energy from daily logs
+        const now = new Date()
+        const currentYear = now.getFullYear()
+        const currentMonth = now.getMonth() + 1
+        const daysInMonth = new Date(currentYear, currentMonth, 0).getDate()
+        let totalMonthlyEnergy = 0
+        
+        // Sum up energy for all days in the current month
+        for (let day = 1; day <= daysInMonth; day++) {
+          const dateKey = `day_${currentYear}_${String(currentMonth).padStart(2, '0')}_${String(day).padStart(2, '0')}`
+          const dayData = deviceData?.daily_logs?.[dateKey]
+          if (dayData && dayData.total_energy) {
+            totalMonthlyEnergy += dayData.total_energy // Already in kW from database
+          }
+        }
+        
+        const totalMonthlyEnergyWh = totalMonthlyEnergy * 1000 // Convert to Wh
+        
+        return totalMonthlyEnergyWh >= combinedLimitWatts
+      } catch (error) {
+        console.error('SetUp: Error checking combined monthly limit:', error)
+        return false
+      }
+    }
+    
     const checkScheduleAndUpdateDevices = async () => {
       try {
         const devicesRef = ref(realtimeDb, 'devices')
@@ -3879,31 +4472,60 @@ const checkDailyLimit = (deviceData: any): boolean => {
           
           // HIERARCHY: Check monthly limit FIRST (highest priority) - AUTO TURN OFF
           // This automatically turns off all devices if monthly limit is exceeded
-          console.log('🔍 SetUp: Running monthly limit check FIRST...')
-          await checkCombinedMonthlyLimit(devicesData, combinedLimitInfo)
+          // Check ALL departments' combined limits
+          console.log('🔍 SetUp: Running monthly limit check FIRST for all departments...')
           
-          // Check monthly limit status for combined group
-          let monthlyLimitExceeded = false
-          if (combinedLimitInfo?.enabled && combinedLimitInfo?.selectedOutlets?.length > 0) {
-            const totalMonthlyEnergy = calculateCombinedMonthlyEnergy(devicesData, combinedLimitInfo.selectedOutlets)
-            const combinedLimitWatts = combinedLimitInfo.combinedLimit
-            
-            // Skip limit check if "No Limit" is set
-            if (String(combinedLimitWatts) === "No Limit") {
-              console.log(`📊 SetUp: Combined limit is set to "No Limit" - proceeding with normal schedule processing`)
-              monthlyLimitExceeded = false
-            } else if (totalMonthlyEnergy >= combinedLimitWatts) {
-              monthlyLimitExceeded = true
-              console.log(`🚨 SetUp: MONTHLY LIMIT EXCEEDED for combined group`)
-              console.log(`📊 Current: ${totalMonthlyEnergy.toFixed(3)}W >= Limit: ${combinedLimitWatts}W`)
-              console.log(`🔍 SetUp: Will check individual device limits within combined group`)
-            } else {
-              console.log(`✅ SetUp: Monthly limit OK - proceeding with normal schedule processing`)
-              console.log(`📊 Current: ${totalMonthlyEnergy.toFixed(3)}W < Limit: ${combinedLimitWatts}W`)
+          const departmentKeys = Object.keys(allDepartmentCombinedLimits)
+          for (const deptKey of departmentKeys) {
+            const deptLimitInfo = allDepartmentCombinedLimits[deptKey]
+            if (deptLimitInfo?.enabled && deptLimitInfo?.selectedOutlets?.length > 0) {
+              await checkCombinedMonthlyLimit(devicesData, {
+                ...deptLimitInfo,
+                department: deptKey
+              })
             }
           }
           
-          for (const [outletKey, outletData] of Object.entries(devicesData)) {
+          // CRITICAL: Re-fetch device data AFTER monthly limit check
+          // The checkCombinedMonthlyLimit may have set status='OFF' in Firebase
+          // We need fresh data to respect those changes
+          const freshSnapshot = await get(devicesRef)
+          if (!freshSnapshot.exists()) {
+            console.log('SetUp: No device data after monthly limit check')
+            return
+          }
+          const freshDevicesData = freshSnapshot.val()
+          console.log('🔄 SetUp: Re-fetched device data after monthly limit enforcement')
+          
+          // Check monthly limit status for all departments' combined groups
+          const departmentLimitStatus: Record<string, { exceeded: boolean; totalEnergy: number; limit: number }> = {}
+          
+          for (const deptKey of departmentKeys) {
+            const deptLimitInfo = allDepartmentCombinedLimits[deptKey]
+            if (deptLimitInfo?.enabled && deptLimitInfo?.selectedOutlets?.length > 0) {
+              const totalMonthlyEnergy = calculateCombinedMonthlyEnergy(freshDevicesData, deptLimitInfo.selectedOutlets)
+              const combinedLimitWatts = deptLimitInfo.combinedLimit
+              
+              // Skip limit check if "No Limit" is set
+              if (String(combinedLimitWatts) !== "No Limit" && combinedLimitWatts > 0) {
+                departmentLimitStatus[deptKey] = {
+                  exceeded: totalMonthlyEnergy >= combinedLimitWatts,
+                  totalEnergy: totalMonthlyEnergy,
+                  limit: combinedLimitWatts
+                }
+                
+                if (totalMonthlyEnergy >= combinedLimitWatts) {
+                  console.log(`🚨 SetUp: MONTHLY LIMIT EXCEEDED for department ${deptKey}`)
+                  console.log(`📊 Current: ${totalMonthlyEnergy.toFixed(3)}W >= Limit: ${combinedLimitWatts}W`)
+                } else {
+                  console.log(`✅ SetUp: Monthly limit OK for department ${deptKey}`)
+                  console.log(`📊 Current: ${totalMonthlyEnergy.toFixed(3)}W < Limit: ${combinedLimitWatts}W`)
+                }
+              }
+            }
+          }
+          
+          for (const [outletKey, outletData] of Object.entries(freshDevicesData)) {
             const deviceData = outletData as FirebaseDeviceData
             
             // Only process devices with schedules
@@ -3913,7 +4535,11 @@ const checkDailyLimit = (deviceData: any): boolean => {
               const currentControlState = deviceData.control?.device || 'off'
               const currentStatus = deviceData.status || 'ON'
               const currentMainStatus = deviceData.relay_control?.main_status || 'ON'
-              
+
+              // NOTE: "Idle" is a display-only status calculated in the component, not stored in Firebase
+              // We don't check for idle status here - instead, we check the schedule time
+              // If the device should be ON by schedule, it stays ON regardless of idle detection
+
               // PRIMARY CHECK: RESPECT disabled_by_unplug from schedule - this is the BASIS for automatically turning devices off
               // NOTE: disabled_by_unplug in schedule is the basis for unplug detection, NOT daily logs
               // Daily logs are ONLY used for power limit checks, never for unplug detection
@@ -3943,99 +4569,458 @@ const checkDailyLimit = (deviceData: any): boolean => {
                 }
                 continue
               }
-              
-              // RESPECT manual override - if status is OFF, don't override it (device is manually disabled)
-              if (currentStatus === 'OFF') {
-                console.log(`SetUp: Device ${outletKey} has status = 'OFF' - respecting manual override, skipping schedule check`)
-                continue
-              }
-              
-              // RESPECT bypass mode - if main_status is ON, don't override it (device is in bypass mode)
+
+              // RESPECT bypass mode FIRST - if main_status is ON, device is in bypass mode (manually overridden to stay ON)
+              // In bypass mode, schedule should NOT control the device - it stays ON regardless of schedule
               if (currentMainStatus === 'ON') {
                 console.log(`SetUp: Device ${outletKey} has main_status = 'ON' - respecting bypass mode, skipping schedule check`)
                 continue
               }
+
+              // RESPECT manual override - if status is OFF AND main_status is OFF, don't override it (device is manually disabled)
+              // This is a true manual override where user explicitly turned device OFF
+              if (currentStatus === 'OFF' && currentMainStatus === 'OFF') {
+                console.log(`SetUp: Device ${outletKey} has status = 'OFF' and main_status = 'OFF' - respecting manual override, skipping schedule check`)
+                continue
+              }
               
-              // Check if device is in combined group
-              const outletDisplayName = outletKey.replace('_', ' ')
-              const isInCombinedGroup = combinedLimitInfo?.enabled && 
-                                       combinedLimitInfo?.selectedOutlets?.includes(outletDisplayName)
+              // If status is 'OFF' but main_status is not 'OFF' (or is 'ON'), it might be from a previous schedule turn-off
+              // Allow the schedule to control it (it will turn ON if schedule says so, or OFF if schedule says so)
+              // The scheduler will update both control.device and main_status based on schedule
               
-              // HIERARCHY: Only check schedule if monthly and daily limits allow (THIRD priority)
-              // Check if device should be active based on current time and schedule
-              // Skip individual limit check if device is in combined group (combined limit takes precedence)
-              // Note: disabled_by_unplug is already checked at the top of this loop, so devices disabled by unplug
-              // will never reach this point (they use continue to skip the rest of the loop)
-              const shouldBeActive = isDeviceActiveBySchedule(deviceData.schedule, 'on', deviceData, isInCombinedGroup)
-              let newControlState = shouldBeActive ? 'on' : 'off'
-              
-              // AUTOMATIC STATUS UPDATE: Apply limit restrictions to the schedule result
-              if (isInCombinedGroup && monthlyLimitExceeded) {
-                // For devices in combined group when monthly limit is exceeded:
-                // Only allow ON if individual daily limit is OK
-                const isDailyLimitExceeded = checkDailyLimit(deviceData)
-                if (isDailyLimitExceeded) {
-                  newControlState = 'off' // Force OFF if daily limit exceeded
-                  console.log(`🔒 SetUp: AUTOMATIC UPDATE - Forcing ${outletKey} OFF due to individual daily limit exceeded (monthly limit also exceeded)`)
-                } else if (shouldBeActive) {
-                  newControlState = 'on' // Allow ON if schedule says ON and daily limit OK
-                  console.log(`✅ SetUp: AUTOMATIC UPDATE - Allowing ${outletKey} ON (schedule says ON, individual daily limit OK despite monthly limit exceeded)`)
+              // CRITICAL: Check if device is past schedule end time BEFORE any other logic
+              if (deviceData.schedule && (deviceData.schedule.timeRange || deviceData.schedule.startTime)) {
+                const now = new Date()
+                const currentTime = now.getHours() * 60 + now.getMinutes()
+                let endTime: number = 0
+                
+                if (deviceData.schedule.startTime && deviceData.schedule.endTime &&
+                    typeof deviceData.schedule.startTime === 'string' && typeof deviceData.schedule.endTime === 'string') {
+                  try {
+                    const [endHours, endMinutes] = deviceData.schedule.endTime.split(':').map(Number)
+                    if (!isNaN(endHours) && !isNaN(endMinutes)) {
+                      endTime = endHours * 60 + endMinutes
+                    }
+                  } catch (error) {
+                    // If parsing fails, skip this check
+                  }
+                } else if (deviceData.schedule.timeRange && typeof deviceData.schedule.timeRange === 'string' &&
+                           deviceData.schedule.timeRange.includes(' - ')) {
+                  try {
+                    const timeRangeParts = deviceData.schedule.timeRange.split(' - ')
+                    if (timeRangeParts.length >= 2 && timeRangeParts[1]) {
+                      const endTimeStr = timeRangeParts[1]
+                      const convertTo24Hour = (time12h: string): number => {
+                        if (!time12h || typeof time12h !== 'string') return 0
+                        const parts = time12h.split(' ')
+                        if (parts.length < 2) return 0
+                        const [time, modifier] = parts
+                        if (!time || !modifier) return 0
+                        const timeParts = time.split(':')
+                        if (timeParts.length < 2) return 0
+                        let [hours, minutes] = timeParts.map(Number)
+                        if (isNaN(hours) || isNaN(minutes)) return 0
+                        if (hours === 12) hours = 0
+                        if (modifier === 'PM') hours += 12
+                        return hours * 60 + minutes
+                      }
+                      endTime = convertTo24Hour(endTimeStr)
+                    }
+                  } catch (error) {
+                    // If parsing fails, skip this check
+                  }
                 }
-              } else if (isInCombinedGroup && !monthlyLimitExceeded) {
-                // For devices in combined group when monthly limit is OK:
-                // ONLY check monthly limit - DO NOT check individual daily limit
-                // The combined monthly limit takes precedence over individual limits
-                const monthlyLimitCheck = await checkMonthlyLimitBeforeTurnOn(outletKey, combinedLimitInfo)
-                if (!monthlyLimitCheck.canTurnOn) {
-                  newControlState = 'off' // Force OFF if monthly limit exceeded
-                  console.log(`🔒 SetUp: AUTOMATIC UPDATE - Forcing ${outletKey} OFF due to monthly limit exceeded`)
-                } else if (shouldBeActive) {
-                  newControlState = 'on' // Allow ON if schedule says ON and monthly limit OK
-                  console.log(`✅ SetUp: AUTOMATIC UPDATE - Allowing ${outletKey} ON (schedule says ON, monthly limit OK - individual daily limit ignored for combined group)`)
-                }
-              } else {
-                // For devices NOT in combined group:
-                // Only check individual daily limit
-                const isDailyLimitExceeded = checkDailyLimit(deviceData)
-                if (isDailyLimitExceeded) {
-                  newControlState = 'off' // Force OFF if daily limit exceeded
-                  console.log(`🔒 SetUp: AUTOMATIC UPDATE - Forcing ${outletKey} OFF due to daily limit exceeded`)
-                } else if (shouldBeActive) {
-                  newControlState = 'on' // Allow ON if schedule says ON and daily limit OK
-                  console.log(`✅ SetUp: AUTOMATIC UPDATE - Allowing ${outletKey} ON (schedule says ON, daily limit OK)`)
+                
+                // If device is past schedule end time, FORCE it OFF and set main_status to OFF
+                if (endTime > 0 && currentTime >= endTime) {
+                  console.log(`🔒 SetUp: Device ${outletKey} is past schedule end time - FORCING OFF and locking main_status`)
+                  
+                  // Force device OFF
+                  await update(ref(realtimeDb, `devices/${outletKey}/control`), {
+                    device: 'off'
+                  })
+                  
+                  // Lock main_status to OFF to prevent any re-activation
+                  await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
+                    main_status: 'OFF'
+                  })
+                  
+                  console.log(`🔒 SetUp: Device ${outletKey} LOCKED OFF - past schedule end time (current: ${Math.floor(currentTime / 60)}:${(currentTime % 60).toString().padStart(2, '0')}, end: ${Math.floor(endTime / 60)}:${(endTime % 60).toString().padStart(2, '0')})`)
+                  continue
                 }
               }
               
+              // Check if device is in any department's combined group (normalize outlet names for comparison)
+              const normalizedOutletKey = outletKey.replace(/_/g, ' ').toLowerCase().trim()
+              const outletNameWithSpace = outletKey.replace(/_/g, ' ')
+              
+              // Find which department this device belongs to and if it's in that department's combined limit
+              let deviceDepartmentLimit: { department: string; limitInfo: any; device_control?: string } | null = null
+              
+              // First, get the device's department
+              const deviceDept = deviceData.office_info?.department
+              const deviceDeptKey = deviceDept ? deviceDept.toLowerCase().replace(/\s+/g, '-') : null
+              
+              // Check if device's department has combined limits and if device is included
+              if (deviceDeptKey && allDepartmentCombinedLimits[deviceDeptKey]) {
+                const deptLimitInfo = allDepartmentCombinedLimits[deviceDeptKey]
+                if (deptLimitInfo.enabled && deptLimitInfo.selectedOutlets) {
+                  const isInDeptLimit = deptLimitInfo.selectedOutlets.some((selectedOutlet: string) => {
+                    const normalizedSelected = selectedOutlet.replace(/_/g, ' ').toLowerCase().trim()
+                    return normalizedSelected === normalizedOutletKey || 
+                           selectedOutlet === outletKey ||
+                           selectedOutlet.replace(/_/g, ' ') === outletKey.replace(/_/g, ' ')
+                  })
+                  
+                  if (isInDeptLimit) {
+                    // Get the department's device_control from database
+                    const deptPath = getDepartmentCombinedLimitPath(deviceDeptKey)
+                    const deptRef = ref(realtimeDb, deptPath)
+                    const deptSnapshot = await get(deptRef)
+                    const deptDeviceControl = deptSnapshot.exists() ? deptSnapshot.val()?.device_control : 'on'
+                    
+                    deviceDepartmentLimit = {
+                      department: deviceDeptKey,
+                      limitInfo: deptLimitInfo,
+                      device_control: deptDeviceControl
+                    }
+                  }
+                }
+              }
+              
+              // Fallback: Check all departments if device department not found (backward compatibility)
+              if (!deviceDepartmentLimit) {
+                for (const [deptKey, deptLimitInfo] of Object.entries(allDepartmentCombinedLimits)) {
+                  const typedDeptLimitInfo = deptLimitInfo as {
+                    enabled: boolean;
+                    selectedOutlets: string[];
+                    combinedLimit: number;
+                    device_control?: string;
+                    department?: string;
+                  }
+                  
+                  if (typedDeptLimitInfo.enabled && typedDeptLimitInfo.selectedOutlets) {
+                    const isInDeptLimit = typedDeptLimitInfo.selectedOutlets.some((selectedOutlet: string) => {
+                      const normalizedSelected = selectedOutlet.replace(/_/g, ' ').toLowerCase().trim()
+                      return normalizedSelected === normalizedOutletKey || 
+                             selectedOutlet === outletKey ||
+                             selectedOutlet.replace(/_/g, ' ') === outletKey.replace(/_/g, ' ')
+                    })
+                    
+                    if (isInDeptLimit) {
+                      // Get the department's device_control from database
+                      const deptPath = getDepartmentCombinedLimitPath(deptKey)
+                      const deptRef = ref(realtimeDb, deptPath)
+                      const deptSnapshot = await get(deptRef)
+                      const deptDeviceControl = deptSnapshot.exists() ? deptSnapshot.val()?.device_control : 'on'
+                      
+                      deviceDepartmentLimit = {
+                        department: deptKey,
+                        limitInfo: typedDeptLimitInfo,
+                        device_control: deptDeviceControl
+                      }
+                      break
+                    }
+                  }
+                }
+              }
+              
+              const isInCombinedGroup = !!deviceDepartmentLimit
+              
+              // CRITICAL: If device is in a department's combined group and that department's device_control is "off", force device OFF
+              if (isInCombinedGroup && deviceDepartmentLimit?.device_control === 'off') {
+                console.log(`🔒 SetUp: FORCING ${outletKey} OFF - ${deviceDepartmentLimit.department} combined_limit_settings/device_control is OFF (monthly limit enforcement)`)
+                // Force device OFF
+                await update(ref(realtimeDb, `devices/${outletKey}/control`), {
+                  device: 'off'
+                })
+                await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
+                  main_status: 'OFF'
+                })
+                // CRITICAL: Only set status='OFF' if device is not currently idle (control was 'on')
+                // If device was idle (control='on' but no activity), setting status='OFF' would override idle detection
+                // For idle devices, leave status as is - the display logic will show "Inactive" when control='off'
+                if (currentControlState === 'on') {
+                  // Device was on (possibly idle) - don't set status='OFF', let display logic handle it
+                  console.log(`✅ SetUp: Device ${outletKey} was ON (possibly idle) - not setting status='OFF' to preserve idle detection`)
+                } else {
+                  // Device was already off - safe to set status='OFF'
+                  await update(ref(realtimeDb, `devices/${outletKey}`), {
+                    status: 'OFF'
+                  })
+                }
+                continue
+              }
+              
+              // CRITICAL: Check limits FIRST before any schedule logic
+              // PRIORITY #1: Monthly limit check (for combined group devices)
+              // PRIORITY #2: Combined monthly limit check (for combined group devices)
+              // PRIORITY #3: Individual monthly limit check (for non-combined group devices)
+              
+              // CRITICAL: Initialize newControlState to current state, not 'off'
+              // This prevents devices from being turned off by default before schedule/limit checks
+              // If a device is idle (control='on'), it should stay 'on' unless schedule/limits say otherwise
+              let newControlState = currentControlState // Start with current state
+              let limitsExceeded = false
+              
+              if (isInCombinedGroup && deviceDepartmentLimit) {
+                // For devices in combined group: Check monthly limit FIRST
+                const monthlyLimitCheck = await checkMonthlyLimitBeforeTurnOn(outletKey, {
+                  ...deviceDepartmentLimit.limitInfo,
+                  department: deviceDepartmentLimit.department
+                })
+                if (!monthlyLimitCheck.canTurnOn) {
+                  // CRITICAL: If monthly limit exceeded, FORCE OFF and skip schedule check entirely
+                  limitsExceeded = true
+                  newControlState = 'off'
+                  console.log(`🔒 SetUp: FORCING ${outletKey} OFF - MONTHLY LIMIT EXCEEDED for department ${deviceDepartmentLimit.department} - SKIPPING SCHEDULE CHECK`)
+                  
+                  // Also check device_control - if it's 'off' due to monthly limit, enforce it
+                  if (deviceDepartmentLimit.device_control === 'off') {
+                    await update(ref(realtimeDb, `devices/${outletKey}/control`), {
+                      device: 'off'
+                    })
+                    await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
+                      main_status: 'OFF'
+                    })
+                    // CRITICAL: Only set status='OFF' if device is not currently idle (control was 'on')
+                    // If device was idle (control='on' but no activity), setting status='OFF' would override idle detection
+                    if (currentControlState === 'on') {
+                      // Device was on (possibly idle) - don't set status='OFF', let display logic handle it
+                      console.log(`✅ SetUp: Device ${outletKey} was ON (possibly idle) - not setting status='OFF' to preserve idle detection`)
+                    } else {
+                      // Device was already off - safe to set status='OFF'
+                      await update(ref(realtimeDb, `devices/${outletKey}`), {
+                        status: 'OFF'
+                      })
+                    }
+                    console.log(`🔒 SetUp: Enforced device_control='off' for ${outletKey} due to monthly limit exceeded in department ${deviceDepartmentLimit.department}`)
+                  }
+                } else {
+                  // Monthly limit OK, now check combined monthly limit
+                  const isMonthlyLimitExceeded = checkCombinedMonthlyLimitHelper(deviceData, {
+                    ...deviceDepartmentLimit.limitInfo,
+                    department: deviceDepartmentLimit.department
+                  })
+                  if (isMonthlyLimitExceeded) {
+                    limitsExceeded = true
+                    newControlState = 'off' // Force OFF if combined monthly limit exceeded
+                    console.log(`🔒 SetUp: FORCING ${outletKey} OFF - COMBINED MONTHLY LIMIT EXCEEDED for department ${deviceDepartmentLimit.department} - SKIPPING SCHEDULE CHECK`)
+                  }
+                }
+              } else {
+                // For devices NOT in combined group: Check individual monthly limit
+                const isMonthlyLimitExceeded = checkMonthlyLimit(deviceData)
+                if (isMonthlyLimitExceeded) {
+                  limitsExceeded = true
+                  newControlState = 'off' // Force OFF if monthly limit exceeded
+                  console.log(`🔒 SetUp: FORCING ${outletKey} OFF - INDIVIDUAL MONTHLY LIMIT EXCEEDED - SKIPPING SCHEDULE CHECK`)
+                }
+              }
+              
+              // ONLY check schedule if limits are NOT exceeded
+              // IMPORTANT: Each device is processed independently - unplugged devices don't block others
+              if (!limitsExceeded) {
+                // Check if device has combined schedule (stored in device's schedule with isCombinedSchedule: true)
+                const hasCombinedSchedule = deviceData.schedule?.isCombinedSchedule === true
+                
+                // Use the device's schedule (which may be a combined schedule)
+                // Combined schedules are stored directly in the device's schedule with isCombinedSchedule: true
+                const scheduleToCheck = deviceData.schedule
+                
+                const shouldBeActive = isDeviceActiveBySchedule(scheduleToCheck, 'on', deviceData, isInCombinedGroup)
+                newControlState = shouldBeActive ? 'on' : 'off'
+                
+                // Log detailed schedule information for debugging
+                const now = new Date()
+                const currentTime = now.getHours() * 60 + now.getMinutes()
+                const scheduleInfo = scheduleToCheck ? {
+                  timeRange: scheduleToCheck.timeRange,
+                  startTime: scheduleToCheck.startTime,
+                  endTime: scheduleToCheck.endTime,
+                  frequency: scheduleToCheck.frequency,
+                  isCombinedSchedule: hasCombinedSchedule
+                } : 'No schedule'
+                
+                console.log(`✅ SetUp: Limits OK for ${outletKey} - Schedule check:`, {
+                  shouldBeActive,
+                  newControlState,
+                  currentTime: `${Math.floor(currentTime / 60)}:${(currentTime % 60).toString().padStart(2, '0')}`,
+                  schedule: scheduleInfo,
+                  scheduleType: hasCombinedSchedule ? 'Combined' : 'Individual'
+                })
+              }
+              
               console.log(`SetUp: Final status determination for ${outletKey}:`, {
-                shouldBeActive: shouldBeActive,
-                newControlState: newControlState,
-                currentControlState: currentControlState,
-                isInCombinedGroup: isInCombinedGroup,
-                monthlyLimitExceeded: monthlyLimitExceeded,
-                needsUpdate: currentControlState !== newControlState
+                limitsExceeded: limitsExceeded,
+                finalDecision: newControlState,
+                currentState: currentControlState,
+                needsUpdate: currentControlState !== newControlState,
+                isInCombinedGroup: isInCombinedGroup
               })
               
               // Only update if status needs to change
               if (currentControlState !== newControlState) {
-                // FINAL SAFETY CHECK: Never turn ON a device that's disabled by unplug
-                // Re-fetch device data to ensure we have the latest state (in case flag was set between checks)
+                // FINAL SAFETY CHECK: Never turn ON a device if limits are exceeded
+                // Re-check limits before turning ON to prevent race conditions
                 if (newControlState === 'on') {
+                  console.log(`🔍 SetUp: FINAL SAFETY CHECK before turning ON ${outletKey}`)
+                  
+                  // Re-fetch latest device data
                   const latestDeviceRef = ref(realtimeDb, `devices/${outletKey}`)
                   const latestDeviceSnapshot = await get(latestDeviceRef)
                   const latestDeviceData = latestDeviceSnapshot.val()
                   
+                  // Check if device is disabled by unplug
                   if (latestDeviceData?.schedule?.disabled_by_unplug === true) {
-                    console.log(`SetUp: FINAL SAFETY CHECK - Preventing turn ON for ${outletKey} - device is disabled by unplug`)
+                    console.log(`🔒 SetUp: FINAL SAFETY CHECK - Preventing turn ON for ${outletKey} - device is disabled by unplug`)
                     // Force it to stay off
                     await update(ref(realtimeDb, `devices/${outletKey}/control`), {
                       device: 'off'
                     })
-                    // Also ensure main_status is OFF to prevent re-activation
                     await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
                       main_status: 'OFF'
                     })
                     continue
                   }
+                  
+                  // Re-check limits one final time before allowing ON
+                  // Re-check which department this device belongs to
+                  const latestDeviceDept = latestDeviceData?.office_info?.department
+                  const latestDeviceDeptKey = latestDeviceDept ? latestDeviceDept.toLowerCase().replace(/\s+/g, '-') : null
+                  let latestDeviceDepartmentLimit: { department: string; limitInfo: any } | null = null
+                  
+                  if (latestDeviceDeptKey && allDepartmentCombinedLimits[latestDeviceDeptKey]) {
+                    const deptLimitInfo = allDepartmentCombinedLimits[latestDeviceDeptKey]
+                    if (deptLimitInfo.enabled && deptLimitInfo.selectedOutlets) {
+                      const isInDeptLimit = deptLimitInfo.selectedOutlets.some((selectedOutlet: string) => {
+                        const normalizedSelected = selectedOutlet.replace(/_/g, ' ').toLowerCase().trim()
+                        return normalizedSelected === normalizedOutletKey || 
+                               selectedOutlet === outletKey ||
+                               selectedOutlet.replace(/_/g, ' ') === outletKey.replace(/_/g, ' ')
+                      })
+                      
+                      if (isInDeptLimit) {
+                        latestDeviceDepartmentLimit = {
+                          department: latestDeviceDeptKey,
+                          limitInfo: deptLimitInfo
+                        }
+                      }
+                    }
+                  }
+                  
+                  // Fallback: Check all departments
+                  if (!latestDeviceDepartmentLimit) {
+                    for (const [deptKey, deptLimitInfo] of Object.entries(allDepartmentCombinedLimits)) {
+                      const typedDeptLimitInfo = deptLimitInfo as {
+                        enabled: boolean;
+                        selectedOutlets: string[];
+                        combinedLimit: number;
+                      }
+                      
+                      if (typedDeptLimitInfo.enabled && typedDeptLimitInfo.selectedOutlets) {
+                        const isInDeptLimit = typedDeptLimitInfo.selectedOutlets.some((selectedOutlet: string) => {
+                          const normalizedSelected = selectedOutlet.replace(/_/g, ' ').toLowerCase().trim()
+                          return normalizedSelected === normalizedOutletKey || 
+                                 selectedOutlet === outletKey ||
+                                 selectedOutlet.replace(/_/g, ' ') === outletKey.replace(/_/g, ' ')
+                        })
+                        
+                        if (isInDeptLimit) {
+                          latestDeviceDepartmentLimit = {
+                            department: deptKey,
+                            limitInfo: typedDeptLimitInfo
+                          }
+                          break
+                        }
+                      }
+                    }
+                  }
+                  
+                  if (latestDeviceDepartmentLimit) {
+                    const finalMonthlyCheck = await checkMonthlyLimitBeforeTurnOn(outletKey, {
+                      ...latestDeviceDepartmentLimit.limitInfo,
+                      department: latestDeviceDepartmentLimit.department
+                    })
+                    if (!finalMonthlyCheck.canTurnOn) {
+                      console.log(`🔒 SetUp: FINAL SAFETY CHECK - Preventing turn ON for ${outletKey} - MONTHLY LIMIT EXCEEDED for department ${latestDeviceDepartmentLimit.department}`)
+                      await update(ref(realtimeDb, `devices/${outletKey}/control`), {
+                        device: 'off'
+                      })
+                      await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
+                        main_status: 'OFF'
+                      })
+                      // CRITICAL: Only set status='OFF' if device is not currently idle (control was 'on')
+                      // If device was idle (control='on' but no activity), setting status='OFF' would override idle detection
+                      const latestControlState = latestDeviceData?.control?.device || 'off'
+                      if (latestControlState === 'on') {
+                        // Device was on (possibly idle) - don't set status='OFF', let display logic handle it
+                        console.log(`✅ SetUp: FINAL SAFETY CHECK - Device ${outletKey} was ON (possibly idle) - not setting status='OFF' to preserve idle detection`)
+                      } else {
+                        // Device was already off - safe to set status='OFF'
+                        await update(ref(realtimeDb, `devices/${outletKey}`), {
+                          status: 'OFF'
+                        })
+                        console.log(`🔒 SetUp: Set status='OFF' for ${outletKey} to prevent re-activation loop`)
+                      }
+                      continue
+                    }
+                    
+                    const finalDailyCheck = checkCombinedMonthlyLimitHelper(latestDeviceData, {
+                      ...latestDeviceDepartmentLimit.limitInfo,
+                      department: latestDeviceDepartmentLimit.department
+                    })
+                    if (finalDailyCheck) {
+                      console.log(`🔒 SetUp: FINAL SAFETY CHECK - Preventing turn ON for ${outletKey} - COMBINED MONTHLY LIMIT EXCEEDED for department ${latestDeviceDepartmentLimit.department}`)
+                      await update(ref(realtimeDb, `devices/${outletKey}/control`), {
+                        device: 'off'
+                      })
+                      await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
+                        main_status: 'OFF'
+                      })
+                      // CRITICAL: Only set status='OFF' if device is not currently idle (control was 'on')
+                      // If device was idle (control='on' but no activity), setting status='OFF' would override idle detection
+                      const latestControlState = latestDeviceData?.control?.device || 'off'
+                      if (latestControlState === 'on') {
+                        // Device was on (possibly idle) - don't set status='OFF', let display logic handle it
+                        console.log(`✅ SetUp: FINAL SAFETY CHECK - Device ${outletKey} was ON (possibly idle) - not setting status='OFF' to preserve idle detection`)
+                      } else {
+                        // Device was already off - safe to set status='OFF'
+                        await update(ref(realtimeDb, `devices/${outletKey}`), {
+                          status: 'OFF'
+                        })
+                        console.log(`🔒 SetUp: Set status='OFF' for ${outletKey} to prevent re-activation loop`)
+                      }
+                      continue
+                    }
+                  } else {
+                    const finalDailyCheck = checkMonthlyLimit(latestDeviceData)
+                    if (finalDailyCheck) {
+                      console.log(`🔒 SetUp: FINAL SAFETY CHECK - Preventing turn ON for ${outletKey} - INDIVIDUAL MONTHLY LIMIT EXCEEDED`)
+                      await update(ref(realtimeDb, `devices/${outletKey}/control`), {
+                        device: 'off'
+                      })
+                      await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
+                        main_status: 'OFF'
+                      })
+                      // CRITICAL: Only set status='OFF' if device is not currently idle (control was 'on')
+                      // If device was idle (control='on' but no activity), setting status='OFF' would override idle detection
+                      const latestControlState = latestDeviceData?.control?.device || 'off'
+                      if (latestControlState === 'on') {
+                        // Device was on (possibly idle) - don't set status='OFF', let display logic handle it
+                        console.log(`✅ SetUp: FINAL SAFETY CHECK - Device ${outletKey} was ON (possibly idle) - not setting status='OFF' to preserve idle detection`)
+                      } else {
+                        // Device was already off - safe to set status='OFF'
+                        await update(ref(realtimeDb, `devices/${outletKey}`), {
+                          status: 'OFF'
+                        })
+                        console.log(`🔒 SetUp: Set status='OFF' for ${outletKey} to prevent re-activation loop`)
+                      }
+                      continue
+                    }
+                  }
+                  
+                  console.log(`✅ SetUp: FINAL SAFETY CHECK PASSED for ${outletKey} - All limits OK, proceeding with turn ON`)
                 }
                 
                 console.log(`SetUp: Real-time update: ${outletKey} control state from ${currentControlState} to ${newControlState}`)
@@ -4043,6 +5028,50 @@ const checkDailyLimit = (deviceData: any): boolean => {
                 await update(ref(realtimeDb, `devices/${outletKey}/control`), {
                   device: newControlState
                 })
+                
+                // CRITICAL: When automatically turning devices ON/OFF based on schedule, don't change main_status or status unnecessarily
+                // main_status should only be changed by manual user actions (bypass/override), not by automatic scheduler
+                // status should only be changed when actually turning devices off due to limits, not for idle devices
+                if (newControlState === 'on') {
+                  // IMPORTANT: When automatically turning ON based on schedule, do NOT set main_status to 'ON'
+                  // Leave main_status and status as is - they should only be changed by manual user actions
+                  // Do NOT set status='ON' - let the display logic determine if device is Active/Idle
+                  console.log(`✅ SetUp: Turned ON ${outletKey} based on schedule - leaving main_status and status unchanged (main_status: ${currentMainStatus}, status: ${currentStatus})`)
+                } else if (newControlState === 'off') {
+                  // When turning OFF based on schedule (not limits), set main_status to 'OFF' to prevent re-activation
+                  if (currentMainStatus !== 'OFF') {
+                    await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
+                      main_status: 'OFF'
+                    })
+                    console.log(`🔒 SetUp: Set main_status to 'OFF' for ${outletKey} to prevent re-activation (schedule-based turn-off)`)
+                  }
+                  
+                  // CRITICAL: Only set status='OFF' if limits are exceeded (to prevent re-activation loop)
+                  // For normal schedule-based turn-offs, do NOT set status='OFF' - this allows idle detection to work
+                  // The display logic will show "Inactive" when control.device is 'off'
+                  // and "Idle" when control.device is 'on' but no updates for 15 seconds
+                  // Setting status='OFF' would override the idle detection and show "OFF" instead of "Idle"
+                  if (limitsExceeded) {
+                    // CRITICAL: Only set status='OFF' if device is not currently idle (control was 'on')
+                    // If device was idle (control='on' but no activity), setting status='OFF' would override idle detection
+                    if (currentControlState === 'on') {
+                      // Device was on (possibly idle) - don't set status='OFF', let display logic handle it
+                      console.log(`✅ SetUp: Device ${outletKey} was ON (possibly idle) - not setting status='OFF' to preserve idle detection (limits exceeded)`)
+                    } else {
+                      // Device was already off - safe to set status='OFF'
+                      await update(ref(realtimeDb, `devices/${outletKey}`), {
+                        status: 'OFF'
+                      })
+                      console.log(`🔒 SetUp: Set status='OFF' for ${outletKey} to prevent re-activation loop (limits exceeded)`)
+                    }
+                  } else {
+                    // For schedule-based turn-offs, do NOT set status='OFF'
+                    // This allows the idle detection logic to work properly
+                    // If device was idle (control='on' but no activity), don't change its status
+                    // The display logic will show "Inactive" when control.device is 'off'
+                    console.log(`✅ SetUp: Not setting status='OFF' for ${outletKey} - allowing idle detection to work (schedule-based turn-off, no limits exceeded)`)
+                  }
+                }
               } else {
                 console.log(`SetUp: No update needed for ${outletKey} - control state already ${currentControlState}`)
               }
@@ -4093,7 +5122,7 @@ const checkDailyLimit = (deviceData: any): boolean => {
             const isInCombinedGroup = combinedLimitInfo?.enabled && 
                                      combinedLimitInfo?.selectedOutlets?.includes(outletDisplayName)
             
-            // Only check individual daily limit if device is NOT in combined group
+            // Only check individual monthly limit if device is NOT in combined group
             // For devices in combined groups, the monthly limit check handles the power limit enforcement
             if (!isInCombinedGroup) {
               console.log(`SetUp: Device ${outletKey} status is ${currentStatus} - checking individual power limits`)
@@ -4110,46 +5139,48 @@ const checkDailyLimit = (deviceData: any): boolean => {
                 continue
               }
               
-              // Check power limit (daily energy limit) - Copy from ActiveDevice.tsx
+              // Check power limit (monthly energy limit) - Use checkMonthlyLimit function
               const powerLimit = deviceData.relay_control?.auto_cutoff?.power_limit || 0
               
               if (powerLimit > 0) {
-                // Get today's total energy consumption from daily_logs
-                const today = new Date()
-                const todayDateKey = `day_${today.getFullYear()}_${String(today.getMonth() + 1).padStart(2, '0')}_${String(today.getDate()).padStart(2, '0')}`
-                const todayLogs = deviceData?.daily_logs?.[todayDateKey]
-                const todayTotalEnergy = todayLogs?.total_energy || 0 // This is in kW
+                // Check monthly limit using the checkMonthlyLimit function
+                const isMonthlyLimitExceeded = checkMonthlyLimit(deviceData)
                 
                 console.log(`SetUp: Power limit check for ${outletKey}:`, {
                   powerLimit: `${(powerLimit * 1000)}W`,
                   powerLimitRaw: powerLimit,
-                  todayTotalEnergy: `${(todayTotalEnergy * 1000)}W`,
-                  todayTotalEnergyRaw: todayTotalEnergy,
-                  todayDateKey: todayDateKey,
-                  exceedsLimit: todayTotalEnergy >= powerLimit,
-                  comparison: `${todayTotalEnergy} >= ${powerLimit} = ${todayTotalEnergy >= powerLimit}`,
+                  exceedsLimit: isMonthlyLimitExceeded,
                   currentControlState: currentControlState,
                   isInCombinedGroup: isInCombinedGroup
                 })
                 
-                // If today's energy exceeds power limit, turn off the device
-                if (todayTotalEnergy >= powerLimit) {
-                  console.log(`SetUp: POWER LIMIT EXCEEDED - Turning OFF ${outletKey} (${(todayTotalEnergy * 1000).toFixed(3)}W >= ${(powerLimit * 1000)}W)`)
+                // If monthly energy exceeds power limit, turn off the device
+                if (isMonthlyLimitExceeded) {
+                  console.log(`SetUp: POWER LIMIT EXCEEDED - Turning OFF ${outletKey} (monthly limit exceeded)`)
+                  
+                  // Get current control state before turning off
+                  const currentControlState = deviceData?.control?.device || 'off'
                   
                   await update(ref(realtimeDb, `devices/${outletKey}/control`), {
                     device: 'off'
                   })
                   
-                  // Also turn off status to prevent immediate re-activation
-                  await update(ref(realtimeDb, `devices/${outletKey}`), {
-                    status: 'OFF'
-                  })
-                  
-                  console.log(`SetUp: Device ${outletKey} turned OFF due to power limit exceeded`)
+                  // CRITICAL: Only set status='OFF' if device is not currently idle (control was 'on')
+                  // If device was idle (control='on' but no activity), setting status='OFF' would override idle detection
+                  if (currentControlState === 'on') {
+                    // Device was on (possibly idle) - don't set status='OFF', let display logic handle it
+                    console.log(`✅ SetUp: Device ${outletKey} was ON (possibly idle) - not setting status='OFF' to preserve idle detection`)
+                  } else {
+                    // Device was already off - safe to set status='OFF'
+                    await update(ref(realtimeDb, `devices/${outletKey}`), {
+                      status: 'OFF'
+                    })
+                    console.log(`SetUp: Device ${outletKey} turned OFF due to power limit exceeded`)
+                  }
                 }
               }
             } else {
-              console.log(`SetUp: Device ${outletKey} is in combined group - skipping individual daily limit check (monthly limit takes precedence)`)
+              console.log(`SetUp: Device ${outletKey} is in combined group - skipping individual monthly limit check (combined monthly limit takes precedence)`)
               
               // For devices in combined groups, also check if status is 'OFF'
               if (currentStatus === 'OFF') {
@@ -4189,20 +5220,52 @@ const checkDailyLimit = (deviceData: any): boolean => {
         
         if (snapshot.exists()) {
           const devicesData = snapshot.val()
-          await checkCombinedMonthlyLimit(devicesData, combinedLimitInfo)
+          
+          // Check ALL departments' combined limits
+          const departmentKeys = Object.keys(allDepartmentCombinedLimits)
+          
+          if (departmentKeys.length === 0) {
+            console.log('SetUp: No department combined limits configured - skipping monthly limit check')
+            return
+          }
+          
+          // Check each department's combined limit
+          for (const deptKey of departmentKeys) {
+            const deptLimitInfo = allDepartmentCombinedLimits[deptKey]
+            
+            if (deptLimitInfo?.enabled && deptLimitInfo?.selectedOutlets?.length > 0) {
+              console.log(`SetUp: Checking combined monthly limit for department: ${deptKey}`)
+              await checkCombinedMonthlyLimit(devicesData, {
+                ...deptLimitInfo,
+                department: deptKey
+              })
+            }
+          }
+          
+          console.log(`SetUp: Completed monthly limit check for ${departmentKeys.length} department(s)`)
         }
       } catch (error) {
         console.error('SetUp: Error in monthly limit check:', error)
       }
     }
     
-    // DISABLED: All immediate checks to prevent conflicts with centralized Schedule.tsx
-    // checkMonthlyLimits()
-    // checkScheduleAndUpdateDevices()
-    // checkPowerLimitsAndTurnOffDevices()
+    // CRITICAL: Add delay before running schedulers to avoid conflicts with Schedule.tsx
+    // This gives Schedule.tsx time to finish any updates before SetUp.tsx starts
+    const INITIAL_DELAY = 2000 // 2 seconds delay
     
-    // Only run power limit check (no conflicts with schedule)
-    checkPowerLimitsAndTurnOffDevices()
+    // Run functions after initial delay to avoid conflicts
+    const initialTimeout = setTimeout(() => {
+      console.log('🔄 SetUp: Starting schedulers after initial delay to avoid conflicts')
+      // CRITICAL: Run monthly limit check to update device_control and enforcement_reason
+      // This ensures device_control is set to 'on' when limit is not exceeded
+      checkMonthlyLimits()
+      
+      // Run schedule check to turn devices on/off based on schedule
+      checkScheduleAndUpdateDevices()
+      
+      // Run power limit check
+      checkPowerLimitsAndTurnOffDevices()
+    }, INITIAL_DELAY)
     
     // Add manual test functions for debugging
     ;(window as any).testSchedule = checkScheduleAndUpdateDevices
@@ -4786,21 +5849,22 @@ const checkDailyLimit = (deviceData: any): boolean => {
     console.log('- window.testDeviceRemoval("Outlet 1") - Test removing device from combined group')
     console.log('- window.testCombinedLimitSaveWithRemoval("Outlet 1") - Test combined limit save with device removal')
     
-    // HIERARCHY: Set up intervals in priority order
-    // DISABLED: Monthly limit check interval to prevent conflicts with schedule logic
-    // const monthlyLimitInterval = setInterval(checkMonthlyLimits, 3000) // 3 seconds - HIGHEST PRIORITY
+    // HIERARCHY: Set up intervals in priority order (matching ActiveDevice.tsx)
+    // 1. Monthly limit check - HIGHEST PRIORITY (every 10 seconds) - updates device_control and enforcement_reason
+    const monthlyLimitInterval = setInterval(checkMonthlyLimits, 10000) // 10 seconds
     
     // 2. Schedule check - SECOND PRIORITY (every 10 seconds, but respects monthly limits)
     const scheduleInterval = setInterval(checkScheduleAndUpdateDevices, 10000) // 10 seconds
     
-    // 3. Power limit check - THIRD PRIORITY (every 5 seconds, but respects monthly limits)
-    const powerLimitInterval = setInterval(checkPowerLimitsAndTurnOffDevices, 5000) // 5 seconds
+    // 3. Power limit check - THIRD PRIORITY (every 12 seconds, but respects monthly limits)
+    const powerLimitInterval = setInterval(checkPowerLimitsAndTurnOffDevices, 12000) // 12 seconds
     
-    // Cleanup intervals on unmount
+    // Cleanup intervals and timeout on unmount
     return () => {
+      clearTimeout(initialTimeout)
+      clearInterval(monthlyLimitInterval)
       clearInterval(scheduleInterval)
       clearInterval(powerLimitInterval)
-      // clearInterval(monthlyLimitInterval) // Disabled
       
       // Cleanup auto-turnoff timers
       Object.values(autoTurnoffTimers).forEach(timer => {
@@ -4810,7 +5874,7 @@ const checkDailyLimit = (deviceData: any): boolean => {
       })
       
     }
-  }, [combinedLimitInfo])
+  }, [allDepartmentCombinedLimits])
 
   // Unplug detection: Monitor timestamp changes and detect unplugged devices
   useEffect(() => {
@@ -5050,7 +6114,7 @@ const checkDailyLimit = (deviceData: any): boolean => {
                   status: 'UNPLUG'
                 })
                 
-                console.log(`🔌 SetUp: UNPLUG DETECTED: ${outletKey} - timestamp unchanged for 30+ seconds. Device turned OFF, schedule disabled, and root status set to UNPLUG.`)
+                throttledLog('unplug-detection', `🔌 SetUp: UNPLUG DETECTED: ${outletKey} - timestamp unchanged for 30+ seconds. Device turned OFF, schedule disabled, and root status set to UNPLUG.`)
               } catch (err) {
                 console.error(`SetUp: Error handling unplug detection for ${outletKey}:`, err)
               }
@@ -5077,35 +6141,18 @@ const checkDailyLimit = (deviceData: any): boolean => {
   // Real-time monthly limit monitoring
   useEffect(() => {
     if (!combinedLimitInfo.enabled || combinedLimitInfo.selectedOutlets.length === 0) {
-      console.log('🚫 Monthly limit monitoring disabled - no combined limit set')
+      logger.log('🚫 Monthly limit monitoring disabled - no combined limit set')
       return
     }
     
-    console.log('🔍 Starting real-time monthly limit monitoring for outlets:', combinedLimitInfo.selectedOutlets)
-
-    const devicesRef = ref(realtimeDb, 'devices')
+    // DISABLED: Real-time monthly limit monitoring to prevent database spamming
+    // Monthly limit checks are handled by the scheduler (checkScheduleAndUpdateDevices) every 10 seconds
+    // This prevents multiple simultaneous calls that cause last_enforcement to spam
+    logger.log('🔍 Monthly limit monitoring handled by scheduler (every 10 seconds) - real-time listener disabled to prevent spam')
     
-    const unsubscribe = onValue(devicesRef, async (snapshot) => {
-      if (snapshot.exists()) {
-        const data = snapshot.val()
-        console.log('📡 Real-time monthly limit check triggered by Firebase data change')
-        
-        // Use debounced monthly limit check
-        const now = Date.now()
-        if (now - lastMonthlyLimitCheck >= MONTHLY_LIMIT_DEBOUNCE_MS) {
-          setLastMonthlyLimitCheck(now)
-          await checkCombinedMonthlyLimit(data, combinedLimitInfo)
-        } else {
-          console.log('⏳ Real-time monthly limit check debounced')
-        }
-      }
-    })
-
-    return () => {
-      console.log('🛑 Stopping monthly limit monitoring')
-      off(devicesRef, 'value', unsubscribe)
-    }
-  }, [combinedLimitInfo])
+      // NOTE: The scheduler useEffect already calls checkCombinedMonthlyLimit, so we don't need this real-time listener
+      // This matches the pattern in Schedule.tsx which also doesn't use a real-time listener for monthly limits
+   }, [allDepartmentCombinedLimits])
 
   // Filter devices based on search term
   const filteredDevices = devices.filter(device =>
@@ -5254,11 +6301,11 @@ const checkDailyLimit = (deviceData: any): boolean => {
         const isInCombinedGroup = combinedLimitInfo?.enabled && 
                                  combinedLimitInfo?.selectedOutlets?.includes(outletDisplayName)
         
-        // Only check individual daily limit if:
+        // Only check individual monthly limit if:
         // 1. Device is NOT in a combined group, OR
         // 2. Device was in a combined group but monthly limit was exceeded and removal failed
         if (!isInCombinedGroup) {
-          // Get device data from Firebase to check today's energy consumption
+          // Get device data from Firebase to check monthly energy consumption
           const deviceRef = ref(realtimeDb, `devices/${outletKey}`)
           const deviceSnapshot = await get(deviceRef)
           const deviceData = deviceSnapshot.val()
@@ -5273,25 +6320,35 @@ const checkDailyLimit = (deviceData: any): boolean => {
             return
           }
           
-          // Get today's total energy consumption from daily_logs
-          const today = new Date()
-          const todayDateKey = `day_${today.getFullYear()}_${String(today.getMonth() + 1).padStart(2, '0')}_${String(today.getDate()).padStart(2, '0')}`
-          const todayLogs = deviceData?.daily_logs?.[todayDateKey]
-          const todayTotalEnergy = todayLogs?.total_energy || 0 // This is in kW
+          // Check monthly limit using the checkMonthlyLimit function
+          const isMonthlyLimitExceeded = checkMonthlyLimit(deviceData)
           
           console.log(`SetUp: Power limit check for ${outletKey}:`, {
             powerLimit: `${(powerLimit * 1000)}W`,
-            todayTotalEnergy: `${(todayTotalEnergy * 1000)}W`,
-            todayDateKey: todayDateKey,
-            exceedsLimit: todayTotalEnergy >= powerLimit,
+            exceedsLimit: isMonthlyLimitExceeded,
             isInCombinedGroup: isInCombinedGroup,
             monthlyLimitOK: monthlyLimitCheck.canTurnOn
           })
           
-          // Check if today's total energy consumption exceeds the power limit
-          if (todayTotalEnergy >= powerLimit) {
+          // Check if monthly energy consumption exceeds the power limit
+          if (isMonthlyLimitExceeded) {
             const currentTime = new Date().toLocaleTimeString()
             const currentDate = new Date().toLocaleDateString()
+            
+            // Calculate monthly total energy for display
+            const now = new Date()
+            const currentYear = now.getFullYear()
+            const currentMonth = now.getMonth() + 1
+            const daysInMonth = new Date(currentYear, currentMonth, 0).getDate()
+            let totalMonthlyEnergy = 0
+            
+            for (let day = 1; day <= daysInMonth; day++) {
+              const dateKey = `day_${currentYear}_${String(currentMonth).padStart(2, '0')}_${String(day).padStart(2, '0')}`
+              const dayData = deviceData?.daily_logs?.[dateKey]
+              if (dayData && dayData.total_energy) {
+                totalMonthlyEnergy += dayData.total_energy
+              }
+            }
             
             // Show warning that device cannot be turned ON due to power limit exceeded
             setNoPowerLimitModal({
@@ -5300,7 +6357,7 @@ const checkDailyLimit = (deviceData: any): boolean => {
                 ...device,
                 // Add additional info for the modal using type assertion
                 ...(device as any),
-                todayTotalEnergy: todayTotalEnergy,
+                todayTotalEnergy: totalMonthlyEnergy,
                 powerLimit: powerLimit,
                 currentDate: currentDate,
                 currentTime: currentTime
@@ -5309,7 +6366,7 @@ const checkDailyLimit = (deviceData: any): boolean => {
             return
           }
         } else {
-          console.log(`SetUp: Skipping individual daily limit check for ${outletKey} - device is in combined group with monthly limit OK`)
+          console.log(`SetUp: Skipping individual monthly limit check for ${outletKey} - device is in combined group with monthly limit OK`)
         }
         
         console.log(`Turning ON ${outletKey} - main status will override schedule restrictions`)
@@ -5672,14 +6729,20 @@ const checkDailyLimit = (deviceData: any): boolean => {
     })
   }
 
-  const handleSaveCombinedLimit = async (data: { selectedOutlets: string[]; combinedLimit: number; deviceControl: string; enableScheduling: boolean }) => {
+  const handleSaveCombinedLimit = async (data: { selectedOutlets: string[]; combinedLimit: number; deviceControl: string; enableScheduling: boolean; department?: string }) => {
     try {
       console.log('Saving combined limit:', data)
       
+      if (!data.department) {
+        throw new Error('Department is required to save combined limit settings')
+      }
+      
+      const departmentPath = getDepartmentCombinedLimitPath(data.department)
+      
       // IMPORTANT: Handle devices that were REMOVED from combined group FIRST
       // Get current combined limit settings BEFORE updating to compare with new settings
-      const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
-      const currentCombinedLimitSnapshot = await get(combinedLimitRef)
+      const departmentCombinedLimitRef = ref(realtimeDb, departmentPath)
+      const currentCombinedLimitSnapshot = await get(departmentCombinedLimitRef)
       
       if (currentCombinedLimitSnapshot.exists()) {
         const currentData = currentCombinedLimitSnapshot.val()
@@ -5697,7 +6760,32 @@ const checkDailyLimit = (deviceData: any): boolean => {
         })
         
         if (removedOutlets.length > 0) {
-          console.log('🔒 Devices removed from combined group, turning them OFF:', removedOutlets)
+          console.log('🔒 Devices removed from combined group, turning them OFF and removing combined schedule:', removedOutlets)
+          
+          // Remove removed outlets from combined_schedule_settings
+          try {
+            const combinedScheduleRef = ref(realtimeDb, 'combined_schedule_settings')
+            const combinedScheduleSnapshot = await get(combinedScheduleRef)
+            
+            if (combinedScheduleSnapshot.exists()) {
+              const combinedScheduleData = combinedScheduleSnapshot.val()
+              const currentScheduleOutlets = combinedScheduleData.selected_outlets || []
+              
+              // Remove the removed outlets from combined schedule
+              const updatedScheduleOutlets = currentScheduleOutlets.filter((outlet: string) => 
+                !removedOutlets.includes(outlet)
+              )
+              
+              if (updatedScheduleOutlets.length !== currentScheduleOutlets.length) {
+                await update(combinedScheduleRef, {
+                  selected_outlets: updatedScheduleOutlets
+                })
+                console.log(`✅ SetUp: Removed ${removedOutlets.length} outlet(s) from combined_schedule_settings`)
+              }
+            }
+          } catch (error) {
+            console.error('❌ Error updating combined_schedule_settings:', error)
+          }
           
           // Turn OFF all devices that were removed from combined group
           for (const outletName of removedOutlets) {
@@ -5707,14 +6795,56 @@ const checkDailyLimit = (deviceData: any): boolean => {
             console.log(`🔧 Processing removal: "${outletName}" -> "${outletKey}"`)
             
             try {
+              // Get current control state before turning off
+              const deviceRef = ref(realtimeDb, `devices/${outletKey}`)
+              const deviceSnapshot = await get(deviceRef)
+              const currentControlState = deviceSnapshot.val()?.control?.device || 'off'
+              
               const controlRef = ref(realtimeDb, `devices/${outletKey}/control`)
               await update(controlRef, { device: 'off' })
               
-              // Also set status to OFF to prevent automatic turn-on
-              const statusRef = ref(realtimeDb, `devices/${outletKey}`)
-              await update(statusRef, { status: 'OFF' })
+              // CRITICAL: Only set status='OFF' if device is not currently idle (control was 'on')
+              // If device was idle (control='on' but no activity), setting status='OFF' would override idle detection
+              if (currentControlState === 'on') {
+                // Device was on (possibly idle) - don't set status='OFF', let display logic handle it
+                console.log(`✅ SetUp: Device ${outletKey} was ON (possibly idle) - not setting status='OFF' to preserve idle detection`)
+              } else {
+                // Device was already off - safe to set status='OFF'
+                const statusRef = ref(realtimeDb, `devices/${outletKey}`)
+                await update(statusRef, { status: 'OFF' })
+              }
               
-              console.log(`🔒 SetUp: Successfully turned OFF ${outletKey} after removal from combined group (now subject to individual daily limits)`)
+              // Clear combined schedule settings for removed outlet
+              // Clear enable_power_scheduling flag
+              const officeInfoRef = ref(realtimeDb, `devices/${outletKey}/office_info`)
+              const officeInfoSnapshot = await get(officeInfoRef)
+              if (officeInfoSnapshot.exists()) {
+                await update(officeInfoRef, {
+                  enable_power_scheduling: false
+                })
+                console.log(`✅ SetUp: Cleared enable_power_scheduling for ${outletKey}`)
+              }
+              
+              // Clear schedule data if it was part of combined schedule
+              const scheduleRef = ref(realtimeDb, `devices/${outletKey}/schedule`)
+              const scheduleSnapshot = await get(scheduleRef)
+              if (scheduleSnapshot.exists()) {
+                const scheduleData = scheduleSnapshot.val()
+                // Clear all schedule data including combined schedule flags
+                await update(scheduleRef, {
+                  timeRange: null,
+                  startTime: null,
+                  endTime: null,
+                  days: null,
+                  frequency: null,
+                  enabled: false,
+                  isCombinedSchedule: null,
+                  combinedScheduleId: null
+                })
+                console.log(`✅ SetUp: Cleared combined schedule data (including isCombinedSchedule and combinedScheduleId) for ${outletKey}`)
+              }
+              
+              console.log(`🔒 SetUp: Successfully turned OFF ${outletKey} and removed combined schedule after removal from combined group (now subject to individual monthly limits)`)
             } catch (error) {
               console.error(`❌ Error turning off removed device ${outletKey}:`, error)
             }
@@ -5724,72 +6854,122 @@ const checkDailyLimit = (deviceData: any): boolean => {
         }
       }
       
-      // Save combined limit settings to database
-      await update(combinedLimitRef, {
-        enabled: true,
-        selected_outlets: data.selectedOutlets,
-        combined_limit_watts: data.combinedLimit === 0 ? "No Limit" : data.combinedLimit,
-        device_control: data.deviceControl,
-        scheduling_only: data.combinedLimit === 0,
-        created_at: new Date().toISOString(),
-        created_by: 'user' // You can replace this with actual user info
-      })
-      
-      // Update device control for all selected outlets
-      console.log('Updating device control for selected outlets:', data.selectedOutlets)
-      for (const outletName of data.selectedOutlets) {
-        const outletKey = outletName.replace(/\s+/g, '_').replace(/'/g, '')
-        const controlRef = ref(realtimeDb, `devices/${outletKey}/control`)
-        const statusRef = ref(realtimeDb, `devices/${outletKey}`)
+      // If no outlets are selected, disable the combined limit and clean up all schedule data
+      if (data.selectedOutlets.length === 0) {
+        console.log('⚠️ No outlets selected - disabling combined limit and cleaning up all schedule data')
         
-        try {
-          // If setting device control to 'on', check and reset disabled_by_unplug and status from UNPLUG BEFORE updating
-          if (data.deviceControl === 'on') {
-            // Reset disabled_by_unplug flag
+        // Get all previously selected outlets to clean up their schedule data
+        let previousOutlets: string[] = []
+        if (currentCombinedLimitSnapshot.exists()) {
+          const currentData = currentCombinedLimitSnapshot.val()
+          previousOutlets = currentData.selected_outlets || []
+        }
+        
+        // Clean up schedule data for all previously selected outlets
+        for (const outletName of previousOutlets) {
+          const outletKey = outletName.replace(/\s+/g, '_').replace(/'/g, '')
+          
+          try {
             const scheduleRef = ref(realtimeDb, `devices/${outletKey}/schedule`)
             const scheduleSnapshot = await get(scheduleRef)
-            const scheduleData = scheduleSnapshot.val() || {}
             
-            if (scheduleData.disabled_by_unplug === true) {
+            if (scheduleSnapshot.exists()) {
               await update(scheduleRef, {
-                disabled_by_unplug: false
+                isCombinedSchedule: null,
+                combinedScheduleId: null
               })
-              console.log(`Combined limit: Reset disabled_by_unplug to false for ${outletKey}`)
+              console.log(`✅ SetUp: Removed isCombinedSchedule and combinedScheduleId from ${outletKey}`)
             }
-            
-            // Check current status before updating
+          } catch (error) {
+            console.error(`❌ Error cleaning up schedule for ${outletKey}:`, error)
+          }
+        }
+        
+        // Disable the combined limit
+        await update(departmentCombinedLimitRef, {
+          enabled: false,
+          selected_outlets: [],
+          combined_limit_watts: 0,
+          device_control: data.deviceControl,
+          scheduling_only: false,
+          department: data.department,
+          updated_at: new Date().toISOString()
+        })
+        
+        console.log(`✅ SetUp: Disabled combined limit for department ${data.department} (no outlets selected)`)
+      } else {
+        // Save combined limit settings to database under department-specific path
+        await update(departmentCombinedLimitRef, {
+          enabled: true,
+          selected_outlets: data.selectedOutlets,
+          combined_limit_watts: data.combinedLimit === 0 ? "No Limit" : data.combinedLimit,
+          device_control: data.deviceControl,
+          scheduling_only: data.combinedLimit === 0,
+          department: data.department,
+          created_at: new Date().toISOString(),
+          created_by: 'user' // You can replace this with actual user info
+        })
+        
+        console.log(`✅ SetUp: Saved combined limit settings to ${departmentPath}`)
+        
+        // Update device control for all selected outlets
+        console.log('Updating device control for selected outlets:', data.selectedOutlets)
+        for (const outletName of data.selectedOutlets) {
+          const outletKey = outletName.replace(/\s+/g, '_').replace(/'/g, '')
+          const controlRef = ref(realtimeDb, `devices/${outletKey}/control`)
+          const statusRef = ref(realtimeDb, `devices/${outletKey}`)
+          
+          try {
+            // Get current control state before updating (needed for both 'on' and 'off' cases)
             const deviceStatusSnapshot = await get(statusRef)
-            const deviceStatusData = deviceStatusSnapshot.val()
+            const currentControlState = deviceStatusSnapshot.val()?.control?.device || 'off'
             
-            // Reset status from UNPLUG to ON (already handled below, but explicitly reset if currently UNPLUG)
-            if (deviceStatusData?.status === 'UNPLUG' || deviceStatusData?.status === 'unplug') {
-              await update(statusRef, {
-                status: 'ON'
-              })
-              console.log(`Combined limit: Reset status from UNPLUG to ON for ${outletKey}`)
-            } else {
-              // Update status to ON if not already UNPLUG
-              await update(statusRef, {
-                status: 'ON'
-              })
+            // If setting device control to 'on', check and reset disabled_by_unplug and status from UNPLUG BEFORE updating
+            if (data.deviceControl === 'on') {
+              // Reset disabled_by_unplug flag
+              const scheduleRef = ref(realtimeDb, `devices/${outletKey}/schedule`)
+              const scheduleSnapshot = await get(scheduleRef)
+              const scheduleData = scheduleSnapshot.val() || {}
+              
+              if (scheduleData.disabled_by_unplug === true) {
+                await update(scheduleRef, {
+                  disabled_by_unplug: false
+                })
+                console.log(`Combined limit: Reset disabled_by_unplug to false for ${outletKey}`)
+              }
+              
+              const deviceStatusData = deviceStatusSnapshot.val()
+              
+              // Reset status from UNPLUG to ON (already handled below, but explicitly reset if currently UNPLUG)
+              if (deviceStatusData?.status === 'UNPLUG' || deviceStatusData?.status === 'unplug') {
+                await update(statusRef, {
+                  status: 'ON'
+                })
+                console.log(`Combined limit: Reset status from UNPLUG to ON for ${outletKey}`)
+              } else {
+                // Update status to ON if not already UNPLUG
+                await update(statusRef, {
+                  status: 'ON'
+                })
+              }
             }
-          }
-          
-          // Update control state
-          await update(controlRef, {
-            device: data.deviceControl
-          })
-          
-          // Update status if not already handled above (when deviceControl is 'off')
-          if (data.deviceControl === 'off') {
-            await update(statusRef, {
-              status: 'OFF'
+            
+            // Update control state
+            await update(controlRef, {
+              device: data.deviceControl
             })
+            
+            // If setting device control to 'off' manually from Edit Monthly Power Limit modal, DO NOT change root status
+            // Only update control.device - leave root status as is
+            // This preserves the current status (could be 'ON', 'OFF', 'UNPLUG', 'Idle', etc.)
+            if (data.deviceControl === 'off') {
+              console.log(`✅ SetUp: Device ${outletKey} control set to 'off' from Edit Monthly Power Limit modal - leaving root status unchanged`)
+            }
+            
+            console.log(`Updated device control for ${outletKey} to ${data.deviceControl}`)
+          } catch (error) {
+            console.error(`Error updating device control for ${outletKey}:`, error)
           }
-          
-          console.log(`Updated device control for ${outletKey} to ${data.deviceControl}`)
-        } catch (error) {
-          console.error(`Error updating device control for ${outletKey}:`, error)
         }
       }
       
@@ -5817,14 +6997,16 @@ const checkDailyLimit = (deviceData: any): boolean => {
           const outletKey = outletName.replace(/\s+/g, '_').replace(/'/g, '')
           
           try {
-            // Clear schedule data
+            // Clear schedule data including combined schedule flags
             const scheduleRef = ref(realtimeDb, `devices/${outletKey}/schedule`)
             await update(scheduleRef, {
               timeRange: null,
               startTime: null,
               endTime: null,
               days: null,
-              enabled: false
+              enabled: false,
+              isCombinedSchedule: null,
+              combinedScheduleId: null
             })
             
             // Clear enable_power_scheduling flag
@@ -5897,7 +7079,8 @@ const checkDailyLimit = (deviceData: any): boolean => {
       setCombinedLimitInfo({
         enabled: true,
         selectedOutlets: data.selectedOutlets,
-        combinedLimit: data.combinedLimit
+        combinedLimit: data.combinedLimit,
+        department: data.department || ''
       })
       
       // Show success modal
@@ -5915,37 +7098,89 @@ const checkDailyLimit = (deviceData: any): boolean => {
   }
 
   // Fetch combined limit information
-  // Real-time listener for combined limit information
+  // Real-time listener for combined limit information - listens to all departments
   useEffect(() => {
     const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
     
-    // Set up real-time listener
+    // Set up real-time listener for all departments
     const unsubscribe = onValue(combinedLimitRef, (snapshot) => {
       if (snapshot.exists()) {
-        const data = snapshot.val()
-        console.log('SetUp: Real-time update - combined limit data:', data)
-        setCombinedLimitInfo({
-          enabled: data.enabled || false,
-          selectedOutlets: data.selected_outlets || [],
-          combinedLimit: data.combined_limit_watts || 0,
-          device_control: data.device_control || 'on'
-        })
+        const allDepartmentsData = snapshot.val()
+        console.log('SetUp: Real-time update - all departments combined limit data:', allDepartmentsData)
+        
+        // Store all department combined limits
+        const departmentLimitsMap: Record<string, {
+          enabled: boolean;
+          selectedOutlets: string[];
+          combinedLimit: number;
+          device_control?: string;
+          department?: string;
+        }> = {}
+        
+        const departmentKeys = Object.keys(allDepartmentsData)
+        for (const deptKey of departmentKeys) {
+          const deptData = allDepartmentsData[deptKey]
+          if (deptData) {
+            departmentLimitsMap[deptKey] = {
+              enabled: deptData.enabled || false,
+              selectedOutlets: deptData.selected_outlets || [],
+              combinedLimit: deptData.combined_limit_watts || 0,
+              device_control: deptData.device_control || 'on',
+              department: deptKey
+            }
+          }
+        }
+        
+        setAllDepartmentCombinedLimits(departmentLimitsMap)
+        
+        // Find the first enabled department for backward compatibility
+        let foundData = null
+        for (const deptKey of departmentKeys) {
+          const deptData = allDepartmentsData[deptKey]
+          if (deptData && deptData.enabled) {
+            foundData = { ...deptData, department: deptKey }
+            break
+          }
+        }
+        
+        if (foundData) {
+          setCombinedLimitInfo({
+            enabled: foundData.enabled || false,
+            selectedOutlets: foundData.selected_outlets || [],
+            combinedLimit: foundData.combined_limit_watts || 0,
+            device_control: foundData.device_control || 'on',
+            department: foundData.department || ''
+          })
+        } else {
+          // No enabled department found
+          setCombinedLimitInfo({
+            enabled: false,
+            selectedOutlets: [],
+            combinedLimit: 0,
+            device_control: 'on',
+            department: ''
+          })
+        }
       } else {
         console.log('SetUp: No combined limit settings found in database')
+        setAllDepartmentCombinedLimits({})
         setCombinedLimitInfo({
           enabled: false,
           selectedOutlets: [],
           combinedLimit: 0,
-          device_control: 'on'
+          device_control: 'on',
+          department: ''
         })
       }
     }, (error) => {
       console.error('SetUp: Error listening to combined limit info:', error)
+      setAllDepartmentCombinedLimits({})
       setCombinedLimitInfo({
         enabled: false,
         selectedOutlets: [],
         combinedLimit: 0,
-        device_control: 'on'
+        device_control: 'on',
+        department: ''
       })
     })
     
@@ -5993,25 +7228,17 @@ const checkDailyLimit = (deviceData: any): boolean => {
         }
         
         const devicesData = devicesSnapshot.val()
-        const today = new Date()
-        const todayDateKey = `day_${today.getFullYear()}_${String(today.getMonth() + 1).padStart(2, '0')}_${String(today.getDate()).padStart(2, '0')}`
         
-        // Calculate combined power consumption
-        let totalCombinedPower = 0
+        // Calculate combined monthly energy consumption
+        const totalCombinedPower = calculateCombinedMonthlyEnergy(devicesData, selectedOutlets)
         const activeDevices: string[] = []
         
+        // Find active devices
         selectedOutlets.forEach((outletName: string) => {
           const outletKey = outletName.replace(/\s+/g, '_').replace(/'/g, '')
           const outletData = devicesData[outletKey]
           
           if (outletData) {
-            // Get today's total energy consumption
-            const todayLogs = outletData.daily_logs?.[todayDateKey]
-            const todayTotalEnergy = todayLogs?.total_energy || 0 // This is in kW
-            const todayTotalEnergyWatts = todayTotalEnergy * 1000 // Convert to watts
-            
-            totalCombinedPower += todayTotalEnergyWatts
-            
             // Check if device is currently active
             const controlState = outletData.control?.device || 'off'
             if (controlState === 'on') {
@@ -6020,7 +7247,7 @@ const checkDailyLimit = (deviceData: any): boolean => {
           }
         })
         
-        console.log(`SetUp: Combined power limit check:`, {
+        console.log(`SetUp: Combined monthly limit check:`, {
           selectedOutlets,
           totalCombinedPower: `${totalCombinedPower.toFixed(3)}W`,
           combinedLimitWatts: `${combinedLimitWatts}W`,
@@ -6028,23 +7255,34 @@ const checkDailyLimit = (deviceData: any): boolean => {
           activeDevices: activeDevices.length
         })
         
-        // If combined power exceeds limit, turn off all active devices
+        // If combined monthly energy exceeds limit, turn off all active devices
         if (totalCombinedPower >= combinedLimitWatts && activeDevices.length > 0) {
-          console.log(`SetUp: COMBINED POWER LIMIT EXCEEDED - Turning OFF all active devices (${totalCombinedPower.toFixed(3)}Wh >= ${combinedLimitWatts}Wh)`)
+          console.log(`SetUp: COMBINED MONTHLY LIMIT EXCEEDED - Turning OFF all active devices (${totalCombinedPower.toFixed(3)}Wh >= ${combinedLimitWatts}Wh)`)
           
           // Turn off all active devices
           for (const outletKey of activeDevices) {
             try {
+              // Get current control state before turning off
+              const deviceRef = ref(realtimeDb, `devices/${outletKey}`)
+              const deviceSnapshot = await get(deviceRef)
+              const currentControlState = deviceSnapshot.val()?.control?.device || 'off'
+              
               await update(ref(realtimeDb, `devices/${outletKey}/control`), {
                 device: 'off'
               })
               
-              // Also turn off status to prevent immediate re-activation
-              await update(ref(realtimeDb, `devices/${outletKey}`), {
-                status: 'OFF'
-              })
-              
-              console.log(`SetUp: Device ${outletKey} turned OFF due to combined power limit exceeded`)
+              // CRITICAL: Only set status='OFF' if device is not currently idle (control was 'on')
+              // If device was idle (control='on' but no activity), setting status='OFF' would override idle detection
+              if (currentControlState === 'on') {
+                // Device was on (possibly idle) - don't set status='OFF', let display logic handle it
+                console.log(`✅ SetUp: Device ${outletKey} was ON (possibly idle) - not setting status='OFF' to preserve idle detection`)
+              } else {
+                // Device was already off - safe to set status='OFF'
+                await update(ref(realtimeDb, `devices/${outletKey}`), {
+                  status: 'OFF'
+                })
+                console.log(`SetUp: Device ${outletKey} turned OFF due to combined power limit exceeded`)
+              }
             } catch (error) {
               console.error(`SetUp: Error turning off device ${outletKey}:`, error)
             }
@@ -6271,32 +7509,65 @@ const checkDailyLimit = (deviceData: any): boolean => {
                   <td className="appliances">{device.appliances}</td>
                   <td className="limit">
                     {(() => {
-                      // Check if device is using combined limit (handle both "Outlet_1" and "Outlet 1" formats)
+                      // Check if device is using combined limit from its department
                       const deviceOutletName = device.outletName
                       const deviceOutletNameWithSpace = deviceOutletName.replace('_', ' ')
-                      const isUsingCombinedLimit = combinedLimitInfo.enabled && 
-                        (combinedLimitInfo.selectedOutlets.includes(deviceOutletName) || 
-                         combinedLimitInfo.selectedOutlets.includes(deviceOutletNameWithSpace))
+                      const deviceDepartment = device.department
+                      
+                      // Check if device belongs to a department and if that department has combined limits
+                      let foundDepartmentLimit: { combinedLimit: number; department: string } | null = null
+                      
+                      if (deviceDepartment) {
+                        // Check if this device's department has combined limit settings
+                        const deptLimitInfo = allDepartmentCombinedLimits[deviceDepartment]
+                        if (deptLimitInfo && deptLimitInfo.enabled && deptLimitInfo.selectedOutlets) {
+                          // Check if this device is in the department's selected outlets
+                          const isInDeptCombinedLimit = deptLimitInfo.selectedOutlets.includes(deviceOutletName) || 
+                                                       deptLimitInfo.selectedOutlets.includes(deviceOutletNameWithSpace)
+                          
+                          if (isInDeptCombinedLimit) {
+                            foundDepartmentLimit = {
+                              combinedLimit: deptLimitInfo.combinedLimit,
+                              department: deviceDepartment
+                            }
+                          }
+                        }
+                      }
+                      
+                      // Fallback: Check all departments if device department is not set (backward compatibility)
+                      if (!foundDepartmentLimit) {
+                        for (const [deptKey, deptLimitInfo] of Object.entries(allDepartmentCombinedLimits)) {
+                          if (deptLimitInfo.enabled && deptLimitInfo.selectedOutlets) {
+                            const isInThisDept = deptLimitInfo.selectedOutlets.includes(deviceOutletName) || 
+                                               deptLimitInfo.selectedOutlets.includes(deviceOutletNameWithSpace)
+                            
+                            if (isInThisDept) {
+                              foundDepartmentLimit = {
+                                combinedLimit: deptLimitInfo.combinedLimit,
+                                department: deptKey
+                              }
+                              break
+                            }
+                          }
+                        }
+                      }
                       
                       console.log(`SetUp: Checking device ${device.outletName}:`, {
-                        enabled: combinedLimitInfo.enabled,
-                        selectedOutlets: combinedLimitInfo.selectedOutlets,
-                        deviceOutletName,
-                        deviceOutletNameWithSpace,
-                        isUsingCombinedLimit,
-                        combinedLimit: combinedLimitInfo.combinedLimit
+                        deviceDepartment,
+                        foundDepartmentLimit,
+                        allDepartmentCombinedLimits: Object.keys(allDepartmentCombinedLimits)
                       })
                       
-                      if (isUsingCombinedLimit) {
+                      if (foundDepartmentLimit) {
                         return (
-                            <div className="combined-limit-display">
-                              <div className="combined-limit-indicator">
-                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                  <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                                </svg>
-                                <span>{String(combinedLimitInfo.combinedLimit) === "No Limit" ? "No Limit" : `${combinedLimitInfo.combinedLimit}Wh`}</span>
-                              </div>
+                          <div className="combined-limit-display">
+                            <div className="combined-limit-indicator">
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                              </svg>
+                              <span>{String(foundDepartmentLimit.combinedLimit) === "No Limit" ? "No Limit" : `${foundDepartmentLimit.combinedLimit}Wh`}</span>
                             </div>
+                          </div>
                         )
                       } else {
                         // Ensure proper Wh unit formatting without creating Whh

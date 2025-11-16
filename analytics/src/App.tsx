@@ -13,6 +13,7 @@ import Reports from './components/Reports'
 import UserManagment from './components/UserManagment'
 // Logs view removed
 import ActiveDevice from './components/ActiveDevice'
+import ErrorBoundary from './components/ErrorBoundary'
 
 function App() {
   const [isAuthed, setIsAuthed] = useState(false)
@@ -158,23 +159,32 @@ function App() {
                 const powerLimit = deviceData.relay_control?.auto_cutoff?.power_limit || 0
                 
                 if (powerLimit > 0) {
-                  // Get today's energy consumption
-                  const today = new Date()
-                  const todayDateKey = `day_${today.getFullYear()}_${String(today.getMonth() + 1).padStart(2, '0')}_${String(today.getDate()).padStart(2, '0')}`
-                  const todayLogs = deviceData?.daily_logs?.[todayDateKey]
-                  const todayTotalEnergy = todayLogs?.total_energy || 0
+                  // Calculate monthly energy consumption
+                  const now = new Date()
+                  const currentYear = now.getFullYear()
+                  const currentMonth = now.getMonth() + 1
+                  const daysInMonth = new Date(currentYear, currentMonth, 0).getDate()
+                  let totalMonthlyEnergy = 0
                   
-                  // Only turn off if individual daily limit is also exceeded
-                  if (todayTotalEnergy >= powerLimit) {
+                  for (let day = 1; day <= daysInMonth; day++) {
+                    const dateKey = `day_${currentYear}_${String(currentMonth).padStart(2, '0')}_${String(day).padStart(2, '0')}`
+                    const dayData = deviceData?.daily_logs?.[dateKey]
+                    if (dayData && dayData.total_energy) {
+                      totalMonthlyEnergy += dayData.total_energy
+                    }
+                  }
+                  
+                  // Only turn off if individual monthly limit is also exceeded
+                  if (totalMonthlyEnergy >= powerLimit) {
                     try {
                       const controlRef = ref(realtimeDb, `devices/${outletKey}/control`)
                       await update(controlRef, { device: 'off' })
-                      console.log(`Global: Turned off device ${outletKey} due to BOTH monthly and individual daily limits exceeded`)
+                      console.log(`Global: Turned off device ${outletKey} due to BOTH combined monthly and individual monthly limits exceeded`)
                     } catch (error) {
                       console.error(`Error turning off device ${outletKey}:`, error)
                     }
                   } else {
-                    console.log(`Global: Device ${outletKey} monthly limit exceeded but individual daily limit OK - keeping device on`)
+                    console.log(`Global: Device ${outletKey} combined monthly limit exceeded but individual monthly limit OK - keeping device on`)
                   }
                 }
               }
@@ -269,17 +279,43 @@ function App() {
           
           console.log(`📅 Checking schedule for ${outletName}: ${outlet.schedule.timeRange}`)
           
-          // Parse schedule time
-          const [startTimeStr, endTimeStr] = outlet.schedule.timeRange.split(' - ')
+          // Parse schedule time - with protection
+          if (!outlet.schedule.timeRange || typeof outlet.schedule.timeRange !== 'string' || !outlet.schedule.timeRange.includes(' - ')) {
+            console.log(`⚠️ Invalid timeRange format for ${outletName}, skipping schedule check`)
+            return
+          }
+          
+          const timeRangeParts = outlet.schedule.timeRange.split(' - ')
+          if (timeRangeParts.length < 2 || !timeRangeParts[0] || !timeRangeParts[1]) {
+            console.log(`⚠️ Invalid timeRange split result for ${outletName}, skipping schedule check`)
+            return
+          }
+          
+          const [startTimeStr, endTimeStr] = timeRangeParts
           const convertTo24Hour = (time12: string) => {
-            const [time, period] = time12.split(' ')
-            const [hours, minutes] = time.split(':').map(Number)
-            return period === 'PM' && hours !== 12 ? (hours + 12) * 60 + minutes : 
-                   period === 'AM' && hours === 12 ? minutes : hours * 60 + minutes
+            if (!time12 || typeof time12 !== 'string') return 0
+            try {
+              const parts = time12.split(' ')
+              if (parts.length < 2 || !parts[0] || !parts[1]) return 0
+              const [time, period] = parts
+              const timeParts = time.split(':')
+              if (timeParts.length < 2 || !timeParts[0] || !timeParts[1]) return 0
+              const [hours, minutes] = timeParts.map(Number)
+              if (isNaN(hours) || isNaN(minutes)) return 0
+              return period === 'PM' && hours !== 12 ? (hours + 12) * 60 + minutes : 
+                     period === 'AM' && hours === 12 ? minutes : hours * 60 + minutes
+            } catch (error) {
+              return 0
+            }
           }
           
           const startTime = convertTo24Hour(startTimeStr)
           const endTime = convertTo24Hour(endTimeStr)
+          
+          if (startTime === 0 || endTime === 0) {
+            console.log(`⚠️ Invalid time conversion for ${outletName}, skipping schedule check`)
+            return
+          }
           
           console.log(`⏰ Time check for ${outletName}: current=${Math.floor(currentTime/60)}:${String(currentTime%60).padStart(2,'0')}, schedule=${startTimeStr}-${endTimeStr}`)
           
@@ -307,20 +343,31 @@ function App() {
         // Also check for power limit violations
         if (outlet.relay_control?.auto_cutoff?.power_limit) {
           const powerLimit = outlet.relay_control.auto_cutoff.power_limit
-          const today = new Date()
-          const todayDateKey = `day_${today.getFullYear()}_${String(today.getMonth() + 1).padStart(2, '0')}_${String(today.getDate()).padStart(2, '0')}`
-          const todayLogs = outlet?.daily_logs?.[todayDateKey]
-          const todayTotalEnergy = todayLogs?.total_energy || 0
           
-          console.log(`⚡ Power check for ${outletName}: limit=${powerLimit}kW, current=${todayTotalEnergy}kW`)
+          // Calculate monthly energy consumption
+          const now = new Date()
+          const currentYear = now.getFullYear()
+          const currentMonth = now.getMonth() + 1
+          const daysInMonth = new Date(currentYear, currentMonth, 0).getDate()
+          let totalMonthlyEnergy = 0
           
-          if (todayTotalEnergy >= powerLimit && shouldCreateNotification(outletName, 'Device Auto-Turned Off (Power Limit)')) {
+          for (let day = 1; day <= daysInMonth; day++) {
+            const dateKey = `day_${currentYear}_${String(currentMonth).padStart(2, '0')}_${String(day).padStart(2, '0')}`
+            const dayData = outlet?.daily_logs?.[dateKey]
+            if (dayData && dayData.total_energy) {
+              totalMonthlyEnergy += dayData.total_energy
+            }
+          }
+          
+          console.log(`⚡ Power check for ${outletName}: limit=${powerLimit}kW, monthly=${totalMonthlyEnergy.toFixed(3)}kW`)
+          
+          if (totalMonthlyEnergy >= powerLimit && shouldCreateNotification(outletName, 'Device Auto-Turned Off (Power Limit)')) {
             console.log(`🔔 Creating power limit notification for ${outletName}`)
             newNotifications.push({
               id: `power_limit_${outletKey}_${Date.now()}`,
               type: 'device_off',
               title: 'Device Auto-Turned Off (Power Limit)',
-              message: `${outletName} was automatically turned off because today's energy consumption (${todayTotalEnergy.toFixed(3)}kW) exceeded the power limit (${powerLimit}kW)`,
+              message: `${outletName} was automatically turned off because monthly energy consumption (${totalMonthlyEnergy.toFixed(3)}kW) exceeded the power limit (${powerLimit}kW)`,
               outletName,
               timestamp: new Date(),
               isRead: false,
@@ -385,11 +432,20 @@ function App() {
           const schedule = deviceData.schedule
           const powerLimit = deviceData.relay_control?.auto_cutoff?.power_limit || 0
           
-          // Get today's energy consumption
-          const today = new Date()
-          const todayDateKey = `day_${today.getFullYear()}_${String(today.getMonth() + 1).padStart(2, '0')}_${String(today.getDate()).padStart(2, '0')}`
-          const todayLogs = deviceData?.daily_logs?.[todayDateKey]
-          const todayTotalEnergy = todayLogs?.total_energy || 0
+          // Calculate monthly energy consumption
+          const now = new Date()
+          const currentYear = now.getFullYear()
+          const currentMonth = now.getMonth() + 1
+          const daysInMonth = new Date(currentYear, currentMonth, 0).getDate()
+          let totalMonthlyEnergy = 0
+          
+          for (let day = 1; day <= daysInMonth; day++) {
+            const dateKey = `day_${currentYear}_${String(currentMonth).padStart(2, '0')}_${String(day).padStart(2, '0')}`
+            const dayData = deviceData?.daily_logs?.[dateKey]
+            if (dayData && dayData.total_energy) {
+              totalMonthlyEnergy += dayData.total_energy
+            }
+          }
           
           // Enhanced auto-resolution logic
           if (notification.title === 'Device Turned Off (Time Limit)' || 
@@ -415,16 +471,42 @@ function App() {
               console.log(`   Schedule: ${schedule.timeRange}`)
               console.log(`   Control state: ${controlState}`)
               
-              const [startTimeStr, endTimeStr] = schedule.timeRange.split(' - ')
+              if (!schedule.timeRange || typeof schedule.timeRange !== 'string' || !schedule.timeRange.includes(' - ')) {
+                console.log(`⚠️ Invalid timeRange format, skipping schedule check`)
+                return
+              }
+              
+              const timeRangeParts = schedule.timeRange.split(' - ')
+              if (timeRangeParts.length < 2 || !timeRangeParts[0] || !timeRangeParts[1]) {
+                console.log(`⚠️ Invalid timeRange split result, skipping schedule check`)
+                return
+              }
+              
+              const [startTimeStr, endTimeStr] = timeRangeParts
               const convertTo24Hour = (time12: string) => {
-                const [time, period] = time12.split(' ')
-                const [hours, minutes] = time.split(':').map(Number)
-                return period === 'PM' && hours !== 12 ? (hours + 12) * 60 + minutes : 
-                       period === 'AM' && hours === 12 ? minutes : hours * 60 + minutes
+                if (!time12 || typeof time12 !== 'string') return 0
+                try {
+                  const parts = time12.split(' ')
+                  if (parts.length < 2 || !parts[0] || !parts[1]) return 0
+                  const [time, period] = parts
+                  const timeParts = time.split(':')
+                  if (timeParts.length < 2 || !timeParts[0] || !timeParts[1]) return 0
+                  const [hours, minutes] = timeParts.map(Number)
+                  if (isNaN(hours) || isNaN(minutes)) return 0
+                  return period === 'PM' && hours !== 12 ? (hours + 12) * 60 + minutes : 
+                         period === 'AM' && hours === 12 ? minutes : hours * 60 + minutes
+                } catch (error) {
+                  return 0
+                }
               }
               
               const startTime = convertTo24Hour(startTimeStr)
               const endTime = convertTo24Hour(endTimeStr)
+              
+              if (startTime === 0 || endTime === 0) {
+                console.log(`⚠️ Invalid time conversion, skipping schedule check`)
+                return
+              }
               
               console.log(`   Start time: ${startTimeStr} (${startTime} minutes)`)
               console.log(`   End time: ${endTimeStr} (${endTime} minutes)`)
@@ -469,9 +551,9 @@ function App() {
             } else if (controlState === 'on') {
               isResolved = true
               resolutionReason = 'Device is now ON'
-            } else if (todayTotalEnergy < (powerLimit * 0.8)) {
+            } else if (totalMonthlyEnergy < (powerLimit * 0.8)) {
               isResolved = true
-              resolutionReason = `Energy consumption (${todayTotalEnergy.toFixed(3)}kW) is now below 80% of limit (${powerLimit}kW)`
+              resolutionReason = `Monthly energy consumption (${totalMonthlyEnergy.toFixed(3)}kW) is now below 80% of limit (${powerLimit}kW)`
             }
             
             if (isResolved) {
@@ -482,7 +564,7 @@ function App() {
           
           // For power limit notifications
           if (notification.type === 'power_limit') {
-            const isResolved = powerLimit === 0 || todayTotalEnergy < (powerLimit * 0.8)
+            const isResolved = powerLimit === 0 || totalMonthlyEnergy < (powerLimit * 0.8)
             if (isResolved) {
               console.log(`✅ Auto-resolved power limit notification for ${notification.outletName}`)
             }
@@ -684,13 +766,22 @@ function App() {
         const controlState = (outlet.control?.device || 'off').toString().trim().toLowerCase()
         const mainStatus = outlet.relay_control?.main_status || 'ON'
         
-        // Get today's energy consumption from daily_logs
-        const today = new Date()
-        const todayDateKey = `day_${today.getFullYear()}_${String(today.getMonth() + 1).padStart(2, '0')}_${String(today.getDate()).padStart(2, '0')}`
-        const todayLogs = outlet.daily_logs?.[todayDateKey]
-        const todayTotalEnergy = todayLogs?.total_energy || 0 // This is in kW
+        // Calculate monthly energy consumption from daily_logs
+        const now = new Date()
+        const currentYear = now.getFullYear()
+        const currentMonth = now.getMonth() + 1
+        const daysInMonth = new Date(currentYear, currentMonth, 0).getDate()
+        let totalMonthlyEnergy = 0
         
-        console.log(`🔌 ${outletName}: Today's Energy=${todayTotalEnergy.toFixed(3)}kW, Limit=${powerLimit}kW, Control=${controlState}, Main=${mainStatus}`)
+        for (let day = 1; day <= daysInMonth; day++) {
+          const dateKey = `day_${currentYear}_${String(currentMonth).padStart(2, '0')}_${String(day).padStart(2, '0')}`
+          const dayData = outlet.daily_logs?.[dateKey]
+          if (dayData && dayData.total_energy) {
+            totalMonthlyEnergy += dayData.total_energy
+          }
+        }
+        
+        console.log(`🔌 ${outletName}: Monthly Energy=${totalMonthlyEnergy.toFixed(3)}kW, Limit=${powerLimit}kW, Control=${controlState}, Main=${mainStatus}`)
 
         // PRIORITY CHECK: Unplug detection - check for disabled_by_unplug flag or UNPLUG status FIRST
         // This must be checked before schedule or power limit checks
@@ -724,12 +815,12 @@ function App() {
 
         // Power limit detection - continuously monitor for power limit violations
         if (powerLimit > 0) {
-          const isExceeded = todayTotalEnergy >= powerLimit
-          const isNearLimit = todayTotalEnergy >= (powerLimit * 0.8) && todayTotalEnergy < powerLimit
+          const isExceeded = totalMonthlyEnergy >= powerLimit
+          const isNearLimit = totalMonthlyEnergy >= (powerLimit * 0.8) && totalMonthlyEnergy < powerLimit
           
           console.log(`⚠️ Power limit check for ${outletName}:`, {
             powerLimit: `${powerLimit}kW`,
-            todayTotalEnergy: `${todayTotalEnergy}kW`,
+            totalMonthlyEnergy: `${totalMonthlyEnergy}kW`,
             controlState: controlState,
             mainStatus: mainStatus,
             isExceeded: isExceeded,
@@ -744,7 +835,7 @@ function App() {
               id: `power_exceeded_${outletKey}`,
               type: 'device_off',
               title: 'Device Auto-Turned Off (Power Limit)',
-              message: `${outletName} was automatically turned off because today's energy consumption (${todayTotalEnergy.toFixed(3)}kW) exceeded the power limit (${powerLimit}kW)`,
+              message: `${outletName} was automatically turned off because monthly energy consumption (${totalMonthlyEnergy.toFixed(3)}kW) exceeded the power limit (${powerLimit}kW)`,
               outletName,
               timestamp: new Date(),
               isRead: false,
@@ -760,7 +851,7 @@ function App() {
               id: `power_warning_${outletKey}`,
               type: 'power_limit',
               title: 'Power Limit Warning',
-              message: `${outletName} is approaching its daily power limit of ${powerLimit}kW. Today's consumption: ${todayTotalEnergy.toFixed(3)}kW`,
+              message: `${outletName} is approaching its monthly power limit of ${powerLimit}kW. Monthly consumption: ${totalMonthlyEnergy.toFixed(3)}kW`,
               outletName,
               timestamp: new Date(),
               isRead: false,
@@ -778,37 +869,73 @@ function App() {
             const currentTime = now.getHours() * 60 + now.getMinutes()
             const currentDay = now.getDay()
             
-            // Parse schedule time
-            const [startTimeStr, endTimeStr] = schedule.timeRange.split(' - ')
+            // Parse schedule time - with protection
+            if (!schedule.timeRange || typeof schedule.timeRange !== 'string' || !schedule.timeRange.includes(' - ')) {
+              console.log(`⚠️ Invalid timeRange format, skipping schedule check`)
+              return
+            }
+            
+            const timeRangeParts = schedule.timeRange.split(' - ')
+            if (timeRangeParts.length < 2 || !timeRangeParts[0] || !timeRangeParts[1]) {
+              console.log(`⚠️ Invalid timeRange split result, skipping schedule check`)
+              return
+            }
+            
+            const [startTimeStr, endTimeStr] = timeRangeParts
             const convertTo24Hour = (time12: string) => {
-              const [time, period] = time12.split(' ')
-              const [hours, minutes] = time.split(':').map(Number)
-              return period === 'PM' && hours !== 12 ? (hours + 12) * 60 + minutes : 
-                     period === 'AM' && hours === 12 ? minutes : hours * 60 + minutes
+              if (!time12 || typeof time12 !== 'string') return 0
+              try {
+                const parts = time12.split(' ')
+                if (parts.length < 2 || !parts[0] || !parts[1]) return 0
+                const [time, period] = parts
+                const timeParts = time.split(':')
+                if (timeParts.length < 2 || !timeParts[0] || !timeParts[1]) return 0
+                const [hours, minutes] = timeParts.map(Number)
+                if (isNaN(hours) || isNaN(minutes)) return 0
+                return period === 'PM' && hours !== 12 ? (hours + 12) * 60 + minutes : 
+                       period === 'AM' && hours === 12 ? minutes : hours * 60 + minutes
+              } catch (error) {
+                return 0
+              }
             }
             
             const startTime = convertTo24Hour(startTimeStr)
             const endTime = convertTo24Hour(endTimeStr)
+            
+            if (startTime === 0 || endTime === 0) {
+              console.log(`⚠️ Invalid time conversion, skipping schedule check`)
+              return
+            }
+            
             const isWithinTimeRange = currentTime >= startTime && currentTime <= endTime
             
             // Check if current day is in schedule (same logic as Schedule.tsx)
-            const frequency = schedule.frequency?.toLowerCase() || ''
+            const frequency = schedule.frequency || ''
             let isCorrectDay = false
 
-            if (frequency === 'daily') {
+            if (!frequency || typeof frequency !== 'string') {
+              isCorrectDay = true // Default to daily if invalid
+            } else if (frequency.toLowerCase() === 'daily') {
               isCorrectDay = true
-            } else if (frequency === 'weekdays') {
+            } else if (frequency.toLowerCase() === 'weekdays') {
               isCorrectDay = currentDay >= 1 && currentDay <= 5 // Monday to Friday
-            } else if (frequency === 'weekends') {
+            } else if (frequency.toLowerCase() === 'weekends') {
               isCorrectDay = currentDay === 0 || currentDay === 6 // Sunday or Saturday
-            } else if (frequency.includes(',')) {
+            } else if (frequency && typeof frequency === 'string' && frequency.includes(',')) {
               // Custom days (e.g., "MONDAY, WEDNESDAY, FRIDAY")
-              const dayMap: { [key: string]: number } = {
-                'monday': 1, 'tuesday': 2, 'wednesday': 3, 'thursday': 4, 
-                'friday': 5, 'saturday': 6, 'sunday': 0
+              try {
+                const dayMap: { [key: string]: number } = {
+                  'monday': 1, 'tuesday': 2, 'wednesday': 3, 'thursday': 4, 
+                  'friday': 5, 'saturday': 6, 'sunday': 0
+                }
+                const scheduledDays = frequency.split(',').map((day: string) => {
+                  if (!day || typeof day !== 'string') return undefined
+                  return dayMap[day.trim().toLowerCase()]
+                }).filter((day: number | undefined) => day !== undefined) as number[]
+                isCorrectDay = scheduledDays.includes(currentDay)
+              } catch (error) {
+                isCorrectDay = true // Default to daily on error
               }
-              const scheduledDays = frequency.split(',').map((day: string) => dayMap[day.trim().toLowerCase()])
-              isCorrectDay = scheduledDays.includes(currentDay)
             }
             
             const shouldBeActive = isWithinTimeRange && isCorrectDay
@@ -965,14 +1092,14 @@ function App() {
           const currentDay = now.getDay()
           
           // Check power limit cause
-          if (powerLimit > 0 && todayTotalEnergy >= powerLimit) {
+          if (powerLimit > 0 && totalMonthlyEnergy >= powerLimit) {
             return {
               cause: 'power_limit',
               title: 'Device Auto-Turned Off (Power Limit)',
-              message: `${outletName} was automatically turned off because today's energy consumption (${todayTotalEnergy.toFixed(3)}kW) exceeded the power limit (${powerLimit}kW)`,
+              message: `${outletName} was automatically turned off because monthly energy consumption (${totalMonthlyEnergy.toFixed(3)}kW) exceeded the power limit (${powerLimit}kW)`,
               details: {
                 powerLimit: powerLimit,
-                todayEnergy: todayTotalEnergy,
+                monthlyEnergy: totalMonthlyEnergy,
                 exceeded: true
               }
             }
@@ -980,35 +1107,71 @@ function App() {
           
           // Check schedule cause
           if (outlet.schedule && outlet.schedule.timeRange && outlet.schedule.timeRange !== 'No schedule') {
-            const [startTimeStr, endTimeStr] = outlet.schedule.timeRange.split(' - ')
+            if (!outlet.schedule.timeRange || typeof outlet.schedule.timeRange !== 'string' || !outlet.schedule.timeRange.includes(' - ')) {
+              console.log(`⚠️ Invalid timeRange format, skipping schedule check`)
+              return
+            }
+            
+            const timeRangeParts = outlet.schedule.timeRange.split(' - ')
+            if (timeRangeParts.length < 2 || !timeRangeParts[0] || !timeRangeParts[1]) {
+              console.log(`⚠️ Invalid timeRange split result, skipping schedule check`)
+              return
+            }
+            
+            const [startTimeStr, endTimeStr] = timeRangeParts
             const convertTo24Hour = (time12: string) => {
-              const [time, period] = time12.split(' ')
-              const [hours, minutes] = time.split(':').map(Number)
-              return period === 'PM' && hours !== 12 ? (hours + 12) * 60 + minutes : 
-                     period === 'AM' && hours === 12 ? minutes : hours * 60 + minutes
+              if (!time12 || typeof time12 !== 'string') return 0
+              try {
+                const parts = time12.split(' ')
+                if (parts.length < 2 || !parts[0] || !parts[1]) return 0
+                const [time, period] = parts
+                const timeParts = time.split(':')
+                if (timeParts.length < 2 || !timeParts[0] || !timeParts[1]) return 0
+                const [hours, minutes] = timeParts.map(Number)
+                if (isNaN(hours) || isNaN(minutes)) return 0
+                return period === 'PM' && hours !== 12 ? (hours + 12) * 60 + minutes : 
+                       period === 'AM' && hours === 12 ? minutes : hours * 60 + minutes
+              } catch (error) {
+                return 0
+              }
             }
             
             const startTime = convertTo24Hour(startTimeStr)
             const endTime = convertTo24Hour(endTimeStr)
+            
+            if (startTime === 0 || endTime === 0) {
+              console.log(`⚠️ Invalid time conversion, skipping schedule check`)
+              return
+            }
+            
             const isWithinTimeRange = currentTime >= startTime && currentTime <= endTime
             
             // Check day frequency
-            const frequency = outlet.schedule.frequency?.toLowerCase() || ''
+            const frequency = outlet.schedule.frequency || ''
             let isCorrectDay = false
 
-            if (frequency === 'daily') {
+            if (!frequency || typeof frequency !== 'string') {
+              isCorrectDay = true // Default to daily if invalid
+            } else if (frequency.toLowerCase() === 'daily') {
               isCorrectDay = true
-            } else if (frequency === 'weekdays') {
+            } else if (frequency.toLowerCase() === 'weekdays') {
               isCorrectDay = currentDay >= 1 && currentDay <= 5
-            } else if (frequency === 'weekends') {
+            } else if (frequency.toLowerCase() === 'weekends') {
               isCorrectDay = currentDay === 0 || currentDay === 6
-            } else if (frequency.includes(',')) {
-              const dayMap: { [key: string]: number } = {
-                'monday': 1, 'tuesday': 2, 'wednesday': 3, 'thursday': 4, 
-                'friday': 5, 'saturday': 6, 'sunday': 0
+            } else if (frequency && typeof frequency === 'string' && frequency.includes(',')) {
+              try {
+                const dayMap: { [key: string]: number } = {
+                  'monday': 1, 'tuesday': 2, 'wednesday': 3, 'thursday': 4, 
+                  'friday': 5, 'saturday': 6, 'sunday': 0
+                }
+                const scheduledDays = frequency.split(',').map((day: string) => {
+                  if (!day || typeof day !== 'string') return undefined
+                  return dayMap[day.trim().toLowerCase()]
+                }).filter((day: number | undefined) => day !== undefined) as number[]
+                isCorrectDay = scheduledDays.includes(currentDay)
+              } catch (error) {
+                isCorrectDay = true // Default to daily on error
               }
-              const scheduledDays = frequency.split(',').map((day: string) => dayMap[day.trim().toLowerCase()])
-              isCorrectDay = scheduledDays.includes(currentDay)
             }
             
             const shouldBeActive = isWithinTimeRange && isCorrectDay
@@ -1069,6 +1232,11 @@ function App() {
           // Use enhanced time checker to determine cause
           const turnOffAnalysis = checkTurnOffCause(outlet, outletName)
           
+          if (!turnOffAnalysis) {
+            console.log(`⚠️ No turn-off analysis available for ${outletName}, skipping notification`)
+            return
+          }
+          
           console.log(`🔍 Turn-off analysis for ${outletName}:`, turnOffAnalysis)
           
           newNotifications.push({
@@ -1088,17 +1256,44 @@ function App() {
           const now = new Date()
           const currentTime = now.getHours() * 60 + now.getMinutes()
           
-          // Parse schedule time
-          const [startTimeStr, endTimeStr] = outlet.schedule.timeRange.split(' - ')
+          // Parse schedule time - with protection
+          if (!outlet.schedule.timeRange || typeof outlet.schedule.timeRange !== 'string' || !outlet.schedule.timeRange.includes(' - ')) {
+            console.log(`⚠️ Invalid timeRange format, skipping schedule check`)
+            return
+          }
+          
+          const timeRangeParts = outlet.schedule.timeRange.split(' - ')
+          if (timeRangeParts.length < 2 || !timeRangeParts[0] || !timeRangeParts[1]) {
+            console.log(`⚠️ Invalid timeRange split result, skipping schedule check`)
+            return
+          }
+          
+          const [startTimeStr, endTimeStr] = timeRangeParts
           const convertTo24Hour = (time12: string) => {
-            const [time, period] = time12.split(' ')
-            const [hours, minutes] = time.split(':').map(Number)
-            return period === 'PM' && hours !== 12 ? (hours + 12) * 60 + minutes : 
-                   period === 'AM' && hours === 12 ? minutes : hours * 60 + minutes
+            if (!time12 || typeof time12 !== 'string') return 0
+            try {
+              const parts = time12.split(' ')
+              if (parts.length < 2 || !parts[0] || !parts[1]) return 0
+              const [time, period] = parts
+              const timeParts = time.split(':')
+              if (timeParts.length < 2 || !timeParts[0] || !timeParts[1]) return 0
+              const [hours, minutes] = timeParts.map(Number)
+              if (isNaN(hours) || isNaN(minutes)) return 0
+              return period === 'PM' && hours !== 12 ? (hours + 12) * 60 + minutes : 
+                     period === 'AM' && hours === 12 ? minutes : hours * 60 + minutes
+            } catch (error) {
+              return 0
+            }
           }
           
           const startTime = convertTo24Hour(startTimeStr)
           const endTime = convertTo24Hour(endTimeStr)
+          
+          if (startTime === 0 || endTime === 0) {
+            console.log(`⚠️ Invalid time conversion, skipping schedule check`)
+            return
+          }
+          
           const isWithinSchedule = currentTime >= startTime && currentTime <= endTime
           
           // If device is off but should be on according to schedule, and it was previously off
@@ -1126,16 +1321,42 @@ function App() {
             const now = new Date()
             const currentTime = now.getHours() * 60 + now.getMinutes()
             
-            // Parse schedule time
-            const [startTimeStr, endTimeStr] = outlet.schedule.timeRange.split(' - ')
+            // Parse schedule time - with protection
+            if (!outlet.schedule.timeRange || typeof outlet.schedule.timeRange !== 'string' || !outlet.schedule.timeRange.includes(' - ')) {
+              console.log(`⚠️ Invalid timeRange format, skipping schedule check`)
+              return
+            }
+            
+            const timeRangeParts = outlet.schedule.timeRange.split(' - ')
+            if (timeRangeParts.length < 2 || !timeRangeParts[0] || !timeRangeParts[1]) {
+              console.log(`⚠️ Invalid timeRange split result, skipping schedule check`)
+              return
+            }
+            
+            const [startTimeStr, endTimeStr] = timeRangeParts
             const convertTo24Hour = (time12: string) => {
-              const [time, period] = time12.split(' ')
-              const [hours, minutes] = time.split(':').map(Number)
-              return period === 'PM' && hours !== 12 ? (hours + 12) * 60 + minutes : 
-                     period === 'AM' && hours === 12 ? minutes : hours * 60 + minutes
+              if (!time12 || typeof time12 !== 'string') return 0
+              try {
+                const parts = time12.split(' ')
+                if (parts.length < 2 || !parts[0] || !parts[1]) return 0
+                const [time, period] = parts
+                const timeParts = time.split(':')
+                if (timeParts.length < 2 || !timeParts[0] || !timeParts[1]) return 0
+                const [hours, minutes] = timeParts.map(Number)
+                if (isNaN(hours) || isNaN(minutes)) return 0
+                return period === 'PM' && hours !== 12 ? (hours + 12) * 60 + minutes : 
+                       period === 'AM' && hours === 12 ? minutes : hours * 60 + minutes
+              } catch (error) {
+                return 0
+              }
             }
             
             const startTime = convertTo24Hour(startTimeStr)
+            
+            if (startTime === 0) {
+              console.log(`⚠️ Invalid time conversion, skipping schedule check`)
+              return
+            }
             const endTime = convertTo24Hour(endTimeStr)
             
             // Check if device is within scheduled time
@@ -1833,12 +2054,36 @@ function App() {
             <div style={{fontSize:13, color:'#4b5563'}}>{today}</div>
           </div>
         </div>
-        {activeView === 'dashboard' && <Dashboard onNavigate={(key) => setActiveView(key as any)} />}
-        {activeView === 'setup' && <SetUp />}
-        {activeView === 'schedule' && <Schedule />}
-        {activeView === 'activeDevice' && <ActiveDevice userRole={userRole} />}
-        {activeView === 'reports' && <Reports />}
-        {(activeView === 'users' || activeView === 'userLogs' || activeView === 'deviceLogs' || activeView === 'offices') && <UserManagment onNavigate={(k) => setActiveView(k as any)} currentView={activeView} />}
+        {activeView === 'dashboard' && (
+          <ErrorBoundary>
+            <Dashboard onNavigate={(key) => setActiveView(key as any)} />
+          </ErrorBoundary>
+        )}
+        {activeView === 'setup' && (
+          <ErrorBoundary>
+            <SetUp />
+          </ErrorBoundary>
+        )}
+        {activeView === 'schedule' && (
+          <ErrorBoundary>
+            <Schedule />
+          </ErrorBoundary>
+        )}
+        {activeView === 'activeDevice' && (
+          <ErrorBoundary>
+            <ActiveDevice userRole={userRole} />
+          </ErrorBoundary>
+        )}
+        {activeView === 'reports' && (
+          <ErrorBoundary>
+            <Reports />
+          </ErrorBoundary>
+        )}
+        {(activeView === 'users' || activeView === 'userLogs' || activeView === 'deviceLogs' || activeView === 'offices') && (
+          <ErrorBoundary>
+            <UserManagment onNavigate={(k) => setActiveView(k as any)} currentView={activeView} />
+          </ErrorBoundary>
+        )}
         {/* Logs view removed */}
       </main>
 

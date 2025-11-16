@@ -960,46 +960,100 @@
 }
 
 .form-group input,
-.form-group select {
+.field-group input[type="text"] {
   width: 100%;
-  padding: 10px 12px;
-  border: 2px solid #e5e7eb;
-  border-radius: 8px;
-  font-size: 13px;
-  background: #f9fafb;
+  padding: 12px 16px;
+  border: 2px solid #d1d5db;
+  border-radius: 10px;
+  font-size: 14px;
+  background: #ffffff;
   transition: all 0.2s ease;
   box-sizing: border-box;
   color: #1f2937;
   font-weight: 500;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+.form-group select,
+.field-group select {
+  width: 100%;
+  padding: 12px 42px 12px 16px;
+  border: 2px solid #d1d5db;
+  border-radius: 10px;
+  font-size: 14px;
+  background: #ffffff;
+  background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%237c3aed' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='m6 8 4 4 4-4'/%3e%3c/svg%3e");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
+  background-size: 16px;
+  transition: all 0.2s ease;
+  box-sizing: border-box;
+  color: #1f2937;
+  font-weight: 500;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  cursor: pointer;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+}
+
+.form-group input:hover,
+.field-group input[type="text"]:hover {
+  border-color: #9ca3af;
+  background: #fafafa;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
+}
+
+.form-group select:hover,
+.field-group select:hover {
+  border-color: #9ca3af;
+  background-color: #fafafa;
+  background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%237c3aed' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='m6 8 4 4 4-4'/%3e%3c/svg%3e");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
+  background-size: 16px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
 }
 
 .form-group input:focus,
-.form-group select:focus {
+.form-group select:focus,
+.field-group select:focus,
+.field-group input[type="text"]:focus {
   outline: none;
   border-color: #7c3aed;
   background: #ffffff;
-  box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.1);
+  box-shadow: 0 0 0 4px rgba(124, 58, 237, 0.1), 0 2px 8px rgba(0, 0, 0, 0.1);
   transform: translateY(-1px);
 }
 
-.form-group input::placeholder {
+.form-group input::placeholder,
+.field-group input[type="text"]::placeholder {
   color: #9ca3af;
   font-weight: 400;
+  opacity: 0.7;
 }
 
-.form-group select {
-  cursor: pointer;
-  appearance: none;
-  background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='m6 8 4 4 4-4'/%3e%3c/svg%3e");
+/* Remove native dropdown arrow for Firefox */
+.form-group select::-moz-appearance,
+.field-group select::-moz-appearance {
+  text-indent: 0.01px;
+  text-overflow: '';
+}
+
+/* Remove native dropdown arrow for IE/Edge */
+.form-group select::-ms-expand,
+.field-group select::-ms-expand {
+  display: none;
+}
+
+.form-group select:focus,
+.field-group select:focus {
+  border-color: #7c3aed;
+  background-color: #ffffff;
+  background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%237c3aed' stroke-linecap='round' stroke-linejoin='round' stroke-width='2.5' d='m6 8 4 4 4-4'/%3e%3c/svg%3e");
   background-repeat: no-repeat;
-  background-position: right 12px center;
-  background-size: 14px;
-  padding-right: 36px;
-}
-
-.form-group select:hover {
-  border-color: #d1d5db;
-  background-color: #f3f4f6;
+  background-position: right 14px center;
+  background-size: 16px;
 }
 
 /* Office Selection Dropdown */
@@ -1233,15 +1287,19 @@
 
 /* Disabled Input Styles */
 .disabled-input {
-  background-color: #f9fafb !important;
+  background-color: #f3f4f6 !important;
   color: #9ca3af !important;
   cursor: not-allowed !important;
   border-color: #e5e7eb !important;
+  opacity: 0.6;
+  box-shadow: none !important;
 }
 
 .disabled-input:hover {
-  background-color: #f9fafb !important;
+  background-color: #f3f4f6 !important;
   border-color: #e5e7eb !important;
+  transform: none !important;
+  box-shadow: none !important;
 }
 
 /* Edit Restriction Modal Styles */
@@ -1416,15 +1474,20 @@
 
 /* Error States */
 .form-group.error input,
-.form-group.error select {
+.form-group.error select,
+.field-group.error input,
+.field-group.error select {
   border-color: #dc2626;
   background: #fef2f2;
+  box-shadow: 0 1px 3px rgba(220, 38, 38, 0.1);
 }
 
 .form-group.error input:focus,
-.form-group.error select:focus {
+.form-group.error select:focus,
+.field-group.error input:focus,
+.field-group.error select:focus {
   border-color: #dc2626;
-  box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.1);
+  box-shadow: 0 0 0 4px rgba(220, 38, 38, 0.1), 0 2px 8px rgba(220, 38, 38, 0.15);
 }
 
 .error-message {
