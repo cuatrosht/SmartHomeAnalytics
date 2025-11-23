@@ -21,6 +21,7 @@ export default function SignUp({ onSuccess, onNavigateToLogin }: SignUpProps) {
   const [userRole, setUserRole] = useState<'Coordinator' | 'admin'>('Coordinator')
   const [showRoleModal, setShowRoleModal] = useState(false)
   const [hasExistingGSO, setHasExistingGSO] = useState(false)
+  const [isFirstUser, setIsFirstUser] = useState(false)
 
   type ModalVariant = 'success' | 'error'
   const [modalOpen, setModalOpen] = useState(false)
@@ -29,23 +30,39 @@ export default function SignUp({ onSuccess, onNavigateToLogin }: SignUpProps) {
   const [modalMessage, setModalMessage] = useState('')
   const successTimer = useRef<number | null>(null)
 
-  // Function to check if there's an existing GSO
+  // Function to check if there's an existing GSO and if it's the first user
   const checkExistingGSO = async () => {
     try {
       const usersRef = ref(realtimeDb, 'users')
       const snapshot = await get(usersRef)
 
-      if (snapshot.exists()) {
-        const users = snapshot.val()
-        const hasGSO = Object.values(users).some((user: any) => user.role === 'admin')
-        setHasExistingGSO(hasGSO)
-        console.log('Existing GSO check:', hasGSO)
-      } else {
+      // If no users exist in database, GSO can be selected and it's the first user
+      if (!snapshot.exists()) {
         setHasExistingGSO(false)
+        setIsFirstUser(true)
+        console.log('No users in database - GSO can be selected, first user will be auto-verified')
+        return
+      }
+
+      // Check if any user has admin role
+      const users = snapshot.val()
+      if (users && typeof users === 'object') {
+        const usersArray = Object.values(users) as any[]
+        const hasGSO = usersArray.some((user: any) => user?.role === 'admin')
+        setHasExistingGSO(hasGSO)
+        setIsFirstUser(false)
+        console.log('Existing GSO check:', hasGSO ? 'GSO exists - cannot select' : 'No GSO - can select')
+      } else {
+        // If users data is invalid, allow GSO selection (safer default)
+        setHasExistingGSO(false)
+        setIsFirstUser(false)
+        console.log('Invalid users data - allowing GSO selection')
       }
     } catch (error) {
       console.error('Error checking for existing GSO:', error)
+      // On error, allow GSO selection (safer default - user can still be prevented during signup)
       setHasExistingGSO(false)
+      setIsFirstUser(false)
     }
   }
 
@@ -92,110 +109,173 @@ export default function SignUp({ onSuccess, onNavigateToLogin }: SignUpProps) {
   }
 
   const validateForm = () => {
-    if (!firstName.trim()) {
-      openModal('error', 'Validation Error', 'First name is required.')
+    try {
+      if (!firstName || typeof firstName !== 'string' || !firstName.trim()) {
+        openModal('error', 'Validation Error', 'First name is required.')
+        return false
+      }
+      if (!lastName || typeof lastName !== 'string' || !lastName.trim()) {
+        openModal('error', 'Validation Error', 'Last name is required.')
+        return false
+      }
+      if (!email || typeof email !== 'string' || !email.trim()) {
+        openModal('error', 'Validation Error', 'Email address is required.')
+        return false
+      }
+      if (!password || typeof password !== 'string' || !password) {
+        openModal('error', 'Validation Error', 'Password is required.')
+        return false
+      }
+      if (password.length < 6) {
+        openModal('error', 'Validation Error', 'Password must be at least 6 characters long.')
+        return false
+      }
+      return true
+    } catch (validationError) {
+      console.error('Error in form validation:', validationError)
+      openModal('error', 'Validation Error', 'An error occurred during validation. Please check your inputs.')
       return false
     }
-    if (!lastName.trim()) {
-      openModal('error', 'Validation Error', 'Last name is required.')
-      return false
-    }
-    if (!email.trim()) {
-      openModal('error', 'Validation Error', 'Email address is required.')
-      return false
-    }
-    if (!password) {
-      openModal('error', 'Validation Error', 'Password is required.')
-      return false
-    }
-    if (password.length < 6) {
-      openModal('error', 'Validation Error', 'Password must be at least 6 characters long.')
-      return false
-    }
-    return true
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     
-    if (!validateForm()) return
-
-    // Prevent GSO signup if GSO already exists
-    if (userRole === 'admin' && hasExistingGSO) {
-      openModal('error', 'GSO Account Exists', 'A GSO account already exists. Only one GSO is allowed per system.')
-      return
-    }
-
-    setLoading(true)
-    
     try {
-      // Create user with email and password
-      const userCredential = await createUserWithEmailAndPassword(auth, email, password)
-      const user = userCredential.user
+      if (!validateForm()) return
 
-      // Update user profile with display name
-      await updateProfile(user, {
-        displayName: `${firstName} ${lastName}`.trim()
-      })
-
-      // Save additional user data to Realtime Database
-      const userData = {
-        uid: user.uid,
-        email: user.email,
-        firstName: firstName.trim(),
-        lastName: lastName.trim(),
-        displayName: `${firstName} ${lastName}`.trim(),
-        role: userRole,
-        createdAt: new Date().toISOString(),
-        lastLogin: new Date().toISOString()
+      // Prevent GSO signup if GSO already exists
+      if (userRole === 'admin' && hasExistingGSO) {
+        openModal('error', 'GSO Account Exists', 'A GSO account already exists. Only one GSO is allowed per system.')
+        return
       }
 
-      console.log('Saving user data with role:', userRole, userData)
-      await set(ref(realtimeDb, `users/${user.uid}`), userData)
+      setLoading(true)
+      
+      try {
+        // Create user with email and password
+        const userCredential = await createUserWithEmailAndPassword(auth, email.trim(), password)
+        const user = userCredential?.user
 
-      // Log user signup to user_logs table
-      await logUserActionToUserLogs(
-        'User Signup',
-        'System',
-        `New user account created with email: ${email} (Role: ${userRole})`,
-        'success',
-        `${firstName} ${lastName}`.trim(),
-        user.uid,
-        'email'
-      )
+        if (!user || !user.uid) {
+          throw new Error('User creation failed - no user returned')
+        }
 
-      openModal('success', 'Account Created Successfully', `Welcome ${firstName}! Your ${userRole} account has been created and you are now signed in.`)
-      scheduleSuccessRedirect()
-      
-    } catch (error: any) {
-      console.error('Signup error:', error)
-      
-      let errorMessage = 'Failed to create account. Please try again.'
-      
-      if (error.code === 'auth/email-already-in-use') {
-        errorMessage = 'An account with this email already exists. Please sign in instead.'
-      } else if (error.code === 'auth/invalid-email') {
-        errorMessage = 'Please enter a valid email address.'
-      } else if (error.code === 'auth/weak-password') {
-        errorMessage = 'Password is too weak. Please choose a stronger password.'
-      } else if (error.code === 'auth/network-request-failed') {
-        errorMessage = 'Network error. Please check your connection and try again.'
+        // Safe name extraction
+        let displayName = 'User'
+        try {
+          const firstNameTrimmed = firstName?.trim() || ''
+          const lastNameTrimmed = lastName?.trim() || ''
+          displayName = `${firstNameTrimmed} ${lastNameTrimmed}`.trim() || user.email || 'User'
+        } catch (nameError) {
+          console.error('Error creating display name:', nameError)
+          displayName = user.email || 'User'
+        }
+
+        // Update user profile with display name
+        try {
+          await updateProfile(user, {
+            displayName: displayName
+          })
+        } catch (profileError) {
+          console.error('Error updating profile:', profileError)
+          // Continue even if profile update fails
+        }
+
+        // Determine if user should be auto-verified (first user or GSO)
+        const shouldAutoVerify = isFirstUser || userRole === 'admin'
+
+        // Save additional user data to Realtime Database
+        const userData = {
+          uid: user.uid || '',
+          email: user.email || email.trim() || '',
+          firstName: firstName?.trim() || '',
+          lastName: lastName?.trim() || '',
+          displayName: displayName,
+          role: userRole || 'Coordinator',
+          verified: shouldAutoVerify, // First user or GSO is auto-verified
+          verificationStatus: shouldAutoVerify ? 'verified' : 'pending', // Set verification status
+          createdAt: new Date().toISOString(),
+          lastLogin: new Date().toISOString()
+        }
+
+        console.log('Saving user data with role:', userRole, 'Auto-verified:', shouldAutoVerify, userData)
+        
+        try {
+          await set(ref(realtimeDb, `users/${user.uid}`), userData)
+        } catch (dbError) {
+          console.error('Error saving user data:', dbError)
+          throw new Error('Failed to save user data to database')
+        }
+
+        // Log user signup to user_logs table
+        try {
+          await logUserActionToUserLogs(
+            'User Signup',
+            'System',
+            `New user account created with email: ${email.trim()} (Role: ${userRole})`,
+            'success',
+            displayName,
+            user.uid,
+            'email'
+          )
+        } catch (logError) {
+          console.error('Error logging user action:', logError)
+          // Continue even if logging fails
+        }
+
+        // Show success message based on verification status
+        if (shouldAutoVerify) {
+          const roleDisplay = userRole === 'admin' ? 'GSO' : userRole
+          openModal('success', 'Account Created Successfully', `Welcome ${firstName?.trim() || 'User'}! Your ${roleDisplay} account has been created${isFirstUser ? ' as the first user' : ''} and you are now signed in.`)
+          scheduleSuccessRedirect()
+        } else {
+          openModal('success', 'Account Created Successfully', `Welcome ${firstName?.trim() || 'User'}! Your ${userRole} account has been created. Please wait for verification before accessing the system.`)
+        }
+      } catch (error: any) {
+        console.error('Signup error:', error)
+        
+        let errorMessage = 'Failed to create account. Please try again.'
+        
+        try {
+          if (error?.code === 'auth/email-already-in-use') {
+            errorMessage = 'An account with this email already exists. Please sign in instead.'
+          } else if (error?.code === 'auth/invalid-email') {
+            errorMessage = 'Please enter a valid email address.'
+          } else if (error?.code === 'auth/weak-password') {
+            errorMessage = 'Password is too weak. Please choose a stronger password.'
+          } else if (error?.code === 'auth/network-request-failed') {
+            errorMessage = 'Network error. Please check your connection and try again.'
+          } else if (error?.message) {
+            errorMessage = error.message
+          }
+        } catch (errorParseError) {
+          console.error('Error parsing error message:', errorParseError)
+        }
+        
+        // Log failed signup attempt (with error handling)
+        try {
+          await logUserActionToUserLogs(
+            'User Signup',
+            'System',
+            `Failed signup attempt with email: ${email?.trim() || 'unknown'} - ${errorMessage}`,
+            'error',
+            `${firstName?.trim() || ''} ${lastName?.trim() || ''}`.trim() || 'Unknown',
+            'unknown',
+            'email'
+          )
+        } catch (logError) {
+          console.error('Error logging failed signup:', logError)
+        }
+        
+        openModal('error', 'Account Creation Failed', errorMessage)
+      } finally {
+        setLoading(false)
       }
-      
-      // Log failed signup attempt
-      await logUserActionToUserLogs(
-        'User Signup',
-        'System',
-        `Failed signup attempt with email: ${email} - ${errorMessage}`,
-        'error',
-        `${firstName} ${lastName}`.trim(),
-        'unknown',
-        'email'
-      )
-      
-      openModal('error', 'Account Creation Failed', errorMessage)
-    } finally {
+    } catch (outerError: any) {
+      console.error('Outer signup error:', outerError)
       setLoading(false)
+      openModal('error', 'Account Creation Failed', 'An unexpected error occurred. Please try again.')
     }
   }
 
@@ -205,86 +285,141 @@ export default function SignUp({ onSuccess, onNavigateToLogin }: SignUpProps) {
   }
 
   const handleGoogleWithRole = async (selectedRole: 'Coordinator' | 'admin') => {
-    setShowRoleModal(false)
-    
-    // Prevent GSO signup if GSO already exists
-    if (selectedRole === 'admin' && hasExistingGSO) {
-      openModal('error', 'GSO Account Exists', 'A GSO account already exists. Only one GSO is allowed per system.')
-      return
-    }
-    
-    setLoading(true)
-    
     try {
-      const provider = new GoogleAuthProvider()
-      const result = await signInWithPopup(auth, provider)
-      const user = result.user
+      setShowRoleModal(false)
       
-      // Save additional user data to Realtime Database
-      const userData = {
-        uid: user.uid,
-        email: user.email,
-        firstName: (user.displayName && typeof user.displayName === 'string' && user.displayName.includes(' ')) 
-          ? user.displayName.split(' ')[0] 
-          : (user.displayName || 'User'),
-        lastName: (user.displayName && typeof user.displayName === 'string' && user.displayName.includes(' '))
-          ? user.displayName.split(' ').slice(1).join(' ')
-          : '',
-        displayName: user.displayName || 'User',
-        role: selectedRole,
-        createdAt: new Date().toISOString(),
-        lastLogin: new Date().toISOString(),
-        provider: 'google'
+      // Prevent GSO signup if GSO already exists
+      if (selectedRole === 'admin' && hasExistingGSO) {
+        openModal('error', 'GSO Account Exists', 'A GSO account already exists. Only one GSO is allowed per system.')
+        return
       }
+      
+      setLoading(true)
+      
+      try {
+        const provider = new GoogleAuthProvider()
+        const result = await signInWithPopup(auth, provider)
+        const user = result?.user
 
-      console.log('Saving Google user data with role:', selectedRole, userData)
-      await set(ref(realtimeDb, `users/${user.uid}`), userData)
-      
-      // Log user signup to user_logs table
-      await logUserActionToUserLogs(
-        'Google Signup',
-        'System',
-        `New user account created with Google: ${user.email} (Role: ${selectedRole})`,
-        'success',
-        user.displayName || 'User',
-        user.uid,
-        'google'
-      )
-      
-      openModal('success', 'Signed up with Google', `Welcome ${user.displayName || 'User'}! Your ${selectedRole} account has been created with Google authentication.`)
-      scheduleSuccessRedirect(user.displayName || undefined, selectedRole)
-      
-    } catch (error: any) {
-      console.error('Google signup error:', error)
-      
-      let errorMessage = 'Google signup failed. Please try again.'
-      
-      if (error.code === 'auth/popup-closed-by-user') {
-        errorMessage = 'Signup was cancelled. Please try again.'
-      } else if (error.code === 'auth/popup-blocked') {
-        errorMessage = 'Pop-up was blocked. Please allow pop-ups and try again.'
-      } else if (error.code === 'auth/network-request-failed') {
-        errorMessage = 'Network error. Please check your connection and try again.'
-      } else if (error.code === 'auth/unauthorized-domain') {
-        errorMessage = 'This domain is not authorized for Google signup. Please contact support.'
-      } else if (error.code === 'auth/operation-not-allowed') {
-        errorMessage = 'Google signup is not enabled. Please contact support.'
+        if (!user || !user.uid) {
+          throw new Error('Google authentication failed - no user returned')
+        }
+
+        // Safe display name extraction
+        let displayName = 'Google User'
+        let firstName = ''
+        let lastName = ''
+        try {
+          displayName = user.displayName || user.email || 'Google User'
+          if (user.displayName && typeof user.displayName === 'string' && user.displayName.includes(' ')) {
+            const nameParts = user.displayName.split(' ')
+            firstName = nameParts[0] || ''
+            lastName = nameParts.slice(1).join(' ') || ''
+          } else {
+            firstName = displayName
+          }
+        } catch (nameError) {
+          console.error('Error extracting display name:', nameError)
+          displayName = user.email || 'Google User'
+          firstName = displayName
+        }
+
+        // Determine if user should be auto-verified (first user or GSO)
+        const shouldAutoVerify = isFirstUser || selectedRole === 'admin'
+
+        // Save additional user data to Realtime Database
+        const userData = {
+          uid: user.uid || '',
+          email: user.email || '',
+          firstName: firstName,
+          lastName: lastName,
+          displayName: displayName,
+          role: selectedRole || 'Coordinator',
+          verified: shouldAutoVerify, // First user or GSO is auto-verified
+          verificationStatus: shouldAutoVerify ? 'verified' : 'pending', // Set verification status
+          createdAt: new Date().toISOString(),
+          lastLogin: new Date().toISOString(),
+          provider: 'google'
+        }
+
+        console.log('Saving Google user data with role:', selectedRole, 'Auto-verified:', shouldAutoVerify, userData)
+        
+        try {
+          await set(ref(realtimeDb, `users/${user.uid}`), userData)
+        } catch (dbError) {
+          console.error('Error saving user data:', dbError)
+          throw new Error('Failed to save user data to database')
+        }
+        
+        // Log user signup to user_logs table
+        try {
+          await logUserActionToUserLogs(
+            'Google Signup',
+            'System',
+            `New user account created with Google: ${user.email || 'unknown'} (Role: ${selectedRole})`,
+            'success',
+            displayName,
+            user.uid,
+            'google'
+          )
+        } catch (logError) {
+          console.error('Error logging user action:', logError)
+          // Continue even if logging fails
+        }
+        
+        const roleDisplay = selectedRole === 'admin' ? 'GSO' : selectedRole
+        if (shouldAutoVerify) {
+          openModal('success', 'Signed up with Google', `Welcome ${displayName}! Your ${roleDisplay} account has been created${isFirstUser ? ' as the first user' : ''} with Google authentication.`)
+          scheduleSuccessRedirect(displayName !== 'Google User' ? displayName : undefined, selectedRole)
+        } else {
+          openModal('success', 'Account Created', `Welcome ${displayName}! Your ${roleDisplay} account has been created. Please wait for verification before accessing the system.`)
+        }
+      } catch (error: any) {
+        console.error('Google signup error:', error)
+        
+        let errorMessage = 'Google signup failed. Please try again.'
+        
+        try {
+          if (error?.code === 'auth/popup-closed-by-user') {
+            errorMessage = 'Signup was cancelled. Please try again.'
+          } else if (error?.code === 'auth/popup-blocked') {
+            errorMessage = 'Pop-up was blocked. Please allow pop-ups and try again.'
+          } else if (error?.code === 'auth/network-request-failed') {
+            errorMessage = 'Network error. Please check your connection and try again.'
+          } else if (error?.code === 'auth/unauthorized-domain') {
+            errorMessage = 'This domain is not authorized for Google signup. Please contact support.'
+          } else if (error?.code === 'auth/operation-not-allowed') {
+            errorMessage = 'Google signup is not enabled. Please contact support.'
+          } else if (error?.message) {
+            errorMessage = error.message
+          }
+        } catch (errorParseError) {
+          console.error('Error parsing error message:', errorParseError)
+        }
+        
+        // Log failed Google signup attempt (with error handling)
+        try {
+          await logUserActionToUserLogs(
+            'Google Signup',
+            'System',
+            `Failed Google signup attempt - ${errorMessage}`,
+            'error',
+            'Unknown User',
+            'unknown',
+            'google'
+          )
+        } catch (logError) {
+          console.error('Error logging failed Google signup:', logError)
+        }
+        
+        openModal('error', 'Google Signup Failed', errorMessage)
+      } finally {
+        setLoading(false)
       }
-      
-      // Log failed Google signup attempt
-      await logUserActionToUserLogs(
-        'Google Signup',
-        'System',
-        `Failed Google signup attempt - ${errorMessage}`,
-        'error',
-        'Unknown User',
-        'unknown',
-        'google'
-      )
-      
-      openModal('error', 'Google Signup Failed', errorMessage)
-    } finally {
+    } catch (outerError: any) {
+      console.error('Outer Google signup error:', outerError)
       setLoading(false)
+      openModal('error', 'Google Sign-up Failed', 'An unexpected error occurred. Please try again.')
     }
   }
 

@@ -25,10 +25,10 @@ const calculateMonthlyEnergy = (outlet: any): string => {
     }
     
     // Convert to watts and format
-    return `${formatNumber(totalMonthlyEnergy * 1000)} Wh`
+    return `${formatNumber(totalMonthlyEnergy * 1000)} W`
   } catch (error) {
     console.error('Error calculating monthly energy:', error)
-    return '0.000 Wh'
+    return '0.000 W'
   }
 }
 
@@ -831,7 +831,7 @@ function LimitExceededModal({
                 <div className="detail-row">
                   <span className="label">Current Usage:</span>
                   <span className="value">
-                    {limitType === 'monthly' ? `${(currentUsage / 1000).toFixed(3)} kWh` : `${currentUsage.toFixed(3)} Wh`}
+                    {limitType === 'monthly' ? `${(currentUsage / 1000).toFixed(3)} kWh` : `${currentUsage.toFixed(3)} W`}
                   </span>
                 </div>
                 <div className="detail-row">
@@ -839,7 +839,7 @@ function LimitExceededModal({
                     {limitType === 'individual' ? 'Individual' : limitType === 'combined' ? 'Combined' : 'Monthly'} Limit:
                   </span>
                   <span className="value">
-                    {limitType === 'monthly' ? `${(limitValue / 1000).toFixed(3)} kWh` : `${limitValue.toFixed(3)} Wh`}
+                    {limitType === 'monthly' ? `${(limitValue / 1000).toFixed(3)} kWh` : `${limitValue.toFixed(3)} W`}
                   </span>
                 </div>
                 <div className="detail-row">
@@ -847,7 +847,7 @@ function LimitExceededModal({
                   <span className="value excess">
                     {limitType === 'monthly' 
                       ? `${((currentUsage - limitValue) / 1000).toFixed(3)} kWh` 
-                      : `${((currentUsage - limitValue)).toFixed(3)} Wh`}
+                      : `${((currentUsage - limitValue)).toFixed(3)} W`}
                   </span>
                 </div>
               </div>
@@ -1140,7 +1140,7 @@ function EditScheduleModal({ isOpen, onClose, device, onSave, onLimitExceeded }:
             }
           }
           
-          const monthlyTotalEnergyWh = totalMonthlyEnergy * 1000 // Convert to Wh
+          const monthlyTotalEnergyWh = totalMonthlyEnergy * 1000 // Convert to W
           
           // Check if device is part of combined limit group
           const deviceOutletName = device.outletName || ''
@@ -1203,7 +1203,7 @@ function EditScheduleModal({ isOpen, onClose, device, onSave, onLimitExceeded }:
             // IMPORTANT: If device is NOT in combined group, check individual monthly limit
             // This handles cases where: no combined limit exists, combined limit disabled, or device not in group
             const powerLimit = deviceData.relay_control?.auto_cutoff?.power_limit || 0
-            const powerLimitWh = powerLimit * 1000 // Convert from kW to Wh
+            const powerLimitWh = powerLimit * 1000 // Convert from kW to W
             
             if (powerLimitWh > 0 && monthlyTotalEnergyWh >= powerLimitWh) {
               onLimitExceeded(
@@ -2169,7 +2169,7 @@ function OutletSelectionModal({
                   }
                 }
                 
-                const outletEnergyWh = outletMonthlyEnergy * 1000 // Convert to Wh
+                const outletEnergyWh = outletMonthlyEnergy * 1000 // Convert to W
                 totalEnergyWh += outletEnergyWh
                 
                 let outletExceedsLimit = false
@@ -2257,7 +2257,7 @@ function OutletSelectionModal({
                   // IMPORTANT: If outlet is NOT in any combined group, check individual monthly limit
                   // This handles cases where: no combined limit exists, combined limit disabled, or outlet not in group
                   const individualPowerLimit = deviceData.relay_control?.auto_cutoff?.power_limit || 0
-                  const individualPowerLimitWh = individualPowerLimit * 1000 // Convert from kW to Wh
+                  const individualPowerLimitWh = individualPowerLimit * 1000 // Convert from kW to W
                   
                   if (individualPowerLimitWh > 0) {
                     outletExceedsLimit = outletEnergyWh >= individualPowerLimitWh
@@ -2300,7 +2300,7 @@ function OutletSelectionModal({
                   const firstOutletData = devicesData[firstExceedingOutlet]
                   if (firstOutletData) {
                     const individualPowerLimit = firstOutletData.relay_control?.auto_cutoff?.power_limit || 0
-                    limitValue = individualPowerLimit * 1000 // Convert from kW to Wh
+                    limitValue = individualPowerLimit * 1000 // Convert from kW to W
                   }
                 }
               }
@@ -2702,12 +2702,12 @@ export default function Schedule() {
           
           // Get current power usage from lifetime_energy (display in watts)
           const lifetimeEnergyWatts = outletData.lifetime_energy || 0
-          const powerUsageDisplay = `${formatNumber(lifetimeEnergyWatts * 1000)} Wh`
+          const powerUsageDisplay = `${formatNumber(lifetimeEnergyWatts * 1000)} W`
           
           // Get power limit and relay status
           const powerLimitRaw = relayControl?.auto_cutoff?.power_limit || 0
           const powerLimit = powerLimitRaw === "No Limit" ? "No Limit" : powerLimitRaw
-          const powerLimitDisplay = powerLimit === "No Limit" ? "No Limit" : `${(Number(powerLimit) * 1000).toFixed(2)} Wh`
+          const powerLimitDisplay = powerLimit === "No Limit" ? "No Limit" : `${(Number(powerLimit) * 1000).toFixed(2)} W`
           
           const controlState = (outletData.control?.device || 'off').toString().trim().toLowerCase()
           const mainStatus = relayControl?.main_status || 'ON'
@@ -2715,7 +2715,7 @@ export default function Schedule() {
           // Get today's energy consumption from total_energy (display in watts)
           const todayLogs = outletData.daily_logs?.[todayDateKey]
           const todayEnergyWatts = todayLogs?.total_energy || 0
-          const todayEnergyDisplay = `${formatNumber(todayEnergyWatts * 1000)} Wh`
+          const todayEnergyDisplay = `${formatNumber(todayEnergyWatts * 1000)} W`
             
             // Helper function to convert 24-hour time to 12-hour for display
             const convertTo12Hour = (time24h: string) => {
@@ -2886,19 +2886,19 @@ export default function Schedule() {
           
           // Get current power usage from lifetime_energy (display in watts)
           const lifetimeEnergyWatts = outletData.lifetime_energy || 0
-          const powerUsageDisplay = `${formatNumber(lifetimeEnergyWatts * 1000)} Wh`
+          const powerUsageDisplay = `${formatNumber(lifetimeEnergyWatts * 1000)} W`
           
           // Get power limit and relay status
           const powerLimitRaw = relayControl?.auto_cutoff?.power_limit || 0
           const powerLimit = powerLimitRaw === "No Limit" ? "No Limit" : powerLimitRaw
-          const powerLimitDisplay = powerLimit === "No Limit" ? "No Limit" : `${(Number(powerLimit) * 1000).toFixed(2)} Wh`
+          const powerLimitDisplay = powerLimit === "No Limit" ? "No Limit" : `${(Number(powerLimit) * 1000).toFixed(2)} W`
           const controlState = (outletData.control?.device || 'off').toString().trim().toLowerCase()
           const mainStatus = relayControl?.main_status || 'ON'
           
           // Get today's energy consumption from total_energy (display in watts)
           const todayLogs = outletData.daily_logs?.[todayDateKey]
           const todayEnergyWatts = todayLogs?.total_energy || 0
-          const todayEnergyDisplay = `${formatNumber(todayEnergyWatts * 1000)} Wh`
+          const todayEnergyDisplay = `${formatNumber(todayEnergyWatts * 1000)} W`
           
           // Helper function to convert 24-hour time to 12-hour for display
           const convertTo12Hour = (time24h: string) => {
@@ -3263,7 +3263,7 @@ export default function Schedule() {
           }
         }
         
-        const totalMonthlyEnergyWh = totalMonthlyEnergy * 1000 // Convert to Wh
+        const totalMonthlyEnergyWh = totalMonthlyEnergy * 1000 // Convert to W
         
         return totalMonthlyEnergyWh >= combinedLimitWatts
       } catch (error) {
@@ -4910,7 +4910,7 @@ export default function Schedule() {
             if (deviceData) {
               const todayLogs = deviceData?.daily_logs?.[todayDateKey]
               const todayTotalEnergy = todayLogs?.total_energy || 0 // This is in kW
-              const outletEnergyWh = todayTotalEnergy * 1000 // Convert to Wh
+              const outletEnergyWh = todayTotalEnergy * 1000 // Convert to W
               
               let outletExceedsLimit = false
               
@@ -4999,7 +4999,7 @@ export default function Schedule() {
                 // IMPORTANT: If outlet is NOT in any combined group, always use individual limit
                 // This handles cases where: no combined limit exists, combined limit disabled, or outlet not in group
                 const individualPowerLimit = deviceData.relay_control?.auto_cutoff?.power_limit || 0
-                const individualPowerLimitWh = individualPowerLimit * 1000 // Convert from kW to Wh
+                const individualPowerLimitWh = individualPowerLimit * 1000 // Convert from kW to W
                 
                 if (individualPowerLimitWh > 0) {
                   outletExceedsLimit = outletEnergyWh >= individualPowerLimitWh
@@ -5058,7 +5058,7 @@ export default function Schedule() {
             if (firstExceedingOutletData) {
               const todayLogs = firstExceedingOutletData?.daily_logs?.[todayDateKey]
               const todayTotalEnergy = todayLogs?.total_energy || 0
-              currentUsage = todayTotalEnergy * 1000 // Convert to Wh
+              currentUsage = todayTotalEnergy * 1000 // Convert to W
               
               if (isFirstOutletInCombinedGroup && typeof combinedLimitWh === 'number') {
                 limitType = 'combined'
@@ -5066,7 +5066,7 @@ export default function Schedule() {
               } else {
                 limitType = 'individual'
                 const individualPowerLimit = firstExceedingOutletData.relay_control?.auto_cutoff?.power_limit || 0
-                limitValue = individualPowerLimit * 1000 // Convert from kW to Wh
+                limitValue = individualPowerLimit * 1000 // Convert from kW to W
               }
             }
             
@@ -5122,7 +5122,7 @@ export default function Schedule() {
             if (firstOutletData) {
               const todayLogs = firstOutletData?.daily_logs?.[todayDateKey]
               const todayTotalEnergy = todayLogs?.total_energy || 0
-              currentUsage = todayTotalEnergy * 1000 // Convert to Wh
+              currentUsage = todayTotalEnergy * 1000 // Convert to W
               
               if (isFirstOutletInCombinedGroup && typeof combinedLimitWh === 'number') {
                 limitType = 'combined'
@@ -5130,7 +5130,7 @@ export default function Schedule() {
               } else {
                 limitType = 'individual'
                 const individualPowerLimit = firstOutletData.relay_control?.auto_cutoff?.power_limit || 0
-                limitValue = individualPowerLimit * 1000 // Convert from kW to Wh
+                limitValue = individualPowerLimit * 1000 // Convert from kW to W
               }
             }
             
@@ -5449,13 +5449,13 @@ export default function Schedule() {
                                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                                   <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
                                 </svg>
-                                <span>{String(combinedLimit) === "No Limit" ? "No Limit" : `${combinedLimit}Wh`}</span>
+                                <span>{String(combinedLimit) === "No Limit" ? "No Limit" : `${combinedLimit}W`}</span>
                               </div>
                             </div>
                         )
                       } else {
-                        // Ensure proper Wh unit formatting without creating Whh
-                        return device.limit.includes('Wh') ? device.limit : device.limit.replace(' W', ' Wh')
+                        // Ensure proper W unit formatting
+                        return device.limit.includes('W') ? device.limit : device.limit + ' W'
                       }
                     })()}
                   </td>

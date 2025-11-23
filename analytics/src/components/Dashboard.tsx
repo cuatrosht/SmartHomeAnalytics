@@ -14,6 +14,8 @@ import {
 } from 'chart.js'
 import { ref, onValue, off, get, update } from 'firebase/database'
 import { realtimeDb } from '../firebase/config'
+import headerImage from '../assets/image.png'
+import footerImage from '../assets/image1.png'
 import './Dashboard.css'
 
 // Function to format numbers with commas and decimals
@@ -42,10 +44,10 @@ const calculateMonthlyEnergy = (outlet: any): string => {
     }
     
     // Convert to watts and format
-    return `${formatNumber(totalMonthlyEnergy * 1000)} Wh`
+    return `${formatNumber(totalMonthlyEnergy * 1000)} W`
   } catch (error) {
     console.error('Error calculating monthly energy:', error)
-    return '0.000 Wh'
+    return '0.000 W'
   }
 }
 
@@ -600,6 +602,17 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
   const [overallConsumptionDevices, setOverallConsumptionDevices] = useState<DeviceData[]>([])
   const [officeRankingData, setOfficeRankingData] = useState<any[]>([])
   const dropdownRef = useRef<HTMLDivElement | null>(null)
+  
+  // Real-time power consumption state
+  const [realtimePowerData, setRealtimePowerData] = useState<{
+    labels: string[];
+    powerValues: number[];
+  }>({
+    labels: [],
+    powerValues: []
+  })
+  const [realtimePowerLoading, setRealtimePowerLoading] = useState(true)
+  const [realtimePowerError, setRealtimePowerError] = useState<string | null>(null)
 
   // Philippine electricity rate (per kWh) - automatically updated
   const PHILIPPINE_RATE_PER_KWH = currentRate
@@ -758,7 +771,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     console.log(`   Current month: ${currentMonth}/${currentYear}`)
     console.log(`   Days processed: Day 1 to Day ${currentDay} (${daysWithData} days with actual data)`)
     console.log(`   Total energy this month (so far): ${totalEnergySoFar.toFixed(6)} kWh`)
-    console.log(`   Daily average (from current month's data): ${dailyAverageKwh.toFixed(6)} kWh/day (${(dailyAverageKwh * 1000).toFixed(3)} Wh/day)`)
+    console.log(`   Daily average (from current month's data): ${dailyAverageKwh.toFixed(6)} kWh/day (${(dailyAverageKwh * 1000).toFixed(3)} W/day)`)
     console.log(`   Days in full month: ${daysInMonth}`)
     console.log(`   Estimated monthly energy: ${estimatedMonthlyEnergy.toFixed(6)} kWh`)
     console.log(`   Rate: ₱${PHILIPPINE_RATE_PER_KWH} per kWh`)
@@ -876,7 +889,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
         const todayLogs = deviceData?.daily_logs?.[todayKey]
         if (todayLogs) {
           const measuredEnergy = todayLogs.total_energy || 0 // Energy in kWh
-          const avgPower = todayLogs.avg_power || 0 // Average power in Wh
+          const avgPower = todayLogs.avg_power || 0 // Average power in W
           const usageTimeHours = todayLogs.usage_time_hours || 0 // Usage time in hours
           
           // Calculate expected energy from runtime
@@ -942,21 +955,21 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
       
       const daysWithData = daysWithDataSet.size // Count unique days with data across all devices
       
-      // Calculate daily average using the formula: Daily Average (Wh) = Total Historical Energy (last 30 days) (Wh) ÷ Number of active days
+      // Calculate daily average using the formula: Daily Average (W) = Total Historical Energy (last 30 days) (W) ÷ Number of active days
       // This represents the typical/expected energy consumption per day based on historical data
-      const totalHistoricalEnergyWh = totalHistoricalEnergy * 1000 // Convert kWh to Wh
+      const totalHistoricalEnergyWh = totalHistoricalEnergy * 1000 // Convert kWh to W
       const dailyAverageWh = daysWithData > 0 ? totalHistoricalEnergyWh / daysWithData : 0
       
       // Convert to Watts and set states
       setTodayTotalEnergy(totalTodayEnergy * 1000) // Convert kW to W
-      setDailyAverage(dailyAverageWh) // Already in Wh
+      setDailyAverage(dailyAverageWh) // Already in W
       
       console.log('Daily Average Calculation (Last 30 Days Historical Data):', {
         totalHistoricalEnergyKwh: `${totalHistoricalEnergy.toFixed(6)} kWh`,
-        totalHistoricalEnergyWh: `${totalHistoricalEnergyWh.toFixed(3)} Wh`,
+        totalHistoricalEnergyWh: `${totalHistoricalEnergyWh.toFixed(3)} W`,
         activeDays: daysWithData,
-        dailyAverageWh: `${dailyAverageWh.toFixed(3)} Wh`,
-        formula: `Daily Average = ${totalHistoricalEnergyWh.toFixed(3)} Wh ÷ ${daysWithData} days = ${dailyAverageWh.toFixed(3)} Wh`,
+        dailyAverageWh: `${dailyAverageWh.toFixed(3)} W`,
+        formula: `Daily Average = ${totalHistoricalEnergyWh.toFixed(3)} W ÷ ${daysWithData} days = ${dailyAverageWh.toFixed(3)} W`,
         period: 'Last 30 days (rolling window)',
         description: 'Typical/expected energy consumption per day based on historical data',
         todayKey: todayKey,
@@ -1027,11 +1040,11 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
         }
       }
       
-      // Convert from kW to Wh and set state
+      // Convert from kW to W and set state
       setMonthlyEnergy(totalMonthlyEnergy * 1000)
       
       console.log('Current month energy calculated:', {
-        totalMonthlyEnergy: `${(totalMonthlyEnergy * 1000).toFixed(3)} Wh`,
+        totalMonthlyEnergy: `${(totalMonthlyEnergy * 1000).toFixed(3)} W`,
         currentMonth: currentMonth,
         currentYear: currentYear,
         daysInMonth: daysInMonth,
@@ -1935,6 +1948,252 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
 
     return () => off(devicesRef, 'value', unsubscribe)
   }, [])
+
+  // Fetch real-time power consumption data for EcoPlug devices from daily_logs (all days)
+  // Real-time updates via Firebase onValue listener (updates automatically when data changes)
+  useEffect(() => {
+    setRealtimePowerLoading(true)
+    setRealtimePowerError(null)
+    
+    try {
+      const devicesRef = ref(realtimeDb, 'devices')
+      const unsubscribe = onValue(devicesRef, (snapshot) => {
+        try {
+          const data = snapshot.val()
+          console.log('📊 Real-Time Power Chart - Firebase snapshot received (Real-time updates enabled)')
+          console.log('📊 Total outlets in database:', data ? Object.keys(data).length : 0)
+          console.log('📊 Current filters - Department:', department, 'Office:', office)
+          
+          if (data) {
+            const devicesArray: Array<{ label: string; totalEnergy: number; outletKey: string; daysCount: number; breakdown: string }> = []
+            
+            // Get ALL devices, then filter by department/office
+            // Safety check: ensure data is an object
+            if (typeof data !== 'object' || data === null || Array.isArray(data)) {
+              console.error('❌ Invalid data format:', typeof data)
+              setRealtimePowerData({ labels: [], powerValues: [] })
+              setRealtimePowerLoading(false)
+              setRealtimePowerError(null)
+              return
+            }
+            
+            const allOutlets = Object.keys(data || {})
+              .filter(key => key && typeof key === 'string') // Safety: filter out invalid keys
+              .sort((a, b) => {
+                try {
+                  // Extract outlet numbers for sorting (e.g., "Outlet_1" -> 1, "outlet_1" -> 1)
+                  const numA = parseInt(String(a).replace(/\D/g, '')) || 0
+                  const numB = parseInt(String(b).replace(/\D/g, '')) || 0
+                  return numA - numB
+                } catch (e) {
+                  return 0 // If sorting fails, maintain order
+                }
+              })
+            
+            console.log(`📊 Processing ${allOutlets.length} outlets (before filtering)...`)
+            
+            allOutlets.forEach((outletKey) => {
+              try {
+                // Safety check: ensure outletKey is valid
+                if (!outletKey || typeof outletKey !== 'string') {
+                  return
+                }
+                
+                const outlet = data[outletKey]
+                
+                // Safety check: ensure outlet exists
+                if (!outlet || typeof outlet !== 'object') {
+                  return
+                }
+                
+                // Apply department/office filter
+                if (department && department !== 'All Departments') {
+                  const deviceDept = outlet?.office_info?.department || ''
+                  if (typeof deviceDept === 'string' && deviceDept.toLowerCase() !== department.toLowerCase()) {
+                    return // Skip this outlet - doesn't match department filter
+                  }
+                }
+                
+                if (office && office !== 'All Offices') {
+                  const deviceOffice = outlet?.office_info?.office || ''
+                  // Map office values to match office names
+                  const officeNames: Record<string, string> = {
+                    'computer-lab-1': 'Computer Laboratory 1',
+                    'computer-lab-2': 'Computer Laboratory 2',
+                    'computer-lab-3': 'Computer Laboratory 3',
+                    'deans-office': "Dean's Office",
+                    'faculty-office': 'Faculty Office'
+                  }
+                  const deviceOfficeDisplay = deviceOffice && typeof deviceOffice === 'string' 
+                    ? (officeNames[deviceOffice] || deviceOffice) 
+                    : ''
+                  
+                  if (deviceOfficeDisplay.toLowerCase() !== office.toLowerCase() && 
+                      deviceOffice.toLowerCase() !== office.toLowerCase()) {
+                    return // Skip this outlet - doesn't match office filter
+                  }
+                }
+                
+                const dailyLogs = outlet?.daily_logs || {}
+                
+                // Safety check: ensure dailyLogs is an object
+                if (typeof dailyLogs !== 'object' || dailyLogs === null || Array.isArray(dailyLogs)) {
+                  // If dailyLogs is invalid, use empty object
+                  const emptyLogs = {}
+                  Object.keys(emptyLogs).forEach(() => {}) // This will do nothing
+                }
+                
+                // Sum all total_energy from all days in daily_logs
+                let cumulativeTotalEnergy = 0
+                let daysWithData = 0
+                const dayBreakdown: string[] = []
+                
+                try {
+                  Object.keys(dailyLogs || {}).forEach((dayKey) => {
+                    try {
+                      const dayData = dailyLogs[dayKey]
+                      if (dayData && typeof dayData === 'object' && typeof dayData.total_energy === 'number' && !isNaN(dayData.total_energy) && isFinite(dayData.total_energy)) {
+                        cumulativeTotalEnergy += dayData.total_energy
+                        daysWithData++
+                        dayBreakdown.push(`${dayKey}: ${dayData.total_energy} kWh`)
+                      }
+                    } catch (dayError) {
+                      // Skip invalid day data
+                      console.warn(`⚠️ Error processing day ${dayKey}:`, dayError)
+                    }
+                  })
+                } catch (logsError) {
+                  console.warn(`⚠️ Error processing daily_logs for ${outletKey}:`, logsError)
+                }
+                
+                // total_energy is in kWh, convert to W for display
+                // Safety: ensure result is a valid number
+                const totalEnergyWh = (typeof cumulativeTotalEnergy === 'number' && isFinite(cumulativeTotalEnergy))
+                  ? cumulativeTotalEnergy * 1000
+                  : 0
+                
+                // Extract outlet number from key (e.g., "Outlet_1" -> 1, "outlet_2" -> 2)
+                let outletNum = 0
+                try {
+                  outletNum = parseInt(String(outletKey).replace(/\D/g, '')) || devicesArray.length + 1
+                } catch (e) {
+                  outletNum = devicesArray.length + 1
+                }
+                const label = `EcoPlug ${outletNum}`
+                
+                // Detailed logging for verification (wrapped in try-catch)
+                try {
+                  console.log(`📊 ${outletKey} (${label}):`)
+                  console.log(`   - Days with data: ${daysWithData} out of ${Object.keys(dailyLogs || {}).length} total days`)
+                  console.log(`   - Cumulative total_energy: ${cumulativeTotalEnergy.toFixed(6)} kWh`)
+                  console.log(`   - Converted to W: ${totalEnergyWh.toFixed(3)} W`)
+                  if (dayBreakdown.length > 0) {
+                    console.log(`   - Day breakdown (first 5):`, dayBreakdown.slice(0, 5))
+                  } else {
+                    console.log(`   - ⚠️ No total_energy data found in daily_logs`)
+                  }
+                } catch (logError) {
+                  // If logging fails, continue anyway
+                }
+                
+                // Add to array even if total_energy is 0 (to show all filtered outlets)
+                // Safety: ensure all values are valid
+                devicesArray.push({ 
+                  label: String(label || `EcoPlug ${devicesArray.length + 1}`), 
+                  totalEnergy: Number(totalEnergyWh) || 0, 
+                  outletKey: String(outletKey || ''),
+                  daysCount: Number(daysWithData) || 0,
+                  breakdown: String(dayBreakdown.join(', ') || '')
+                })
+              } catch (outletError) {
+                // If processing one outlet fails, log and continue with others
+                console.warn(`⚠️ Error processing outlet ${outletKey}:`, outletError)
+              }
+            })
+            
+            // Safety: ensure devicesArray is valid
+            const safeDevicesArray = Array.isArray(devicesArray) ? devicesArray : []
+            
+            try {
+              console.log('📊 FINAL PROCESSED DEVICES ARRAY (after filtering):')
+              console.log(`   - Total outlets processed: ${safeDevicesArray.length}`)
+              console.log(`   - Filter applied: Department="${department}", Office="${office}"`)
+              safeDevicesArray.forEach((device, index) => {
+                try {
+                  const energy = typeof device?.totalEnergy === 'number' ? device.totalEnergy : 0
+                  const days = typeof device?.daysCount === 'number' ? device.daysCount : 0
+                  console.log(`   ${index + 1}. ${device?.label || 'Unknown'} (${device?.outletKey || 'Unknown'}): ${energy.toFixed(3)} W (${days} days)`)
+                } catch (logError) {
+                  // Skip logging for this device if it fails
+                }
+              })
+              
+              const totalSum = safeDevicesArray.reduce((sum, d) => {
+                const energy = typeof d?.totalEnergy === 'number' && isFinite(d.totalEnergy) ? d.totalEnergy : 0
+                return sum + energy
+              }, 0)
+              console.log(`   - TOTAL SUM OF FILTERED OUTLETS: ${totalSum.toFixed(3)} W`)
+            } catch (summaryError) {
+              console.warn('⚠️ Error generating summary:', summaryError)
+            }
+            
+            // Safety: ensure all values in arrays are valid
+            const safeLabels = safeDevicesArray
+              .map(d => String(d?.label || ''))
+              .filter(label => label.length > 0)
+            
+            const safePowerValues = safeDevicesArray
+              .map(d => {
+                const energy = typeof d?.totalEnergy === 'number' && isFinite(d.totalEnergy) ? d.totalEnergy : 0
+                return Math.max(0, energy) // Ensure non-negative
+              })
+            
+            if (safeLabels.length > 0 && safePowerValues.length > 0) {
+              setRealtimePowerData({
+                labels: safeLabels,
+                powerValues: safePowerValues
+              })
+              setRealtimePowerLoading(false)
+              setRealtimePowerError(null)
+            } else {
+              // No devices found after filtering
+              setRealtimePowerData({
+                labels: [],
+                powerValues: []
+              })
+              setRealtimePowerLoading(false)
+              setRealtimePowerError(null)
+            }
+          } else {
+            console.log('⚠️ No data found in Firebase')
+            setRealtimePowerData({
+              labels: [],
+              powerValues: []
+            })
+            setRealtimePowerLoading(false)
+            setRealtimePowerError(null)
+          }
+        } catch (error) {
+          console.error('❌ Error processing real-time power data:', error)
+          setRealtimePowerError('Error processing device data')
+          setRealtimePowerLoading(false)
+        }
+      }, (error) => {
+        // Error callback for onValue
+        console.error('❌ Firebase real-time listener error:', error)
+        setRealtimePowerError('Failed to connect to database')
+        setRealtimePowerLoading(false)
+      })
+      
+      return () => {
+        unsubscribe()
+      }
+    } catch (error) {
+      console.error('❌ Error setting up real-time power listener:', error)
+      setRealtimePowerError('Failed to initialize data connection')
+      setRealtimePowerLoading(false)
+    }
+  }, [department, office]) // Re-run when department or office filter changes
 
   // Real-time scheduler that checks every minute and updates control.device
   useEffect(() => {
@@ -3029,7 +3288,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
   const deviceUsage = filteredDevices.map(device => {
     // total_energy is today's energy from daily_logs, already in kW from database, convert to W for display
     const todayEnergyKw = device.total_energy
-    const usageDisplay = `${formatNumber(todayEnergyKw * 1000)} Wh`
+    const usageDisplay = `${formatNumber(todayEnergyKw * 1000)} W`
     
     const outletNumber = (device.outletId && typeof device.outletId === 'string' && device.outletId.includes('_'))
       ? device.outletId.split('_')[1]
@@ -3038,7 +3297,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     return {
       name: `Outlet ${outletNumber}`,
       usage: device.total_energy, // Today's energy from daily_logs (already in kW from database)
-      usageDisplay: usageDisplay, // Display format with Wh
+      usageDisplay: usageDisplay, // Display format with W
       percentage: totalEnergy > 0 ? (device.total_energy / totalEnergy) * 100 : 0
     }
   })
@@ -3118,7 +3377,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
         // Use total_energy which contains time-period filtered data
         officeData.totalConsumption += device.total_energy || 0
         // Sum up monthly consumption (parse the string value)
-        const monthlyValue = parseFloat((device.monthUsage || '0 Wh').replace(/[^\d.]/g, '')) || 0
+        const monthlyValue = parseFloat((device.monthUsage || '0 W').replace(/[^\d.]/g, '')) || 0
         officeData.totalMonthlyConsumption += monthlyValue
         officeData.deviceCount += 1
         const outletNum = (device.outletId && typeof device.outletId === 'string' && device.outletId.includes('_'))
@@ -3135,8 +3394,8 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
           office: item.office,
           department: item.department,
           outlets: item.outlets.join(', '),
-          consumption: item.totalConsumption * 1000, // Convert to Wh
-          monthConsumption: item.totalMonthlyConsumption, // Already in Wh
+          consumption: item.totalConsumption * 1000, // Convert to W
+          monthConsumption: item.totalMonthlyConsumption, // Already in W
           deviceCount: item.deviceCount
         }))
 
@@ -3633,19 +3892,19 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     // Calculate preview data
     const deviceCount = filteredDevices.length
     console.log('Filtered devices count:', deviceCount, 'Department:', selectedReportDepartment, 'Office:', selectedReportOffice)
-    // Calculate total energy from monthly consumption values (convert Wh to kWh)
+    // Calculate total energy from monthly consumption values (convert W to kWh)
     const totalEnergy = filteredDevices.reduce((sum, device) => {
-      const monthlyConsumptionStr = device.monthUsage || '0.000 Wh'
+      const monthlyConsumptionStr = device.monthUsage || '0.000 W'
       const monthlyConsumptionValue = parseFloat(monthlyConsumptionStr.replace(/[^\d.]/g, '')) || 0
-      return sum + (monthlyConsumptionValue / 1000) // Convert Wh to kWh
+      return sum + (monthlyConsumptionValue / 1000) // Convert W to kWh
     }, 0)
     
     // Generate device table data - use same calculation as Reports.tsx
     const deviceTableData = filteredDevices.map(device => {
-      // Parse the monthly consumption from monthUsage (e.g., "10.190 Wh" -> 10.190)
-      const monthlyConsumptionStr = device.monthUsage || '0.000 Wh'
+      // Parse the monthly consumption from monthUsage (e.g., "10.190 W" -> 10.190)
+      const monthlyConsumptionStr = device.monthUsage || '0.000 W'
       const monthlyConsumptionValue = parseFloat(monthlyConsumptionStr.replace(/[^\d.]/g, '')) || 0
-      // Convert Wh to kWh for cost calculation
+      // Convert W to kWh for cost calculation
       const monthlyConsumptionKwh = monthlyConsumptionValue / 1000
       // Use same calculation as Reports.tsx: monthlyConsumptionKwh * currentRate
       const monthlyCost = monthlyConsumptionKwh * currentRate
@@ -3679,14 +3938,55 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     })
   }
 
+  // Helper function to convert image to base64 data URL for jsPDF and get dimensions
+  const imageToDataUrl = (imagePath: string): Promise<{ dataUrl: string; width: number; height: number }> => {
+    return new Promise((resolve, reject) => {
+      const img = new Image()
+      img.crossOrigin = 'anonymous'
+      img.onload = () => {
+        const canvas = document.createElement('canvas')
+        canvas.width = img.width
+        canvas.height = img.height
+        const ctx = canvas.getContext('2d')
+        if (ctx) {
+          ctx.drawImage(img, 0, 0)
+          const dataUrl = canvas.toDataURL('image/png')
+          resolve({ dataUrl, width: img.width, height: img.height })
+        } else {
+          reject(new Error('Could not get canvas context'))
+        }
+      }
+      img.onerror = reject
+      img.src = imagePath
+    })
+  }
+
   // Handle PDF generation
-  const handleGeneratePDF = () => {
+  const handleGeneratePDF = async () => {
     if (!previewData) return
+
+    // Load header and footer images
+    const headerImageData = await imageToDataUrl(headerImage)
+    const headerImageDataUrl = headerImageData.dataUrl
+    const headerImageAspectRatio = headerImageData.width / headerImageData.height
+
+    const footerImageData = await imageToDataUrl(footerImage)
+    const footerImageDataUrl = footerImageData.dataUrl
+    const footerImageAspectRatio = footerImageData.width / footerImageData.height
 
     const doc = new jsPDF()
     const pageWidth = doc.internal.pageSize.getWidth()
     const pageHeight = doc.internal.pageSize.getHeight()
-    let yPosition = 20
+    let yPosition = 0
+
+    // Footer configuration
+    const footerImageMargin = 0
+    const footerImageOffsetY = 2
+    const footerTextMargin = 15
+    const footerTextOffsetY = 16
+    const footerImageWidth = Math.min(pageWidth / 3, pageWidth - footerImageMargin * 2)
+    const footerImageHeight = footerImageWidth / footerImageAspectRatio
+    const footerReservedSpace = footerImageHeight + 20
 
     // Helper function to add text with wrapping
     const addText = (text: string, x: number, y: number, options: any = {}) => {
@@ -3726,33 +4026,67 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
       }
     }
 
-    // Helper function to add rectangle
-    const addRect = (x: number, y: number, width: number, height: number, fillColor?: string) => {
+    // Helper function to add rectangle with background color
+    const addRect = (x: number, y: number, width: number, height: number, fillColor?: [number, number, number]) => {
       if (fillColor) {
-        doc.setFillColor(fillColor)
+        doc.setFillColor(fillColor[0], fillColor[1], fillColor[2])
         doc.rect(x, y, width, height, 'F')
-      } else {
-        doc.rect(x, y, width, height)
       }
+      doc.setDrawColor(0, 0, 0) // Black border
+      doc.rect(x, y, width, height, 'S')
+    }
+
+    // Helper function to add line
+    const addLine = (x1: number, y1: number, x2: number, y2: number) => {
+      doc.setDrawColor(200, 200, 200)
+      doc.line(x1, y1, x2, y2)
     }
 
     // Helper function to check for new page
     const checkNewPage = (requiredSpace: number) => {
-      if (yPosition + requiredSpace > pageHeight - 20) {
+      if (yPosition + requiredSpace > pageHeight - 20 - footerReservedSpace) {
         doc.addPage()
-        yPosition = 20
+        yPosition = 0
+        // Add header image to new page
+        try {
+          const headerMargin = 10
+          const maxHeaderImageWidth = pageWidth - headerMargin * 2
+          const imageWidth = maxHeaderImageWidth
+          const imageHeight = imageWidth / headerImageAspectRatio
+          doc.addImage(headerImageDataUrl, 'PNG', headerMargin, yPosition, imageWidth, imageHeight)
+          yPosition += imageHeight + 10
+        } catch (error) {
+          console.error('Error adding header image to new page:', error)
+        }
       }
     }
 
-    // Header
-    addText('Camarines Norte State College', pageWidth / 2, yPosition, { fontSize: 14, bold: true, align: 'center' })
-    yPosition += 7
-    addText('Daet, Camarines Norte', pageWidth / 2, yPosition, { fontSize: 14, bold: true, align: 'center' })
-    yPosition += 15
+    // Header - Add header image
+    try {
+      const headerMargin = 10
+      const maxHeaderImageWidth = pageWidth - headerMargin * 2
+      const imageWidth = maxHeaderImageWidth
+      const imageHeight = imageWidth / headerImageAspectRatio
+      
+      // Add the header image
+      doc.addImage(headerImageDataUrl, 'PNG', headerMargin, yPosition, imageWidth, imageHeight)
+      yPosition += imageHeight + 10
+    } catch (error) {
+      console.error('Error adding header image to PDF:', error)
+      // Fallback to text header if image fails
+      addText('Camarines Norte State College', pageWidth / 2, yPosition, { fontSize: 14, bold: true, align: 'center' })
+      yPosition += 7
+      addText('Daet, Camarines Norte', pageWidth / 2, yPosition, { fontSize: 14, bold: true, align: 'center' })
+      yPosition += 15
+    }
 
     // Report title
     addText('Top Consumption Summary Report', pageWidth / 2, yPosition, { fontSize: 16, bold: true, align: 'center' })
     yPosition += 20
+
+    // Add a separator line
+    addLine(20, yPosition, pageWidth - 20, yPosition)
+    yPosition += 15
 
     // Report details
     addText(`Date Range: ${formatDate(selectedStartDate)} to ${formatDate(selectedEndDate)}`, 20, yPosition, { fontSize: 12 })
@@ -3799,9 +4133,13 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     })
     
     // Second pass: draw rectangles and text with correct height
+    // Draw header row with light blue background
+    const lightBlue = [173, 216, 230] as [number, number, number] // Light blue color
+    
+    // Draw header cells with light blue background
     xPosition = startX
     headers.forEach((header, index) => {
-      addRect(xPosition, yPosition - 2, colWidths[index], maxHeaderHeight)
+      addRect(xPosition, yPosition - 2, colWidths[index], maxHeaderHeight, lightBlue)
       addText(header, xPosition + 2, yPosition + 6, { 
         fontSize: 10, 
         bold: true, 
@@ -3879,6 +4217,28 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
       bold: true, 
       maxWidth: totalTableWidth - 4 
     })
+
+    // Add footer with image and pagination across all pages
+    const addFooterAndPagination = () => {
+      const totalPages = (doc as any).internal.getNumberOfPages()
+      for (let pageNumber = 1; pageNumber <= totalPages; pageNumber++) {
+        doc.setPage(pageNumber)
+        const currentPageWidth = doc.internal.pageSize.getWidth()
+        const currentPageHeight = doc.internal.pageSize.getHeight()
+        const footerY = currentPageHeight - footerImageHeight - footerImageOffsetY
+        try {
+          doc.addImage(footerImageDataUrl, 'PNG', footerImageMargin, footerY, footerImageWidth, footerImageHeight)
+        } catch (error) {
+          console.error('Error adding footer image to page', pageNumber, error)
+        }
+        doc.setFontSize(10)
+        doc.setFont('arial', 'normal')
+        const pageText = `Page ${pageNumber} of ${totalPages}`
+        doc.text(pageText, currentPageWidth - footerTextMargin, footerY + footerImageHeight - footerTextOffsetY, { align: 'right' })
+      }
+    }
+
+    addFooterAndPagination()
 
     // Save the PDF
     const fileName = selectedReportType === 'Outlets' 
@@ -3970,15 +4330,15 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
             <div className="stat-value">
               {formatNumber(monthlyEnergy)}
             </div>
-            <div className="stat-unit">Wh</div>
+            <div className="stat-unit">W</div>
             <div className="stat-badge up">↑ This Month</div>
           </article>
           <article className="stat-card">
-            <div className="stat-title">DAILY AVERAGE</div>
+            <div className="stat-title">TODAY CONSUMPTION</div>
             <div className="stat-value">
-              {formatNumber(dailyAverage)}
+              {formatNumber(totalEnergy * 1000)}
             </div>
-            <div className="stat-unit">Wh</div>
+            <div className="stat-unit">W</div>
           </article>
           <article className="stat-card">
             <div className="stat-title">CURRENT RATE</div>
@@ -3997,7 +4357,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
           </div>
           <div className="mini-main">
             <div className="mini-title">
-              {formatNumber(totalLifetimeEnergy)} Wh
+              {formatNumber(totalLifetimeEnergy)} W
             </div>
             <div className="mini-sub">Total Energy Usage</div>
           </div>
@@ -4014,9 +4374,9 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
           </div>
           <div className="mini-main">
             <div className="mini-title">
-              {formatNumber(totalEnergy * 1000)} Wh
+              {formatNumber(dailyAverage)} W
             </div>
-            <div className="mini-sub">Today Consumption</div>
+            <div className="mini-sub">Daily Average</div>
           </div>
           <div className="mini-badge">Total energy consumed</div>
         </div>
@@ -4141,8 +4501,8 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                           ? device.outletId.split('_')[1]
                           : device.outletId || 'Unknown'}</td>
                         <td>{device.appliances}</td>
-                        <td>{formatNumber(device.total_energy * 1000)} Wh</td>
-                        <td>{device.monthUsage || '0.000 Wh'}</td>
+                        <td>{formatNumber(device.total_energy * 1000)} W</td>
+                        <td>{device.monthUsage || '0.000 W'}</td>
                         <td>{device.officeRoom}</td>
                         <td>
                           {getStatusBadge(device.status)}
@@ -4250,8 +4610,8 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                         <td>{index + 1}</td>
                         <td>{device.outletId.split('_')[1]}</td>
                         <td>{device.appliances}</td>
-                        <td>{formatNumber(device.total_energy * 1000)} Wh</td>
-                        <td>{device.monthUsage || '0.000 Wh'}</td>
+                        <td>{formatNumber(device.total_energy * 1000)} W</td>
+                        <td>{device.monthUsage || '0.000 W'}</td>
                         <td>{device.officeRoom}</td>
                         <td>
                           {getStatusBadge(device.status)}
@@ -4358,8 +4718,8 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                       <td>{item.office}</td>
                       <td>{item.department}</td>
                       <td>{item.outlets}</td>
-                      <td>{formatNumber(item.consumption)} Wh</td>
-                      <td>{formatNumber(item.monthConsumption)} Wh</td>
+                      <td>{formatNumber(item.consumption)} W</td>
+                      <td>{formatNumber(item.monthConsumption)} W</td>
                     </tr>
                   ))
                 ) : (
@@ -4407,7 +4767,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                       labels: chartData.labels,
                       datasets: [
                         {
-                          label: 'Energy Usage (Wh)',
+                          label: 'Energy Usage (W)',
                           data: chartData.energyUsage.map(dayData => (dayData[0] || 0) * 1000),
                           backgroundColor: '#2563eb',
                           borderColor: '#2563eb',
@@ -4444,7 +4804,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                             label: function(context) {
                               const value = context.parsed.y
                                 // Data is already in watts
-                                return `Energy Usage: ${formatNumber(value)} Wh`
+                                return `Energy Usage: ${formatNumber(value)} W`
                             }
                           }
                         }
@@ -4468,7 +4828,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                           },
                           title: {
                             display: true,
-                            text: 'Energy (Wh)',
+                            text: 'Energy (W)',
                             color: '#374151',
                             font: {
                               size: 14,
@@ -4532,7 +4892,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                         const color = professionalColors[deviceIndex % professionalColors.length]
                         
                         return {
-                          label: `Outlet ${device.outletId.split('_')[1]} - Energy (Wh)`,
+                          label: `Outlet ${device.outletId.split('_')[1]} - Energy (W)`,
                           data: chartData.energyUsage.map(dayData => (dayData[deviceIndex] || 0) * 1000),
                           backgroundColor: color,
                           borderColor: color,
@@ -4577,7 +4937,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                         label: function(context) {
                           const value = context.parsed.y
                           const label = context.dataset.label || ''
-                          return `${label}: ${formatNumber(value)} Wh`
+                          return `${label}: ${formatNumber(value)} W`
                         }
                       }
                       }
@@ -4601,7 +4961,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                         },
                         title: {
                           display: true,
-                          text: 'Energy (Wh)',
+                          text: 'Energy (W)',
                           color: '#374151',
                           font: {
                             size: 12,
@@ -4662,6 +5022,214 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
             </div>
           </div>
 
+          {/* Real-Time Power Consumption Chart */}
+          <div className="chart-panel">
+            <div className="chart-header">
+              <h3>Real-Time Power Consumption of EcoPlug Devices</h3>
+            </div>
+            <div className="chart-area">
+              {realtimePowerLoading ? (
+                <div className="chart-loading">
+                  <div className="chart-loading-spinner"></div>
+                  <p>Loading real-time power data...</p>
+                </div>
+              ) : realtimePowerError ? (
+                <div className="chart-error">
+                  <div className="chart-error-icon">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" stroke="#dc2626" strokeWidth="2" strokeLinecap="round"/>
+                    </svg>
+                  </div>
+                  <div className="chart-error-text">
+                    <h3>Error Loading Data</h3>
+                    <p>{realtimePowerError}</p>
+                  </div>
+                </div>
+              ) : realtimePowerData && Array.isArray(realtimePowerData.labels) && Array.isArray(realtimePowerData.powerValues) && realtimePowerData.labels.length > 0 && realtimePowerData.powerValues.length > 0 ? (
+                (() => {
+                  try {
+                    // Safety: ensure data is valid before rendering chart
+                    const safeLabels = realtimePowerData.labels.filter((label: any) => label != null && String(label).length > 0)
+                    const safeValues = realtimePowerData.powerValues
+                      .map((val: any) => {
+                        const num = typeof val === 'number' && isFinite(val) ? val : 0
+                        return Math.max(0, num) // Ensure non-negative
+                      })
+                      .filter((val: number) => val >= 0) // Filter out invalid values
+                    
+                    // Ensure arrays have same length
+                    const minLength = Math.min(safeLabels.length, safeValues.length)
+                    const finalLabels = safeLabels.slice(0, minLength)
+                    const finalValues = safeValues.slice(0, minLength)
+                    
+                    if (finalLabels.length === 0 || finalValues.length === 0) {
+                      return (
+                        <div className="chart-no-data">
+                          <div className="chart-no-data-icon">
+                            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                              <path d="M9 12l2 2 4-4" stroke="#6b7280" strokeWidth="2" strokeLinecap="round"/>
+                            </svg>
+                          </div>
+                          <div className="chart-no-data-text">
+                            <h3>No Data Available</h3>
+                            <p>No valid data available for display.</p>
+                          </div>
+                        </div>
+                      )
+                    }
+                    
+                    return (
+                      <Bar 
+                        data={{
+                          labels: finalLabels,
+                          datasets: [
+                            {
+                              label: 'Total Energy Consumption (W)',
+                              data: finalValues,
+                              backgroundColor: '#fb923c',
+                              borderColor: '#fb923c',
+                              borderWidth: 2,
+                              borderRadius: 4,
+                              borderSkipped: false,
+                            }
+                          ]
+                        }}
+                        options={{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: {
+                      duration: 750
+                    },
+                    layout: {
+                      padding: {
+                        top: 10,
+                        bottom: 10,
+                        left: 10,
+                        right: 10
+                      }
+                    },
+                    plugins: {
+                      legend: {
+                        display: false
+                      },
+                      tooltip: {
+                        backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                        titleColor: '#ffffff',
+                        bodyColor: '#ffffff',
+                        borderColor: '#fb923c',
+                        borderWidth: 1,
+                        cornerRadius: 8,
+                        displayColors: true,
+                        callbacks: {
+                          label: function(context) {
+                            const value = context.parsed.y || 0
+                            return `Total Energy: ${formatNumber(value, 3)} W`
+                          }
+                        }
+                      }
+                    },
+                    scales: {
+                      y: {
+                        beginAtZero: true,
+                        min: 0,
+                        grid: {
+                          color: '#f3f4f6'
+                        },
+                        ticks: {
+                          color: '#6b7280',
+                          font: {
+                            size: 12
+                          },
+                          padding: 5,
+                          maxTicksLimit: 8,
+                          callback: function(value) {
+                            return formatNumber(Number(value), 2) + ' W'
+                          }
+                        },
+                        border: {
+                          display: false
+                        },
+                        title: {
+                          display: true,
+                          text: 'Total Energy Consumption (W)',
+                          color: '#374151',
+                          font: {
+                            size: 14,
+                            weight: 'bold'
+                          },
+                          padding: {
+                            top: 5,
+                            bottom: 5
+                          }
+                        }
+                      },
+                      x: {
+                        grid: {
+                          display: false
+                        },
+                        ticks: {
+                          color: '#6b7280',
+                          font: {
+                            size: 12,
+                            weight: 'bold'
+                          },
+                          padding: 8
+                        },
+                        border: {
+                          display: false
+                        },
+                        title: {
+                          display: true,
+                          text: 'EcoPlug Devices',
+                          color: '#374151',
+                          font: {
+                            size: 14,
+                            weight: 'bold'
+                          },
+                          padding: {
+                            top: 5,
+                            bottom: 5
+                          }
+                        }
+                      }
+                    }
+                  }}
+                />
+                    )
+                  } catch (renderError) {
+                    // If chart rendering fails, show error message instead
+                    console.error('❌ Error rendering chart:', renderError)
+                    return (
+                      <div className="chart-error">
+                        <div className="chart-error-icon">
+                          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" stroke="#dc2626" strokeWidth="2" strokeLinecap="round"/>
+                          </svg>
+                        </div>
+                        <div className="chart-error-text">
+                          <h3>Error Rendering Chart</h3>
+                          <p>Unable to display chart data. Please try refreshing the page.</p>
+                        </div>
+                      </div>
+                    )
+                  }
+                })()
+              ) : (
+                <div className="chart-no-data">
+                  <div className="chart-no-data-icon">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M9 12l2 2 4-4" stroke="#6b7280" strokeWidth="2" strokeLinecap="round"/>
+                    </svg>
+                  </div>
+                  <div className="chart-no-data-text">
+                    <h3>No Data Available</h3>
+                    <p>No real-time power consumption data available for EcoPlug devices.</p>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
           <div className="dashboard-device-usage-panel">
             <div className="dashboard-device-header">
               <h3>Usage<br />per device</h3>
@@ -4714,7 +5282,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                       labels: chartData.labels,
                       datasets: [
                         {
-                          label: 'Energy Usage (Wh)',
+                          label: 'Energy Usage (W)',
                           data: chartData.energyUsage.map(dayData => (dayData[0] || 0) * 1000),
                           backgroundColor: '#2563eb',
                           borderColor: '#2563eb',
@@ -4775,7 +5343,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                           },
                           title: {
                             display: true,
-                            text: 'Energy (Wh)',
+                            text: 'Energy (W)',
                             color: '#374151',
                             font: {
                               size: 16,
@@ -4839,7 +5407,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                         const color = professionalColors[deviceIndex % professionalColors.length]
                         
                         return {
-                          label: `Outlet ${device.outletId.split('_')[1]} - Energy (Wh)`,
+                          label: `Outlet ${device.outletId.split('_')[1]} - Energy (W)`,
                           data: chartData.energyUsage.map(dayData => (dayData[deviceIndex] || 0) * 1000),
                           backgroundColor: color,
                           borderColor: color,
@@ -4885,7 +5453,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                         label: function(context) {
                           const value = context.parsed.y
                           const label = context.dataset.label || ''
-                          return `${label}: ${formatNumber(value)} Wh`
+                          return `${label}: ${formatNumber(value)} W`
                         }
                       }
                       }
@@ -4909,7 +5477,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                         },
                         title: {
                           display: true,
-                          text: 'Energy (Wh)',
+                          text: 'Energy (W)',
                           color: '#374151',
                           font: {
                             size: 14,
@@ -5176,13 +5744,18 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                 <div className="dashboard-pdf-preview-content">
                   {/* PDF Header */}
                   <div className="dashboard-pdf-preview-header">
+                    {/* Header Image */}
                     <div style={{ textAlign: 'center', marginBottom: '16px' }}>
-                      {/* Only show department name if not "All Departments" */}
-                      {selectedReportDepartment !== 'All Departments' && (
-                        <p style={{ margin: '4px 0', fontSize: '14px', fontWeight: '500' }}>{selectedReportDepartment}</p>
-                      )}
-                      <p style={{ margin: '4px 0', fontSize: '14px', fontWeight: '500' }}>Camarines Norte State College</p>
-                      <p style={{ margin: '4px 0', fontSize: '14px', fontWeight: '500' }}>Daet, Camarines Norte</p>
+                      <img 
+                        src={headerImage} 
+                        alt="CNSC Header" 
+                        style={{ 
+                          maxWidth: '100%', 
+                          height: 'auto',
+                          display: 'block',
+                          margin: '0 auto'
+                        }} 
+                      />
                     </div>
                     <h2 style={{ textAlign: 'center', marginTop: '16px' }}>Top Consumption Summary Report</h2>
                     <div className="dashboard-pdf-preview-separator"></div>

@@ -48,6 +48,55 @@ const formatScheduleDays = (frequency: string): string => {
   return days.join(', ')
 }
 
+// Function to calculate monthly energy for a device
+const calculateMonthlyEnergy = (outlet: any): string => {
+  try {
+    const formatNum = (num: number, decimals: number = 3): string => {
+      try {
+        if (typeof num !== 'number' || isNaN(num)) {
+          return '0.' + '0'.repeat(decimals)
+        }
+        const validDecimals = typeof decimals === 'number' && !isNaN(decimals) && decimals >= 0 ? decimals : 3
+        return num.toLocaleString('en-US', {
+          minimumFractionDigits: validDecimals,
+          maximumFractionDigits: validDecimals
+        })
+      } catch (error) {
+        console.error('Error formatting number:', error)
+        return '0.' + '0'.repeat(decimals || 3)
+      }
+    }
+
+    const now = new Date()
+    const currentYear = now.getFullYear()
+    const currentMonth = now.getMonth() + 1
+    
+    // Get all days in the current month
+    const daysInMonth = new Date(currentYear, currentMonth, 0).getDate()
+    let totalMonthlyEnergy = 0
+    
+    // Sum up energy for all days in the current month
+    if (outlet && outlet.daily_logs && typeof outlet.daily_logs === 'object') {
+      for (let day = 1; day <= daysInMonth; day++) {
+        const dateKey = `day_${currentYear}_${String(currentMonth).padStart(2, '0')}_${String(day).padStart(2, '0')}`
+        const dayData = outlet.daily_logs[dateKey]
+        if (dayData && typeof dayData === 'object' && dayData.total_energy) {
+          const energy = typeof dayData.total_energy === 'number' ? dayData.total_energy : 0
+          if (!isNaN(energy) && energy >= 0) {
+            totalMonthlyEnergy += energy // Already in kW from database
+          }
+        }
+      }
+    }
+    
+    // Convert to watts and format
+    return `${formatNum(totalMonthlyEnergy * 1000)} W`
+  } catch (error) {
+    console.error('Error calculating monthly energy:', error)
+    return '0.000 W'
+  }
+}
+
 // Function to calculate total monthly energy for combined limit group
 const calculateCombinedMonthlyEnergy = (devicesData: any, selectedOutlets: string[]): number => {
   try {
@@ -587,6 +636,7 @@ interface Device {
   powerUsage: string
   status: 'Active' | 'Inactive' | 'Idle' | 'UNPLUG'
   todayUsage: string
+  monthUsage?: string
   currentAmpere: string
   schedule: {
     time: string
@@ -656,10 +706,24 @@ interface ActiveDeviceProps {
 export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: ActiveDeviceProps) {
   // Helper function to format numbers with commas
   const formatNumber = (num: number, decimals: number = 3): string => {
-    return num.toLocaleString('en-US', {
-      minimumFractionDigits: decimals,
-      maximumFractionDigits: decimals
-    })
+    try {
+      // Validate input
+      if (typeof num !== 'number' || isNaN(num)) {
+        return '0.' + '0'.repeat(decimals)
+      }
+      
+      // Ensure decimals is a valid number
+      const validDecimals = typeof decimals === 'number' && !isNaN(decimals) && decimals >= 0 ? decimals : 3
+      
+      return num.toLocaleString('en-US', {
+        minimumFractionDigits: validDecimals,
+        maximumFractionDigits: validDecimals
+      })
+    } catch (error) {
+      console.error('Error formatting number:', error)
+      // Return safe default
+      return '0.' + '0'.repeat(decimals || 3)
+    }
   }
 
   // Helper function to safely show modals with debouncing
@@ -850,6 +914,18 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
     setAutoTurnoffTimers({})
   }, [])
 
+  // Fetch history data when modal opens or timeSegment changes
+  useEffect(() => {
+    if (historyModal.isOpen && historyModal.device) {
+      try {
+        fetchHistoryData(historyModal.device, timeSegment)
+      } catch (error) {
+        console.error('Error fetching history data on modal open:', error)
+        setHistoryData({ totalEnergy: 0, totalCost: 0, dailyData: [] })
+      }
+    }
+  }, [historyModal.isOpen, historyModal.device, timeSegment])
+
   // Helper function to get today's date in the format used in your database
   const getTodayDateKey = (): string => {
     const today = new Date()
@@ -930,6 +1006,11 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
   // Calculate cost for a specific outlet based on time segment
   const calculateOutletCost = async (outletKey: string, timeSegment: 'Day' | 'Week' | 'Month' | 'Year') => {
     try {
+      if (!outletKey || typeof outletKey !== 'string') {
+        console.error('Invalid outletKey provided to calculateOutletCost')
+        return { totalEnergy: 0, totalCost: 0, dailyData: [] }
+      }
+
       const deviceRef = ref(realtimeDb, `devices/${outletKey}`)
       const snapshot = await get(deviceRef)
       
@@ -938,89 +1019,174 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
       }
 
       const deviceData = snapshot.val()
+      if (!deviceData || typeof deviceData !== 'object') {
+        return { totalEnergy: 0, totalCost: 0, dailyData: [] }
+      }
+
       const dailyLogs = deviceData.daily_logs || {}
       
+      if (!dailyLogs || typeof dailyLogs !== 'object') {
+        return { totalEnergy: 0, totalCost: 0, dailyData: [] }
+      }
+
       const now = new Date()
       const currentYear = now.getFullYear()
       const currentMonth = now.getMonth() + 1
       const currentDay = now.getDate()
+      
+      // Validate currentRate
+      const rate = currentRate && currentRate > 0 ? currentRate : 9.3885
       
       let filteredData: Array<{ date: string; energy: number; cost: number }> = []
       let totalEnergy = 0
       let totalCost = 0
       
       // Filter data based on time segment
-      Object.keys(dailyLogs).forEach(dateKey => {
-        if (!dateKey || typeof dateKey !== 'string' || !dateKey.includes('_')) {
-          return // Skip invalid dateKey
-        }
-        const dateParts = dateKey.split('_')
-        if (dateParts.length < 4) {
-          return // Skip invalid date format
-        }
-        const [_, year, month, day] = dateParts
-        const logYear = parseInt(year)
-        const logMonth = parseInt(month)
-        const logDay = parseInt(day)
-        
-        let includeData = false
-        
-        switch (timeSegment) {
-          case 'Day':
-            includeData = logYear === currentYear && logMonth === currentMonth && logDay === currentDay
-            break
-          case 'Week':
-            // Last 7 days including today
-            const logDate = new Date(logYear, logMonth - 1, logDay)
-            const daysDiff = Math.floor((now.getTime() - logDate.getTime()) / (1000 * 60 * 60 * 24))
-            includeData = daysDiff >= 0 && daysDiff < 7
-            break
-          case 'Month':
-            includeData = logYear === currentYear && logMonth === currentMonth
-            break
-          case 'Year':
-            includeData = logYear === currentYear
-            break
-        }
-        
-        if (includeData) {
-          const dayData = dailyLogs[dateKey]
-          const energy = dayData.total_energy || 0 // Energy in kW
-          // Calculate cost and truncate to 2 decimal places (no rounding)
-          const dailyCost = energy * currentRate
-          const truncatedCost = Math.floor(dailyCost * 100) / 100
-          
-          filteredData.push({
-            date: `${logYear}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`,
-            energy,
-            cost: truncatedCost
-          })
-          
-          totalEnergy += energy
-          totalCost += truncatedCost
-        }
-      })
+      try {
+        Object.keys(dailyLogs).forEach(dateKey => {
+          try {
+            if (!dateKey || typeof dateKey !== 'string' || !dateKey.includes('_')) {
+              return // Skip invalid dateKey
+            }
+            const dateParts = dateKey.split('_')
+            if (dateParts.length < 4) {
+              return // Skip invalid date format
+            }
+            const [_, year, month, day] = dateParts
+            const logYear = parseInt(year, 10)
+            const logMonth = parseInt(month, 10)
+            const logDay = parseInt(day, 10)
+            
+            // Validate parsed values
+            if (isNaN(logYear) || isNaN(logMonth) || isNaN(logDay)) {
+              return // Skip invalid date values
+            }
+            
+            let includeData = false
+            
+            switch (timeSegment) {
+              case 'Day':
+                includeData = logYear === currentYear && logMonth === currentMonth && logDay === currentDay
+                break
+              case 'Week':
+                // Last 7 days including today
+                try {
+                  const logDate = new Date(logYear, logMonth - 1, logDay)
+                  if (isNaN(logDate.getTime())) {
+                    return // Skip invalid date
+                  }
+                  const daysDiff = Math.floor((now.getTime() - logDate.getTime()) / (1000 * 60 * 60 * 24))
+                  includeData = daysDiff >= 0 && daysDiff < 7
+                } catch (dateError) {
+                  console.error('Error processing date for Week filter:', dateError)
+                  return
+                }
+                break
+              case 'Month':
+                includeData = logYear === currentYear && logMonth === currentMonth
+                break
+              case 'Year':
+                includeData = logYear === currentYear
+                break
+              default:
+                includeData = false
+            }
+            
+            if (includeData) {
+              const dayData = dailyLogs[dateKey]
+              if (!dayData || typeof dayData !== 'object') {
+                return
+              }
+              
+              const energy = typeof dayData.total_energy === 'number' ? dayData.total_energy : 0 // Energy in kW
+              
+              // Validate energy value
+              if (isNaN(energy) || energy < 0) {
+                return
+              }
+              
+              // Calculate cost and truncate to 2 decimal places (no rounding)
+              const dailyCost = energy * rate
+              const truncatedCost = Math.floor(dailyCost * 100) / 100
+              
+              // Validate date string before pushing
+              const dateString = `${logYear}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+              const testDate = new Date(dateString)
+              if (isNaN(testDate.getTime())) {
+                return // Skip invalid date string
+              }
+              
+              filteredData.push({
+                date: dateString,
+                energy,
+                cost: truncatedCost
+              })
+              
+              totalEnergy += energy
+              totalCost += truncatedCost
+            }
+          } catch (itemError) {
+            console.error('Error processing date key:', dateKey, itemError)
+            // Continue processing other items
+          }
+        })
+      } catch (filterError) {
+        console.error('Error filtering daily logs:', filterError)
+        // Return empty data instead of crashing
+        return { totalEnergy: 0, totalCost: 0, dailyData: [] }
+      }
       
-      // Sort by date
-      filteredData.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+      // Sort by date with error handling
+      try {
+        filteredData.sort((a, b) => {
+          try {
+            const dateA = new Date(a.date).getTime()
+            const dateB = new Date(b.date).getTime()
+            if (isNaN(dateA) || isNaN(dateB)) {
+              return 0
+            }
+            return dateA - dateB
+          } catch (sortError) {
+            console.error('Error sorting dates:', sortError)
+            return 0
+          }
+        })
+      } catch (sortError) {
+        console.error('Error in sort operation:', sortError)
+        // Continue with unsorted data
+      }
       
       // totalCost is already sum of truncated daily costs
       return {
-        totalEnergy,
-        totalCost,
-        dailyData: filteredData
+        totalEnergy: isNaN(totalEnergy) ? 0 : totalEnergy,
+        totalCost: isNaN(totalCost) ? 0 : totalCost,
+        dailyData: Array.isArray(filteredData) ? filteredData : []
       }
     } catch (error) {
       console.error('Error calculating outlet cost:', error)
+      // Return safe default values to prevent white screen
       return { totalEnergy: 0, totalCost: 0, dailyData: [] }
     }
   }
 
   // Fetch history data when modal opens
-  const fetchHistoryData = async (device: Device) => {
-    const outletKey = device.outletName.replace(/\s+/g, '_').replace(/'/g, '')
-    const data = await calculateOutletCost(outletKey, timeSegment)
-    setHistoryData(data)
+  const fetchHistoryData = async (device: Device, segment?: 'Day' | 'Week' | 'Month' | 'Year') => {
+    try {
+      if (!device || !device.outletName) {
+        console.error('Invalid device provided to fetchHistoryData')
+        setHistoryData({ totalEnergy: 0, totalCost: 0, dailyData: [] })
+        return
+      }
+
+      const outletKey = device.outletName.replace(/\s+/g, '_').replace(/'/g, '')
+      const segmentToUse = segment || timeSegment
+      const data = await calculateOutletCost(outletKey, segmentToUse)
+      setHistoryData(data)
+    } catch (error) {
+      console.error('Error fetching history data:', error)
+      // Set empty data to prevent white screen
+      setHistoryData({ totalEnergy: 0, totalCost: 0, dailyData: [] })
+    }
   }
 
   // Helper function to check if device should be active based on schedule
@@ -1234,7 +1400,7 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
           const todayDateKey = getTodayDateKey()
           const todayLogs = outlet.daily_logs?.[todayDateKey]
           const lifetimeEnergyWatts = outlet.lifetime_energy || 0
-          const powerUsageDisplay = `${formatNumber(lifetimeEnergyWatts * 1000)} Wh`
+          const powerUsageDisplay = `${formatNumber(lifetimeEnergyWatts * 1000)} W`
           const powerUsage = lifetimeEnergyWatts // Already in kW
           
           console.log(`Outlet ${outletKey}: Using lifetime_energy = ${lifetimeEnergyWatts}W (${powerUsage}kW)`)
@@ -1250,7 +1416,7 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
           const mainStatus = outlet.relay_control?.main_status || 'ON' // Default to ON if not set
           // Get today's energy consumption from total_energy (display in watts)
           const todayEnergyWatts = todayLogs?.total_energy || 0
-          const todayEnergyDisplay = `${formatNumber(todayEnergyWatts * 1000)} Wh`
+          const todayEnergyDisplay = `${formatNumber(todayEnergyWatts * 1000)} W`
           const totalEnergy = todayEnergyWatts // Already in kW
           
           console.log(`Outlet ${outletKey}: Using total_energy = ${todayEnergyWatts}W (${totalEnergy}kW)`)
@@ -1427,6 +1593,9 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
             }
           }
 
+          // Calculate monthly energy
+          const monthUsageDisplay = calculateMonthlyEnergy(outlet)
+
           const deviceData: Device = {
             id: String(deviceId).padStart(3, '0'),
             outletName: outletKey.replace('_', ' '),
@@ -1435,6 +1604,7 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
             powerUsage: powerUsageDisplay,
             status: deviceStatus,
             todayUsage: todayEnergyDisplay,
+            monthUsage: monthUsageDisplay,
             currentAmpere: currentAmpereDisplay,
             schedule: {
               time: scheduleTime,
@@ -1607,7 +1777,7 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
           }
         }
         
-        const totalMonthlyEnergyWh = totalMonthlyEnergy * 1000 // Convert to Wh
+        const totalMonthlyEnergyWh = totalMonthlyEnergy * 1000 // Convert to W
         
         return totalMonthlyEnergyWh >= combinedLimitWatts
       } catch (error) {
@@ -3293,6 +3463,7 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
                 <th>POWER USAGE</th>
                 <th>STATUS</th>
                 <th>TODAY'S USAGE</th>
+                <th>MONTH ENERGY</th>
                 <th>CURRENT (A)</th>
                 <th>SCHEDULE</th>
                 <th>ACTION</th>
@@ -3306,10 +3477,18 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
                     <button 
                       className="outlet-name-btn"
                       onClick={() => {
-                        if (!modalOpen) {
+                        try {
+                          if (!modalOpen) {
+                            setModalOpen(true)
+                            setHistoryModal({ isOpen: true, device })
+                            // Data will be fetched by useEffect, but we can also fetch here for immediate response
+                            fetchHistoryData(device, timeSegment)
+                          }
+                        } catch (error) {
+                          console.error('Error opening history modal:', error)
+                          // Still open the modal, useEffect will handle data fetching
                           setModalOpen(true)
                           setHistoryModal({ isOpen: true, device })
-                          fetchHistoryData(device)
                         }
                       }}
                       disabled={modalOpen}
@@ -3325,6 +3504,7 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
                     {getStatusBadge(device.status)}
                   </td>
                   <td className="today-usage">{device.todayUsage}</td>
+                  <td className="month-usage">{device.monthUsage || '0.000 W'}</td>
                   <td className="current-ampere">{device.currentAmpere}</td>
                   <td className="schedule-cell">
                     <div className="schedule-info">
@@ -3425,11 +3605,11 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
               <div className="power-limit-details">
                 <div className="limit-stat">
                   <span className="label">Today's Energy:</span>
-                  <span className="value">{formatNumber(((powerLimitModal.device as any)?.todayTotalEnergy * 1000) || 0)} Wh</span>
+                  <span className="value">{formatNumber(((powerLimitModal.device as any)?.todayTotalEnergy * 1000) || 0)} W</span>
                 </div>
                 <div className="limit-stat">
                   <span className="label">Power Limit:</span>
-                  <span className="value">{((powerLimitModal.device as any)?.powerLimit * 1000) || '0'} Wh</span>
+                  <span className="value">{((powerLimitModal.device as any)?.powerLimit * 1000) || '0'} W</span>
                 </div>
                 <div className="limit-stat">
                   <span className="label">Date:</span>
@@ -3510,8 +3690,14 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
                   <button 
                     className={`segment-btn ${timeSegment === 'Day' ? 'active' : ''}`} 
                     onClick={() => {
-                      setTimeSegment('Day')
-                      fetchHistoryData(historyModal.device!)
+                      try {
+                        setTimeSegment('Day')
+                        if (historyModal.device) {
+                          fetchHistoryData(historyModal.device, 'Day')
+                        }
+                      } catch (error) {
+                        console.error('Error setting Day filter:', error)
+                      }
                     }}
                   >
                     Day
@@ -3519,8 +3705,14 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
                   <button 
                     className={`segment-btn ${timeSegment === 'Week' ? 'active' : ''}`} 
                     onClick={() => {
-                      setTimeSegment('Week')
-                      fetchHistoryData(historyModal.device!)
+                      try {
+                        setTimeSegment('Week')
+                        if (historyModal.device) {
+                          fetchHistoryData(historyModal.device, 'Week')
+                        }
+                      } catch (error) {
+                        console.error('Error setting Week filter:', error)
+                      }
                     }}
                   >
                     Week
@@ -3528,8 +3720,14 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
                   <button 
                     className={`segment-btn ${timeSegment === 'Month' ? 'active' : ''}`} 
                     onClick={() => {
-                      setTimeSegment('Month')
-                      fetchHistoryData(historyModal.device!)
+                      try {
+                        setTimeSegment('Month')
+                        if (historyModal.device) {
+                          fetchHistoryData(historyModal.device, 'Month')
+                        }
+                      } catch (error) {
+                        console.error('Error setting Month filter:', error)
+                      }
                     }}
                   >
                     Month
@@ -3537,8 +3735,14 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
                   <button 
                     className={`segment-btn ${timeSegment === 'Year' ? 'active' : ''}`} 
                     onClick={() => {
-                      setTimeSegment('Year')
-                      fetchHistoryData(historyModal.device!)
+                      try {
+                        setTimeSegment('Year')
+                        if (historyModal.device) {
+                          fetchHistoryData(historyModal.device, 'Year')
+                        }
+                      } catch (error) {
+                        console.error('Error setting Year filter:', error)
+                      }
                     }}
                   >
                     Year
@@ -3556,7 +3760,7 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
                   </div>
                   <div className="summary-content">
                     <div className="summary-label">Total Energy</div>
-                    <div className="summary-value">{formatNumber(historyData.totalEnergy * 1000)} Wh</div>
+                    <div className="summary-value">{formatNumber(historyData.totalEnergy * 1000)} W</div>
                   </div>
                 </div>
                 
@@ -3583,7 +3787,7 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
                   <thead>
                     <tr>
                       <th>Date</th>
-                      <th>Energy (Wh)</th>
+                      <th>Energy (W)</th>
                       <th>Cost (₱)</th>
                     </tr>
                   </thead>

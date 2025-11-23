@@ -67,6 +67,8 @@ export default function LogIn({ onSuccess, onNavigateToSignUp }: LogInProps) {
       // Get additional user data from Realtime Database
       let displayName = user.displayName || email.trim()
       let userRole: 'Coordinator' | 'admin' = 'Coordinator' // Default role
+      let isVerified = false
+      let verificationStatus = 'pending'
       
       try {
         const userRef = ref(realtimeDb, `users/${user.uid}`)
@@ -76,17 +78,42 @@ export default function LogIn({ onSuccess, onNavigateToSignUp }: LogInProps) {
           const userData = userSnapshot.val()
           displayName = userData.displayName || userData.firstName || userData.email || displayName
           userRole = userData.role || 'Coordinator' // Get role from database
+          isVerified = userData.verified === true // Check verification status
+          verificationStatus = userData.verificationStatus || (isVerified ? 'verified' : 'pending')
           
-          console.log('User role from database:', userRole)
+          console.log('User role from database:', userRole, 'Verified:', isVerified, 'Status:', verificationStatus)
+          
+          // Block ALL users (including admin/GSO) if account is rejected
+          if (verificationStatus === 'rejected') {
+            openModal('error', 'Account Rejected', 'Your account has been rejected. Please contact a GSO or admin for assistance.')
+            setLoading(false)
+            return
+          }
+          
+          // Check if user is verified (GSO/admin can bypass pending status, but not rejected)
+          if (userRole !== 'admin') {
+            if (!isVerified && verificationStatus !== 'verified') {
+              openModal('error', 'Account Not Verified', 'Your account is pending verification. Please wait for a GSO or admin to verify your account before logging in.')
+              setLoading(false)
+              return
+            }
+          }
           
           // Update last login time
-          await get(ref(realtimeDb, `users/${user.uid}/lastLogin`))
+          await update(ref(realtimeDb, `users/${user.uid}`), {
+            lastLogin: new Date().toISOString()
+          })
         } else {
           console.log('User not found in database, using default role')
+          openModal('error', 'Account Not Found', 'No account found with this email. Please sign up first.')
+          setLoading(false)
+          return
         }
       } catch (dbError) {
         console.log('Could not fetch additional user data:', dbError)
-        // Continue with basic user info if database access fails
+        openModal('error', 'Database Error', 'Could not verify account. Please try again.')
+        setLoading(false)
+        return
       }
 
       // Log authentication event (this also logs to user_logs table)
@@ -149,6 +176,8 @@ export default function LogIn({ onSuccess, onNavigateToSignUp }: LogInProps) {
       
       // Get user role from database
       let userRole: 'Coordinator' | 'admin' = 'Coordinator' // Default role
+      let isVerified = false
+      let verificationStatus = 'pending'
       
       try {
         const userRef = ref(realtimeDb, `users/${user.uid}`)
@@ -157,29 +186,42 @@ export default function LogIn({ onSuccess, onNavigateToSignUp }: LogInProps) {
         if (userSnapshot.exists()) {
           const userData = userSnapshot.val()
           userRole = userData.role || 'Coordinator' // Get role from database
+          isVerified = userData.verified === true // Check verification status
+          verificationStatus = userData.verificationStatus || (isVerified ? 'verified' : 'pending')
           
-          console.log('Google user role from database:', userRole)
+          console.log('Google user role from database:', userRole, 'Verified:', isVerified, 'Status:', verificationStatus)
+          
+          // Block ALL users (including admin/GSO) if account is rejected
+          if (verificationStatus === 'rejected') {
+            openModal('error', 'Account Rejected', 'Your account has been rejected. Please contact a GSO or admin for assistance.')
+            setLoading(false)
+            return
+          }
+          
+          // Check if user is verified (GSO/admin can bypass pending status, but not rejected)
+          if (userRole !== 'admin') {
+            if (!isVerified && verificationStatus !== 'verified') {
+              openModal('error', 'Account Not Verified', 'Your account is pending verification. Please wait for a GSO or admin to verify your account before logging in.')
+              setLoading(false)
+              return
+            }
+          }
           
           // Update last login time
-          await get(ref(realtimeDb, `users/${user.uid}/lastLogin`))
-        } else {
-          // First time Google sign-in: create a Coordinator account record
-          const nowIso = new Date().toISOString()
           await update(ref(realtimeDb, `users/${user.uid}`), {
-            uid: user.uid,
-            email: user.email || '',
-            displayName: user.displayName || 'User',
-            role: 'Coordinator',
-            createdAt: nowIso,
-            lastLogin: nowIso,
-            authProvider: 'google'
+            lastLogin: new Date().toISOString()
           })
-          userRole = 'Coordinator'
-          console.log('Created new Coordinator account for Google user in database')
+        } else {
+          // User not found - they need to sign up first
+          openModal('error', 'Account Not Found', 'No account found with this Google account. Please sign up first.')
+          setLoading(false)
+          return
         }
       } catch (dbError) {
         console.log('Could not fetch user data:', dbError)
-        // Continue with sign-in even if database access fails
+        openModal('error', 'Database Error', 'Could not verify account. Please try again.')
+        setLoading(false)
+        return
       }
       
       // Log authentication event (this also logs to user_logs table)

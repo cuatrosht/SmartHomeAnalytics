@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { ref, onValue, off, update, remove, get } from 'firebase/database';
 import { realtimeDb } from '../firebase/config';
 import { logDeviceActivity } from '../utils/deviceLogging';
@@ -13,6 +13,8 @@ interface User {
   name: string;
   email: string;
   role: string;
+  verified?: boolean;
+  verificationStatus?: 'verified' | 'rejected' | 'pending';
 }
 
 interface UserLog {
@@ -63,9 +65,10 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
   const [deviceLogsFilter, setDeviceLogsFilter] = useState<'all' | 'day' | 'week' | 'month' | 'year'>('all');
   const [deviceLogsCurrentPage, setDeviceLogsCurrentPage] = useState(1);
   const [modalOpen, setModalOpen] = useState(false);
-  const [modalType, setModalType] = useState<'edit' | 'delete' | 'feedback' | 'addOffice' | 'editOffice' | 'deleteOffice' | null>(null);
+  const [modalType, setModalType] = useState<'edit' | 'delete' | 'feedback' | 'addOffice' | 'editOffice' | 'deleteOffice' | 'verify' | 'verifyConfirm' | null>(null);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [editRole, setEditRole] = useState<'admin' | 'Coordinator'>('Coordinator');
+  const [pendingAction, setPendingAction] = useState<'verify' | 'reject' | null>(null);
   const [feedback, setFeedback] = useState<{ success: boolean; message: string } | null>(null);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [selectedOption, setSelectedOption] = useState(
@@ -118,85 +121,282 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
   }, []);
 
   useEffect(() => {
-    const usersRef = ref(realtimeDb, 'users');
-    const handleValue = (snapshot: any) => {
-      const data = snapshot.val();
-      if (data) {
-        const userList: User[] = Object.entries(data).map(([uid, user]: any) => ({
-          id: uid,
-          name: user.displayName || ((user.firstName || '') + ' ' + (user.lastName || '')).trim() || user.email || uid,
-          email: user.email || '',
-          role: user.role || 'Coordinator',
-        }));
-        setUsers(userList);
-      } else {
+    try {
+      const usersRef = ref(realtimeDb, 'users');
+      const handleValue = (snapshot: any) => {
+        try {
+          const data = snapshot?.val();
+          if (data && typeof data === 'object') {
+            const userList: User[] = Object.entries(data).map(([uid, user]: any) => {
+              try {
+                // Determine verification status - prioritize database verificationStatus field
+                let verificationStatus: 'verified' | 'rejected' | 'pending' = 'pending';
+                
+                try {
+                  // First, check if verificationStatus exists in database (this is the source of truth)
+                  const dbStatus = user?.verificationStatus;
+                  if (dbStatus === 'verified' || dbStatus === 'rejected' || dbStatus === 'pending') {
+                    verificationStatus = dbStatus;
+                  } 
+                  // If verificationStatus doesn't exist, check legacy verified field
+                  else if (user?.verified === true) {
+                    verificationStatus = 'verified';
+                  } 
+                  // GSO/admin is always verified (but still respect database if set)
+                  else if (user?.role === 'admin') {
+                    verificationStatus = 'verified'; // GSO is always verified
+                  }
+                  // Default to pending if nothing is set
+                  else {
+                    verificationStatus = 'pending';
+                  }
+                } catch (statusError) {
+                  console.error('Error determining verification status:', statusError);
+                  // Safe fallback
+                  if (user?.role === 'admin') {
+                    verificationStatus = 'verified';
+                  } else {
+                    verificationStatus = 'pending';
+                  }
+                }
+                
+                // Safe name extraction
+                let userName = 'Unknown User';
+                try {
+                  if (user?.displayName) {
+                    userName = String(user.displayName);
+                  } else if (user?.firstName || user?.lastName) {
+                    const firstName = user.firstName ? String(user.firstName) : '';
+                    const lastName = user.lastName ? String(user.lastName) : '';
+                    userName = `${firstName} ${lastName}`.trim() || userName;
+                  } else if (user?.email) {
+                    userName = String(user.email);
+                  } else if (uid) {
+                    userName = String(uid);
+                  }
+                } catch (nameError) {
+                  console.error('Error extracting user name:', nameError);
+                  userName = user?.email || uid || 'Unknown User';
+                }
+                
+                return {
+                  id: uid || '',
+                  name: userName,
+                  email: user?.email || '',
+                  role: user?.role || 'Coordinator',
+                  verified: user?.verified === true,
+                  verificationStatus: verificationStatus || 'pending', // Ensure it's never undefined
+                };
+              } catch (userError) {
+                console.error('Error processing user:', uid, userError);
+                // Return safe default user
+                return {
+                  id: uid || '',
+                  name: 'Unknown User',
+                  email: user?.email || '',
+                  role: 'Coordinator',
+                  verified: false,
+                  verificationStatus: 'pending' as const,
+                };
+              }
+            }).filter(user => user.id); // Filter out invalid users
+            setUsers(userList);
+          } else {
+            setUsers([]);
+          }
+        } catch (error) {
+          console.error('Error processing users data:', error);
+          setUsers([]);
+        }
+      };
+      
+      const errorHandler = (error: any) => {
+        console.error('Firebase error in users listener:', error);
         setUsers([]);
-      }
-    };
-    onValue(usersRef, handleValue);
-    return () => off(usersRef, 'value', handleValue);
+      };
+      
+      onValue(usersRef, handleValue, errorHandler);
+      return () => {
+        try {
+          off(usersRef, 'value', handleValue);
+        } catch (cleanupError) {
+          console.error('Error cleaning up users listener:', cleanupError);
+        }
+      };
+    } catch (error) {
+      console.error('Error setting up users listener:', error);
+      setUsers([]);
+    }
   }, []);
 
   // REMOVED: Real-time scheduler - no longer needed for automatic scheduling
 
   // Fetch user logs data
   useEffect(() => {
-    const userLogsRef = ref(realtimeDb, 'user_logs');
-    const handleUserLogsValue = (snapshot: any) => {
-      const data = snapshot.val();
-      if (data) {
-        const logsList: UserLog[] = Object.entries(data).map(([logId, logData]: any) => ({
-          id: logId,
-          user: logData.user || 'Unknown',
-          role: logData.userId ? getRoleFromUserId(logData.userId) : 'Unknown',
-          action: logData.action || 'Unknown Action',
-          timestamp: logData.timestamp || new Date().toISOString(),
-          status: (logData.type === 'success' || logData.type === 'info') ? 'Success' : 'Failed',
-          authProvider: logData.authProvider || 'email'
-        }));
-        // Sort by timestamp (newest first)
-        logsList.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-        setUserLogs(logsList);
-      } else {
+    try {
+      const userLogsRef = ref(realtimeDb, 'user_logs');
+      const handleUserLogsValue = (snapshot: any) => {
+        try {
+          const data = snapshot?.val();
+          if (data && typeof data === 'object') {
+            const logsList: UserLog[] = Object.entries(data).map(([logId, logData]: any) => {
+              try {
+                return {
+                  id: logId || '',
+                  user: logData?.user || 'Unknown',
+                  role: logData?.userId ? getRoleFromUserId(logData.userId) : 'Unknown',
+                  action: logData?.action || 'Unknown Action',
+                  timestamp: logData?.timestamp || new Date().toISOString(),
+                  status: (logData?.type === 'success' || logData?.type === 'info') ? 'Success' : 'Failed',
+                  authProvider: logData?.authProvider || 'email'
+                };
+              } catch (logError) {
+                console.error('Error processing log entry:', logId, logError);
+                return {
+                  id: logId || '',
+                  user: 'Unknown',
+                  role: 'Unknown',
+                  action: 'Unknown Action',
+                  timestamp: new Date().toISOString(),
+                  status: 'Failed',
+                  authProvider: 'email'
+                };
+              }
+            }).filter(log => log.id); // Filter out invalid logs
+            // Sort by timestamp (newest first) - with error handling
+            try {
+              logsList.sort((a, b) => {
+                try {
+                  const timeA = new Date(a.timestamp).getTime();
+                  const timeB = new Date(b.timestamp).getTime();
+                  if (isNaN(timeA) || isNaN(timeB)) return 0;
+                  return timeB - timeA;
+                } catch {
+                  return 0;
+                }
+              });
+            } catch (sortError) {
+              console.error('Error sorting logs:', sortError);
+            }
+            setUserLogs(logsList);
+          } else {
+            setUserLogs([]);
+          }
+        } catch (error) {
+          console.error('Error processing user logs data:', error);
+          setUserLogs([]);
+        }
+      };
+      
+      const errorHandler = (error: any) => {
+        console.error('Firebase error in user logs listener:', error);
         setUserLogs([]);
-      }
-    };
-    onValue(userLogsRef, handleUserLogsValue);
-    return () => off(userLogsRef, 'value', handleUserLogsValue);
+      };
+      
+      onValue(userLogsRef, handleUserLogsValue, errorHandler);
+      return () => {
+        try {
+          off(userLogsRef, 'value', handleUserLogsValue);
+        } catch (cleanupError) {
+          console.error('Error cleaning up user logs listener:', cleanupError);
+        }
+      };
+    } catch (error) {
+      console.error('Error setting up user logs listener:', error);
+      setUserLogs([]);
+    }
   }, [users]);
 
   // Fetch device logs data
   useEffect(() => {
-    const deviceLogsRef = ref(realtimeDb, 'device_logs');
-    const handleDeviceLogsValue = (snapshot: any) => {
-      const data = snapshot.val();
-      if (data) {
-        const logsList: DeviceLog[] = Object.entries(data).map(([logId, logData]: any) => ({
-          id: logId,
-          user: logData.user || 'Unknown',
-          activity: logData.activity || 'Unknown Activity',
-          officeRoom: logData.officeRoom || 'Unknown',
-          outletSource: logData.outletSource || 'Unknown',
-          applianceConnected: logData.applianceConnected || 'Unknown',
-          timestamp: logData.timestamp || new Date().toISOString(),
-          userId: logData.userId,
-          userRole: logData.userRole
-        }));
-        // Sort by timestamp (newest first)
-        logsList.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-        setDeviceLogs(logsList);
-      } else {
+    try {
+      const deviceLogsRef = ref(realtimeDb, 'device_logs');
+      const handleDeviceLogsValue = (snapshot: any) => {
+        try {
+          const data = snapshot?.val();
+          if (data && typeof data === 'object') {
+            const logsList: DeviceLog[] = Object.entries(data).map(([logId, logData]: any) => {
+              try {
+                return {
+                  id: logId || '',
+                  user: logData?.user || 'Unknown',
+                  activity: logData?.activity || 'Unknown Activity',
+                  officeRoom: logData?.officeRoom || 'Unknown',
+                  outletSource: logData?.outletSource || 'Unknown',
+                  applianceConnected: logData?.applianceConnected || 'Unknown',
+                  timestamp: logData?.timestamp || new Date().toISOString(),
+                  userId: logData?.userId || '',
+                  userRole: logData?.userRole || 'Unknown'
+                };
+              } catch (logError) {
+                console.error('Error processing device log entry:', logId, logError);
+                return {
+                  id: logId || '',
+                  user: 'Unknown',
+                  activity: 'Unknown Activity',
+                  officeRoom: 'Unknown',
+                  outletSource: 'Unknown',
+                  applianceConnected: 'Unknown',
+                  timestamp: new Date().toISOString(),
+                  userId: '',
+                  userRole: 'Unknown'
+                };
+              }
+            }).filter(log => log.id); // Filter out invalid logs
+            // Sort by timestamp (newest first) - with error handling
+            try {
+              logsList.sort((a, b) => {
+                try {
+                  const timeA = new Date(a.timestamp).getTime();
+                  const timeB = new Date(b.timestamp).getTime();
+                  if (isNaN(timeA) || isNaN(timeB)) return 0;
+                  return timeB - timeA;
+                } catch {
+                  return 0;
+                }
+              });
+            } catch (sortError) {
+              console.error('Error sorting device logs:', sortError);
+            }
+            setDeviceLogs(logsList);
+          } else {
+            setDeviceLogs([]);
+          }
+        } catch (error) {
+          console.error('Error processing device logs data:', error);
+          setDeviceLogs([]);
+        }
+      };
+      
+      const errorHandler = (error: any) => {
+        console.error('Firebase error in device logs listener:', error);
         setDeviceLogs([]);
-      }
-    };
-    onValue(deviceLogsRef, handleDeviceLogsValue);
-    return () => off(deviceLogsRef, 'value', handleDeviceLogsValue);
+      };
+      
+      onValue(deviceLogsRef, handleDeviceLogsValue, errorHandler);
+      return () => {
+        try {
+          off(deviceLogsRef, 'value', handleDeviceLogsValue);
+        } catch (cleanupError) {
+          console.error('Error cleaning up device logs listener:', cleanupError);
+        }
+      };
+    } catch (error) {
+      console.error('Error setting up device logs listener:', error);
+      setDeviceLogs([]);
+    }
   }, []);
 
   // Helper function to get user role from userId
   const getRoleFromUserId = (userId: string): string => {
-    const user = users.find(u => u.id === userId);
-    return user ? user.role : 'Unknown';
+    try {
+      if (!userId || typeof userId !== 'string') return 'Unknown';
+      const user = users.find(u => u?.id === userId);
+      return user?.role || 'Unknown';
+    } catch (error) {
+      console.error('Error getting role from userId:', error);
+      return 'Unknown';
+    }
   };
 
   // Handle click outside dropdown to close it
@@ -258,10 +458,31 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
     return () => off(officesRef, 'value', handleOfficesValue);
   }, []);
 
-  const filteredUsers = users.filter(user =>
-    user.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    user.email.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  // Safe filtered users with error handling
+  const filteredUsers = useMemo(() => {
+    try {
+      if (!users || !Array.isArray(users)) return [];
+      if (!searchTerm || typeof searchTerm !== 'string') return users;
+      
+      const searchLower = searchTerm.toLowerCase();
+      return users.filter(user => {
+        try {
+          const userName = user?.name || '';
+          const userEmail = user?.email || '';
+          return (
+            (typeof userName === 'string' && userName.toLowerCase().includes(searchLower)) ||
+            (typeof userEmail === 'string' && userEmail.toLowerCase().includes(searchLower))
+          );
+        } catch (filterError) {
+          console.error('Error filtering user:', filterError);
+          return false;
+        }
+      });
+    } catch (error) {
+      console.error('Error in filteredUsers calculation:', error);
+      return users || [];
+    }
+  }, [users, searchTerm]);
 
   // Helper function to filter logs by time period
   const filterLogsByTimePeriod = (logs: UserLog[], period: 'all' | 'day' | 'week' | 'month' | 'year'): UserLog[] => {
@@ -381,6 +602,7 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
     setNewOffice({ department: '', office: '' });
     setEditOffice({ id: '', department: '', office: '' });
     setDepartmentDropdownOpen(false);
+    setPendingAction(null);
   };
 
   const handleEdit = (userId: string) => {
@@ -394,17 +616,22 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
   };
 
   const handleUpdateRole = async () => {
-    if (!selectedUser) return;
+    if (!selectedUser || !selectedUser.id) return;
     if (selectedUser.role === editRole) {
       setFeedback({ success: false, message: 'No changes made.' });
       setModalType('feedback');
       return;
     }
     try {
-      await update(ref(realtimeDb, `users/${selectedUser.id}`), { role: editRole });
+      // Only update the role field - preserve verification status and all other fields
+      await update(ref(realtimeDb, `users/${selectedUser.id}`), { 
+        role: editRole 
+      });
+      // Note: We explicitly only update 'role' to ensure verificationStatus and verified remain unchanged
       setFeedback({ success: true, message: 'Role updated successfully.' });
       setModalType('feedback');
     } catch (error) {
+      console.error('Error updating user role:', error);
       setFeedback({ success: false, message: 'Failed to update role.' });
       setModalType('feedback');
     }
@@ -419,6 +646,43 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
     } catch (error) {
       setFeedback({ success: false, message: 'Failed to delete user.' });
       setModalType('feedback');
+    }
+  };
+
+  const openVerifyModal = (user: User) => {
+    setSelectedUser(user);
+    setModalType('verify');
+    setModalOpen(true);
+    setPendingAction(null);
+  };
+
+  const handleVerifyActionClick = (action: 'verify' | 'reject') => {
+    setPendingAction(action);
+    setModalType('verifyConfirm');
+  };
+
+  const handleVerifyUser = async () => {
+    if (!selectedUser || !pendingAction) return;
+    try {
+      if (pendingAction === 'verify') {
+        await update(ref(realtimeDb, `users/${selectedUser.id}`), { 
+          verified: true,
+          verificationStatus: 'verified'
+        });
+        setFeedback({ success: true, message: 'User verified successfully.' });
+      } else {
+        await update(ref(realtimeDb, `users/${selectedUser.id}`), { 
+          verified: false,
+          verificationStatus: 'rejected'
+        });
+        setFeedback({ success: true, message: 'User rejected successfully.' });
+      }
+      setModalType('feedback');
+      setPendingAction(null);
+    } catch (error) {
+      setFeedback({ success: false, message: `Failed to ${pendingAction} user.` });
+      setModalType('feedback');
+      setPendingAction(null);
     }
   };
 
@@ -760,8 +1024,14 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
                     } else {
                       const userData = localStorage.getItem('currentUser');
                       if (userData) {
-                        const parsedUser = JSON.parse(userData);
-                        currentUserName = parsedUser.displayName || parsedUser.email || 'Unknown User';
+                        try {
+                          const parsedUser = JSON.parse(userData);
+                          currentUserName = parsedUser.displayName || parsedUser.email || 'Unknown User';
+                        } catch (parseError) {
+                          console.error('Error parsing user data from localStorage:', parseError);
+                          // Fallback to default value if JSON parsing fails
+                          currentUserName = 'Unknown User';
+                        }
                       }
                     }
                     
@@ -979,15 +1249,15 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
             </div>
 
             <div className="um-table-container">
-              <table className="um-table">
+              <table className="um-logs-table">
                 <thead>
                   <tr>
-                    <th>User</th>
-                    <th>Role</th>
-                    <th>Action</th>
-                    <th>Timestamp</th>
-                    <th>Status</th>
-                    <th>Auth Provider</th>
+                    <th style={{ width: '20%' }}>User</th>
+                    <th style={{ width: '12%' }}>Role</th>
+                    <th style={{ width: '18%' }}>Action</th>
+                    <th style={{ width: '20%' }}>Timestamp</th>
+                    <th style={{ width: '12%' }}>Status</th>
+                    <th style={{ width: '18%', textAlign: 'center' }}>Auth Provider</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1003,7 +1273,7 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
                             {log.status}
                           </span>
                         </td>
-                        <td>
+                        <td style={{ textAlign: 'center' }}>
                           <span className={`auth-provider-badge ${log.authProvider}`}>
                             {log.authProvider === 'google' ? 'Google' : 
                              log.authProvider === 'email' ? 'Email' : 
@@ -1149,14 +1419,14 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
             </div>
 
             <div className="um-table-container">
-              <table className="um-table">
+              <table className="um-activity-table">
                     <thead>
                       <tr>
-                        <th>User</th>
-                        <th>Activity</th>
-                        <th>Outlet/ Source</th>
-                        <th>Appliance Connected</th>
-                        <th>Timestamp</th>
+                        <th style={{ width: '18%' }}>User</th>
+                        <th style={{ width: '22%' }}>Activity</th>
+                        <th style={{ width: '20%' }}>Outlet/ Source</th>
+                        <th style={{ width: '20%' }}>Appliance Connected</th>
+                        <th style={{ width: '20%' }}>Timestamp</th>
                       </tr>
                     </thead>
                 <tbody>
@@ -1302,48 +1572,198 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
               <table className="um-table">
                 <thead>
                   <tr>
-                    <th>No</th>
+                    <th style={{ width: '60px', minWidth: '60px', maxWidth: '60px' }}>No</th>
                     <th>Name</th>
                     <th>Email</th>
                     <th>Roles</th>
-                    <th>Actions</th>
+                    <th>Status</th>
+                    <th style={{ textAlign: 'center' }}>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredUsers.map((user, idx) => (
-                    <tr key={user.id}>
-                      <td>{idx + 1}</td>
-                      <td>{user.name}</td>
-                      <td>{user.email}</td>
-                      <td>{user.role === 'admin' ? 'GSO' : user.role.charAt(0).toUpperCase() + user.role.slice(1)}</td>
-                      <td>
-                        <div className="um-actions">
-                          <button
-                            className="action-btn edit-btn"
-                            onClick={() => handleEdit(user.id)}
-                            aria-label={`Edit ${user.name}`}
-                            title="Edit user"
-                          >
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-                              <path d="m18.5 2.5 3 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-                            </svg>
-                          </button>
-                          <button
-                            className="action-btn delete-btn"
-                            onClick={() => handleDelete(user.id)}
-                            aria-label={`Delete ${user.name}`}
-                            title="Delete user"
-                          >
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                              <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-                              <path d="M10 11v6M14 11v6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-                            </svg>
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
+                  {filteredUsers.map((user, idx) => {
+                    try {
+                      const currentUser = auth?.currentUser;
+                      // Check if current user is admin - try users array first, then localStorage as fallback
+                      let isAdmin = false;
+                      if (currentUser?.uid) {
+                        try {
+                          const currentUserInList = users.find(u => u?.id === currentUser.uid);
+                          if (currentUserInList?.role === 'admin') {
+                            isAdmin = true;
+                          } else {
+                            // Fallback to localStorage
+                            try {
+                              const userData = localStorage.getItem('currentUser');
+                              if (userData) {
+                                const parsedUser = JSON.parse(userData);
+                                isAdmin = parsedUser?.role === 'admin';
+                              }
+                            } catch (e) {
+                              // Ignore localStorage errors
+                            }
+                          }
+                        } catch (adminCheckError) {
+                          console.error('Error checking admin status:', adminCheckError);
+                        }
+                      }
+                      
+                      // Safe role display
+                      let roleDisplay = 'Coordinator';
+                      try {
+                        if (user?.role === 'admin') {
+                          roleDisplay = 'GSO';
+                        } else if (user?.role && typeof user.role === 'string') {
+                          roleDisplay = user.role.charAt(0).toUpperCase() + user.role.slice(1);
+                        }
+                      } catch (roleError) {
+                        console.error('Error processing role display:', roleError);
+                        roleDisplay = 'Coordinator';
+                      }
+                      
+                      // Get verification status directly from database - this is the source of truth
+                      let verificationStatus: 'verified' | 'rejected' | 'pending' = 'pending';
+                      try {
+                        // Prioritize verificationStatus from database with safe checks
+                        const dbStatus = user?.verificationStatus;
+                        if (dbStatus && typeof dbStatus === 'string') {
+                          if (dbStatus === 'verified' || dbStatus === 'rejected' || dbStatus === 'pending') {
+                            verificationStatus = dbStatus;
+                          }
+                        }
+                        // Fallback to legacy verified field if verificationStatus doesn't exist
+                        if (verificationStatus === 'pending') {
+                          if (user?.verified === true) {
+                            verificationStatus = 'verified';
+                          }
+                          // GSO/admin is always verified (unless explicitly set in database)
+                          else if (user?.role === 'admin') {
+                            verificationStatus = 'verified';
+                          }
+                        }
+                      } catch (statusError) {
+                        console.error('Error processing verification status:', statusError);
+                        // Safe fallback
+                        try {
+                          if (user?.role === 'admin') {
+                            verificationStatus = 'verified';
+                          } else {
+                            verificationStatus = 'pending';
+                          }
+                        } catch (fallbackError) {
+                          console.error('Error in fallback status:', fallbackError);
+                          verificationStatus = 'pending';
+                        }
+                      }
+                      
+                      const isVerified = verificationStatus === 'verified';
+                      const isRejected = verificationStatus === 'rejected';
+                      const isPending = verificationStatus === 'pending';
+                      
+                      // Show verification button for ALL users when admin is logged in (even if already verified)
+                      const showVerificationButton = isAdmin;
+                      
+                      return (
+                      <tr key={user?.id || idx}>
+                        <td style={{ width: '60px', minWidth: '60px', maxWidth: '60px', textAlign: 'center', whiteSpace: 'nowrap' }}>{idx + 1}</td>
+                        <td>{user?.name || 'Unknown User'}</td>
+                        <td>{user?.email || 'No email'}</td>
+                        <td>
+                          <span style={{
+                            padding: '4px 12px',
+                            borderRadius: '6px',
+                            fontSize: '0.75rem',
+                            fontWeight: '600',
+                            display: 'inline-block',
+                            backgroundColor: user?.role === 'admin' ? '#fef3c7' : '#dbeafe',
+                            color: user?.role === 'admin' ? '#92400e' : '#1e40af',
+                            border: `1px solid ${user?.role === 'admin' ? '#fde68a' : '#93c5fd'}`
+                          }}>
+                            {roleDisplay}
+                          </span>
+                        </td>
+                        <td>
+                          <span style={{
+                            padding: '4px 12px',
+                            borderRadius: '6px',
+                            fontSize: '0.75rem',
+                            fontWeight: '600',
+                            display: 'inline-block',
+                            backgroundColor: isVerified ? '#d1fae5' : isRejected ? '#fee2e2' : '#fef3c7',
+                            color: isVerified ? '#065f46' : isRejected ? '#991b1b' : '#92400e',
+                            border: `1px solid ${isVerified ? '#6ee7b7' : isRejected ? '#fca5a5' : '#fde68a'}`
+                          }}>
+                            {isVerified ? '✓ Verified' : isRejected ? '✗ Rejected' : '⏳ Pending'}
+                          </span>
+                        </td>
+                        <td style={{ textAlign: 'center', minWidth: '200px', width: 'auto', overflow: 'visible' }}>
+                          <div className="um-actions">
+                            {showVerificationButton && user?.id && (
+                              <button
+                                className="action-btn verify-btn"
+                                onClick={() => {
+                                  try {
+                                    if (user?.id) openVerifyModal(user);
+                                  } catch (error) {
+                                    console.error('Error opening verify modal:', error);
+                                  }
+                                }}
+                                aria-label={`Verify ${user?.name || 'user'}`}
+                                title="Verify or reject user"
+                                style={{ display: 'flex' }}
+                              >
+                                Verification
+                              </button>
+                            )}
+                            <button
+                              className="action-btn edit-btn"
+                              onClick={() => {
+                                try {
+                                  if (user?.id) handleEdit(user.id);
+                                } catch (error) {
+                                  console.error('Error editing user:', error);
+                                }
+                              }}
+                              aria-label={`Edit ${user?.name || 'user'}`}
+                              title="Edit user"
+                            >
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ marginLeft: '2px' }}>
+                                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                                <path d="m18.5 2.5 3 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                              </svg>
+                            </button>
+                            <button
+                              className="action-btn delete-btn"
+                              onClick={() => {
+                                try {
+                                  if (user?.id) handleDelete(user.id);
+                                } catch (error) {
+                                  console.error('Error deleting user:', error);
+                                }
+                              }}
+                              aria-label={`Delete ${user?.name || 'user'}`}
+                              title="Delete user"
+                            >
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ marginLeft: '2px' }}>
+                                <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                                <path d="M10 11v6M14 11v6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                              </svg>
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                    } catch (renderError) {
+                      console.error('Error rendering user row:', renderError);
+                      return (
+                        <tr key={`error-${idx}`}>
+                          <td colSpan={6} style={{ textAlign: 'center', color: '#ef4444', padding: '1rem' }}>
+                            Error loading user data
+                          </td>
+                        </tr>
+                      );
+                    }
+                  })}
                 </tbody>
               </table>
             </div>
@@ -1937,6 +2357,131 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
             <div className="um-modal-actions">
               <button className="um-modal-btn delete" onClick={handleDeleteOffice}>Delete</button>
               <button className="um-modal-btn cancel" onClick={closeModal}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Verify Modal */}
+      {modalOpen && modalType === 'verify' && selectedUser && (
+        <div className="um-modal-overlay">
+          <div className="um-modal">
+            <div className="um-modal-header" style={{ background: 'white', color: '#1f2937', borderBottom: '1px solid #e5e7eb' }}>
+              <span className="um-modal-icon" aria-hidden="true">
+                <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                  <path d="M2 17l10 5 10-5"/>
+                  <path d="M2 12l10 5 10-5"/>
+                </svg>
+              </span>
+              <h3 className="um-modal-title" style={{ color: '#1f2937' }}>User Verification</h3>
+            </div>
+            <div className="um-modal-body">
+              <p>Choose an action for <strong>{selectedUser.name}</strong>:</p>
+              <p style={{ fontSize: '0.875rem', color: '#6b7280', marginTop: '0.5rem' }}>
+                {selectedUser.verificationStatus === 'rejected' 
+                  ? 'This user was previously rejected. You can verify them now or keep them rejected.'
+                  : 'Verify to allow access or reject to deny access to the system.'}
+              </p>
+            </div>
+            <div className="um-modal-actions" style={{ display: 'flex', gap: '0.5rem', justifyContent: 'center' }}>
+              <button 
+                className="um-modal-btn" 
+                onClick={() => handleVerifyActionClick('verify')} 
+                style={{ 
+                  background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)', 
+                  color: 'white',
+                  padding: '8px 16px',
+                  fontSize: '0.875rem'
+                }}
+              >
+                Verify
+              </button>
+              <button 
+                className="um-modal-btn" 
+                onClick={() => handleVerifyActionClick('reject')} 
+                style={{ 
+                  background: 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)', 
+                  color: 'white',
+                  padding: '8px 16px',
+                  fontSize: '0.875rem'
+                }}
+              >
+                Reject
+              </button>
+              <button 
+                className="um-modal-btn cancel" 
+                onClick={closeModal}
+                style={{ padding: '8px 16px', fontSize: '0.875rem' }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Verify Confirmation Modal */}
+      {modalOpen && modalType === 'verifyConfirm' && selectedUser && pendingAction && (
+        <div className="um-modal-overlay">
+          <div className="um-modal">
+            <div className="um-modal-header" style={{ 
+              background: pendingAction === 'verify' 
+                ? 'linear-gradient(135deg, #10b981 0%, #059669 100%)' 
+                : 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)', 
+              color: 'white' 
+            }}>
+              <span className="um-modal-icon" aria-hidden="true">
+                {pendingAction === 'verify' ? (
+                  <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M5 13l4 4L19 7"/>
+                  </svg>
+                ) : (
+                  <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="10"/>
+                    <path d="M15 9l-6 6M9 9l6 6"/>
+                  </svg>
+                )}
+              </span>
+              <h3 className="um-modal-title">
+                {pendingAction === 'verify' ? 'Confirm Verification' : 'Confirm Rejection'}
+              </h3>
+            </div>
+            <div className="um-modal-body">
+              <p>
+                Are you sure you want to <strong>{pendingAction === 'verify' ? 'verify' : 'reject'}</strong> <strong>{selectedUser.name}</strong>?
+              </p>
+              <p style={{ fontSize: '0.875rem', color: '#6b7280', marginTop: '0.5rem' }}>
+                {pendingAction === 'verify' 
+                  ? 'This user will be able to access the system after verification.'
+                  : 'This user will be denied access to the system.'}
+              </p>
+            </div>
+            <div className="um-modal-actions" style={{ display: 'flex', gap: '0.5rem', justifyContent: 'center' }}>
+              <button 
+                className="um-modal-btn" 
+                onClick={handleVerifyUser} 
+                style={{ 
+                  background: pendingAction === 'verify'
+                    ? 'linear-gradient(135deg, #10b981 0%, #059669 100%)'
+                    : 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)', 
+                  color: 'white',
+                  padding: '8px 16px',
+                  fontSize: '0.875rem'
+                }}
+              >
+                {pendingAction === 'verify' ? 'Confirm Verify' : 'Confirm Reject'}
+              </button>
+              <button 
+                className="um-modal-btn cancel" 
+                onClick={() => {
+                  setModalType('verify');
+                  setPendingAction(null);
+                }}
+                style={{ padding: '8px 16px', fontSize: '0.875rem' }}
+              >
+                Cancel
+              </button>
             </div>
           </div>
         </div>

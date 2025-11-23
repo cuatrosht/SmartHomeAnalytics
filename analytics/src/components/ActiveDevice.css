@@ -219,7 +219,7 @@
   max-width: 120px;
   line-height: 1.4;
   font-weight: 500;
-  font-size: 0.9rem;
+  font-size: 0.85rem;
   background: #fff;
 }
 
@@ -278,12 +278,19 @@
 
 .devices-table th:nth-child(9),
 .devices-table td:nth-child(9) {
-  width: 120px;
-  min-width: 120px;
+  width: 100px;
+  min-width: 100px;
+  text-align: center;
 }
 
 .devices-table th:nth-child(10),
 .devices-table td:nth-child(10) {
+  width: 120px;
+  min-width: 120px;
+}
+
+.devices-table th:nth-child(11),
+.devices-table td:nth-child(11) {
   width: 60px;
   min-width: 60px;
   text-align: center;
@@ -300,6 +307,19 @@
 
 .devices-table td:nth-child(8) {
   padding: 8px 10px;
+  text-align: center;
+}
+
+.devices-table td:nth-child(9) {
+  padding: 8px 10px;
+  text-align: center;
+}
+
+/* Month Energy cell styling - matches Today's Usage */
+.month-usage {
+  font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+  font-weight: 500;
+  color: #374151;
   text-align: center;
 }
 
@@ -660,14 +680,22 @@
   
   .devices-table th:nth-child(9),
   .devices-table td:nth-child(9) {
-    width: 90px;
-    min-width: 90px;
+    width: 70px;
+    min-width: 70px;
+    text-align: center;
   }
   
   .devices-table th:nth-child(10),
   .devices-table td:nth-child(10) {
+    width: 90px;
+    min-width: 90px;
+  }
+  
+  .devices-table th:nth-child(11),
+  .devices-table td:nth-child(11) {
     width: 50px;
     min-width: 50px;
+    text-align: center;
   }
   
   .status-badge {

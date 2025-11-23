@@ -45,10 +45,18 @@ export const logDeviceActivity = async (
         // Fallback to localStorage
         const userData = localStorage.getItem('currentUser');
         if (userData) {
-          const parsedUser = JSON.parse(userData);
-          currentUser = parsedUser.displayName || parsedUser.email || 'Unknown User';
-          currentUserId = parsedUser.uid || '';
-          currentUserRole = parsedUser.role || 'Coordinator';
+          try {
+            const parsedUser = JSON.parse(userData);
+            currentUser = parsedUser.displayName || parsedUser.email || 'Unknown User';
+            currentUserId = parsedUser.uid || '';
+            currentUserRole = parsedUser.role || 'Coordinator';
+          } catch (parseError) {
+            console.error('Error parsing user data from localStorage:', parseError);
+            // Fallback to default values if JSON parsing fails
+            currentUser = 'Unknown User';
+            currentUserId = '';
+            currentUserRole = 'Coordinator';
+          }
         } else {
           currentUser = 'Unknown User';
           currentUserRole = 'unknown';
@@ -156,7 +164,7 @@ export const logIndividualLimitActivity = async (
   user?: string
 ): Promise<void> => {
   try {
-    const limitText = limit === 'No Limit' || limit === 0 ? 'No Limit' : `${limit}Wh`;
+    const limitText = limit === 'No Limit' || limit === 0 ? 'No Limit' : `${limit}W`;
     
     await logDeviceActivity(
       `${activity} - ${limitText}`,

@@ -49,10 +49,10 @@ const calculateMonthlyEnergy = (outlet: any): string => {
     }
     
     // Convert to watts and format
-    return `${formatNumber(totalMonthlyEnergy * 1000)} Wh`
+    return `${formatNumber(totalMonthlyEnergy * 1000)} W`
   } catch (error) {
     console.error('Error calculating monthly energy:', error)
-    return '0.000 Wh'
+    return '0.000 W'
   }
 }
 
@@ -723,14 +723,14 @@ function DeleteConfirmationModal({
             <path d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" fill="#f59e0b"/>
           </svg>
         </div>
-        <h3>Delete Device</h3>
-        <p>Are you sure you want to delete <strong>"{deviceName}"</strong>? This action cannot be undone.</p>
+        <h3>Delete Office Info & Power Limit</h3>
+        <p>Are you sure you want to remove the office information and power limit for <strong>"{deviceName}"</strong>? The outlet structure will be preserved. This action cannot be undone.</p>
         <div className="delete-actions">
           <button className="btn-secondary" onClick={onClose}>
             Cancel
           </button>
           <button className="btn-danger" onClick={onConfirm}>
-            Delete Device
+            Delete Office Info & Power Limit
           </button>
         </div>
       </div>
@@ -759,11 +759,57 @@ function DeleteSuccessModal({
             <path d="M9 12l2 2 4-4" stroke="#ffffff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/>
           </svg>
         </div>
-        <h3>Device Deleted Successfully!</h3>
-        <p><strong>"{deviceName}"</strong> has been removed from the system.</p>
+        <h3>Office Info & Power Limit Deleted Successfully!</h3>
+        <p>Office information and power limit for <strong>"{deviceName}"</strong> have been removed. The outlet structure has been preserved.</p>
         <button className="btn-primary" onClick={onClose}>
           Continue
         </button>
+      </div>
+    </div>
+  )
+}
+
+// Delete Error Modal Component
+function DeleteErrorModal({ 
+  isOpen, 
+  onClose, 
+  deviceName,
+  errorMessage 
+}: { 
+  isOpen: boolean; 
+  onClose: () => void; 
+  deviceName: string;
+  errorMessage: string;
+}) {
+  if (!isOpen) return null
+
+  return (
+    <div className="modal-overlay delete-overlay" onClick={onClose}>
+      <div className="delete-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="delete-icon">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="12" cy="12" r="10" fill="#fef2f2" stroke="#dc2626" strokeWidth="2"/>
+            <path d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" fill="#dc2626"/>
+          </svg>
+        </div>
+        <h3>Error Deleting Office Info & Power Limit</h3>
+        <p>An error occurred while trying to delete office information and power limit for <strong>"{deviceName}"</strong>.</p>
+        {errorMessage && (
+          <p style={{ fontSize: '14px', color: '#6b7280', marginTop: '8px' }}>
+            <strong>Error:</strong> {errorMessage}
+          </p>
+        )}
+        <p style={{ fontSize: '14px', color: '#6b7280', marginTop: '12px' }}>
+          Please try again or contact support if the problem persists.
+        </p>
+        <div className="delete-actions">
+          <button className="btn-secondary" onClick={onClose}>
+            Close
+          </button>
+          <button className="btn-danger" onClick={onClose}>
+            Try Again
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -809,9 +855,9 @@ function NoPowerLimitWarningModal({
     title = 'Power Limit Exceeded!'
     message = `"${device.outletName}" cannot be turned ON because monthly energy consumption has exceeded the power limit.`
     statusLabel = 'Monthly Energy:'
-    statusValue = `${formatNumber(((device as any).todayTotalEnergy * 1000) || 0)} Wh`
+    statusValue = `${formatNumber(((device as any).todayTotalEnergy * 1000) || 0)} W`
     actionLabel = 'Power Limit:'
-    actionValue = `${((device as any).powerLimit * 1000) || '0'} Wh`
+    actionValue = `${((device as any).powerLimit * 1000) || '0'} W`
     warningMessage = 'Monthly total energy consumption has reached or exceeded the monthly power limit. The device cannot be activated until next month or the power limit is increased.'
   }
 
@@ -907,7 +953,7 @@ function PowerLimitWarningField({
         // Fallback to current usage
         const currentPowerUsage = device.powerUsage.includes('kW') ? 
           parseFloat(device.powerUsage.replace(' kW', '')) : 
-          parseFloat(device.powerUsage.replace(' Wh', '')) / 1000
+          parseFloat(device.powerUsage.replace(' W', '')) / 1000
         setMonthlyEnergy(currentPowerUsage)
       } finally {
         setLoading(false)
@@ -926,7 +972,7 @@ function PowerLimitWarningField({
           <circle cx="12" cy="12" r="10" fill="#fef2f2" stroke="#dc2626" strokeWidth="2"/>
           <path d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" fill="#dc2626"/>
         </svg>
-        <span>Power limit ({(newPowerLimit * 1000).toFixed(3)} Wh) is below monthly energy consumption ({(monthlyEnergy * 1000).toFixed(3)} Wh). Increase the limit or reduce usage first.</span>
+        <span>Power limit ({(newPowerLimit * 1000).toFixed(3)} W) is below monthly energy consumption ({(monthlyEnergy * 1000).toFixed(3)} W). Increase the limit or reduce usage first.</span>
       </div>
     )
   }
@@ -1064,7 +1110,7 @@ function EditRestrictionModal({
                 <div className="limit-item">
                   <span className="label">Combined Limit:</span>
                   <span className="value">
-                    {combinedLimit === "No Limit" ? "No Limit" : `${combinedLimit}Wh`}
+                    {combinedLimit === "No Limit" ? "No Limit" : `${combinedLimit}W`}
                   </span>
                 </div>
                 <div className="limit-item">
@@ -1210,7 +1256,7 @@ function EditDeviceModal({
   // Initialize form data when device changes
   useEffect(() => {
     if (device) {
-      const powerLimitValue = device.limit.replace(' Wh', '').replace(' W', '').replace(' kW', '')
+      const powerLimitValue = device.limit.replace(' W', '').replace(' kW', '')
       // Find the department and office for the existing device
       let existingDepartment = ''
       let existingOffice = ''
@@ -1325,7 +1371,7 @@ function EditDeviceModal({
     } else {
       // For individual limits, validate the form data
       if (enablePowerLimit && (!formData.powerLimit || (formData.powerLimit !== 'No Limit' && parseFloat(formData.powerLimit) <= 0))) {
-        newErrors.powerLimit = 'Power limit must be greater than 0 Wh'
+        newErrors.powerLimit = 'Power limit must be greater than 0 W'
       } else if (enablePowerLimit && formData.powerLimit !== 'No Limit') {
         // Check if power limit is less than monthly energy consumption
         if (device) {
@@ -1352,7 +1398,7 @@ function EditDeviceModal({
               }
             }
             
-            const newPowerLimitkW = parseFloat(formData.powerLimit) / 1000 // Convert from Wh to kW
+            const newPowerLimitkW = parseFloat(formData.powerLimit) / 1000 // Convert from W to kW
             
             // Check if new limit is less than current monthly energy
             if (newPowerLimitkW < totalMonthlyEnergy) {
@@ -1360,9 +1406,9 @@ function EditDeviceModal({
               
               // Provide a more specific error message if monthly energy already exceeds the current limit
               if (currentPowerLimit > 0 && totalMonthlyEnergy >= currentPowerLimit) {
-                newErrors.powerLimit = `Monthly energy consumption (${(totalMonthlyEnergy * 1000).toFixed(3)} Wh) already exceeds the current limit (${(currentPowerLimit * 1000).toFixed(3)} Wh). Please increase the limit to at least ${(totalMonthlyEnergy * 1000).toFixed(3)} Wh to save changes.`
+                newErrors.powerLimit = `Monthly energy consumption (${(totalMonthlyEnergy * 1000).toFixed(3)} W) already exceeds the current limit (${(currentPowerLimit * 1000).toFixed(3)} W). Please increase the limit to at least ${(totalMonthlyEnergy * 1000).toFixed(3)} W to save changes.`
               } else {
-                newErrors.powerLimit = `Power limit (${(newPowerLimitkW * 1000).toFixed(3)} Wh) cannot be less than current monthly energy consumption (${(totalMonthlyEnergy * 1000).toFixed(3)} Wh). Please increase the limit to at least ${(totalMonthlyEnergy * 1000).toFixed(3)} Wh to save changes.`
+                newErrors.powerLimit = `Power limit (${(newPowerLimitkW * 1000).toFixed(3)} W) cannot be less than current monthly energy consumption (${(totalMonthlyEnergy * 1000).toFixed(3)} W). Please increase the limit to at least ${(totalMonthlyEnergy * 1000).toFixed(3)} W to save changes.`
               }
             }
           } catch (error) {
@@ -1370,11 +1416,11 @@ function EditDeviceModal({
             // Fallback to current usage if database fetch fails
             const currentPowerUsage = device.powerUsage.includes('kW') ? 
               parseFloat(device.powerUsage.replace(' kW', '')) : 
-              parseFloat(device.powerUsage.replace(' Wh', '')) / 1000
-            const newPowerLimitkW = parseFloat(formData.powerLimit) / 1000 // Convert from Wh to kW
+              parseFloat(device.powerUsage.replace(' W', '')) / 1000
+            const newPowerLimitkW = parseFloat(formData.powerLimit) / 1000 // Convert from W to kW
             
             if (newPowerLimitkW < currentPowerUsage) {
-              newErrors.powerLimit = `Power limit (${(newPowerLimitkW * 1000).toFixed(3)} Wh) cannot be less than current usage (${(currentPowerUsage * 1000).toFixed(3)} Wh)`
+              newErrors.powerLimit = `Power limit (${(newPowerLimitkW * 1000).toFixed(3)} W) cannot be less than current usage (${(currentPowerUsage * 1000).toFixed(3)} W)`
             }
           }
         }
@@ -1448,12 +1494,12 @@ function EditDeviceModal({
               }
             }
             
-            const newPowerLimitkW = powerLimitToValidate / 1000 // Convert from Wh to kW
+            const newPowerLimitkW = powerLimitToValidate / 1000 // Convert from W to kW
             
             if (newPowerLimitkW < totalMonthlyEnergy) {
               setErrors(prev => ({ 
                 ...prev, 
-                powerLimit: `Power limit (${(newPowerLimitkW * 1000).toFixed(3)} Wh) cannot be less than monthly energy consumption (${(totalMonthlyEnergy * 1000).toFixed(3)} Wh)` 
+                powerLimit: `Power limit (${(newPowerLimitkW * 1000).toFixed(3)} W) cannot be less than monthly energy consumption (${(totalMonthlyEnergy * 1000).toFixed(3)} W)` 
               }))
               return
             }
@@ -1463,13 +1509,13 @@ function EditDeviceModal({
           // Fallback to current usage if database fetch fails
           const currentPowerUsage = device.powerUsage.includes('kW') ? 
             parseFloat(device.powerUsage.replace(' kW', '')) : 
-            parseFloat(device.powerUsage.replace(' Wh', '')) / 1000
-          const newPowerLimitkW = powerLimitToValidate / 1000 // Convert from Wh to kW
+            parseFloat(device.powerUsage.replace(' W', '')) / 1000
+          const newPowerLimitkW = powerLimitToValidate / 1000 // Convert from W to kW
           
           if (newPowerLimitkW < currentPowerUsage) {
             setErrors(prev => ({ 
               ...prev, 
-              powerLimit: `Power limit (${(newPowerLimitkW * 1000).toFixed(3)} Wh) cannot be less than current usage (${(currentPowerUsage * 1000).toFixed(3)} Wh)` 
+              powerLimit: `Power limit (${(newPowerLimitkW * 1000).toFixed(3)} W) cannot be less than current usage (${(currentPowerUsage * 1000).toFixed(3)} W)` 
             }))
             return
           }
@@ -1855,7 +1901,7 @@ function EditDeviceModal({
         const updatedDevice: Device & { enableScheduling: boolean; enablePowerLimit: boolean } = {
           ...device,
           outletName: formData.outletName || device.outletName,
-          limit: formData.powerLimit === 'No Limit' ? 'No Limit' : `${powerLimitToUse.toFixed(3)} Wh`,
+          limit: formData.powerLimit === 'No Limit' ? 'No Limit' : `${powerLimitToUse.toFixed(3)} W`,
           status: formData.enabled ? 'Active' : 'Inactive',
           officeRoom: displayOfficeName,
           enableScheduling,
@@ -1889,8 +1935,8 @@ function EditDeviceModal({
     // Check if monthly energy exceeds the new limit
     let hasUsageExceedLimit = false
     if (device && formData.powerLimit && formData.powerLimit !== 'No Limit' && parseFloat(formData.powerLimit) > 0 && device.monthUsage) {
-      // Parse monthly energy from device.monthUsage (format: "14.700 Wh")
-      const monthlyEnergyStr = device.monthUsage.replace(' Wh', '').replace(' W', '').trim()
+      // Parse monthly energy from device.monthUsage (format: "14.700 W")
+      const monthlyEnergyStr = device.monthUsage.replace(' W', '').trim()
       const monthlyEnergy = parseFloat(monthlyEnergyStr) || 0
       const newLimit = parseFloat(formData.powerLimit)
       
@@ -1910,8 +1956,8 @@ function EditDeviceModal({
     let hasUsageExceedLimit = false
     let monthlyEnergy = 0
     if (device && formData.powerLimit && formData.powerLimit !== 'No Limit' && parseFloat(formData.powerLimit) > 0 && device.monthUsage) {
-      // Parse monthly energy from device.monthUsage (format: "14.700 Wh")
-      const monthlyEnergyStr = device.monthUsage.replace(' Wh', '').replace(' W', '').trim()
+      // Parse monthly energy from device.monthUsage (format: "14.700 W")
+      const monthlyEnergyStr = device.monthUsage.replace(' W', '').trim()
       monthlyEnergy = parseFloat(monthlyEnergyStr) || 0
       const newLimit = parseFloat(formData.powerLimit)
       
@@ -1922,7 +1968,7 @@ function EditDeviceModal({
     }
     
     if (hasPowerLimitIssue) return 'Cannot save: Power limit is required to turn ON device'
-    if (hasUsageExceedLimit) return `Cannot save: Power limit (${parseFloat(formData.powerLimit).toFixed(3)} Wh) is below monthly energy consumption (${monthlyEnergy.toFixed(3)} Wh)`
+    if (hasUsageExceedLimit) return `Cannot save: Power limit (${parseFloat(formData.powerLimit).toFixed(3)} W) is below monthly energy consumption (${monthlyEnergy.toFixed(3)} W)`
     return 'Save changes'
   }
 
@@ -1959,7 +2005,7 @@ function EditDeviceModal({
 
             <div className={`form-group ${errors.powerLimit ? 'error' : ''}`}>
               <label htmlFor="editPowerLimit">
-                Change power limit (Wh) {enablePowerLimit && <span className="required">*</span>}
+                Change power limit (W) {enablePowerLimit && <span className="required">*</span>}
               </label>
               {(() => {
                 // Check if this device is part of the combined limit group
@@ -1975,8 +2021,8 @@ function EditDeviceModal({
                       <input
                         type="text"
                         id="editPowerLimit"
-                        placeholder="e.g., 150 Wh"
-                        value={`${String(combinedLimitInfo.combinedLimit) === "No Limit" ? "No Limit" : `${combinedLimitInfo.combinedLimit}Wh`} (Combined Limit)`}
+                        placeholder="e.g., 150 W"
+                        value={`${String(combinedLimitInfo.combinedLimit) === "No Limit" ? "No Limit" : `${combinedLimitInfo.combinedLimit}W`} (Combined Limit)`}
                         disabled
                         className="disabled-input"
                       />
@@ -1988,7 +2034,7 @@ function EditDeviceModal({
                         </div>
                         <div className="notice-text">
                           <strong>Power limit cannot be edited</strong> because this device is part of a combined power limit group. 
-                          The combined limit of {String(combinedLimitInfo.combinedLimit) === "No Limit" ? "No Limit" : `${combinedLimitInfo.combinedLimit}Wh`} applies to all selected outlets.
+                          The combined limit of {String(combinedLimitInfo.combinedLimit) === "No Limit" ? "No Limit" : `${combinedLimitInfo.combinedLimit}W`} applies to all selected outlets.
                         </div>
                       </div>
                     </div>
@@ -2000,7 +2046,7 @@ function EditDeviceModal({
                         <input
                           type="text"
                           id="editPowerLimit"
-                          placeholder="e.g., 150 Wh"
+                          placeholder="e.g., 150 W"
                           value={formData.powerLimit}
                           onChange={(e) => handlePowerLimitChange(e.target.value)}
                           maxLength={8}
@@ -2012,7 +2058,7 @@ function EditDeviceModal({
                       <div className="field-hint">
                         {enableScheduling && !enablePowerLimit 
                           ? "Devices will only turn off based on the schedule set. No power limit is applied."
-                          : "Enter value in Wh (watt-hours). This limit will be applied to monthly energy consumption."
+                          : "Enter value in W (watts). This limit will be applied to monthly energy consumption."
                         }
                       </div>
                       {errors.powerLimit && <span className="error-message">{errors.powerLimit}</span>}
@@ -2506,7 +2552,7 @@ function CombinedLimitModal({
     }
     
     if (enablePowerLimit && (!combinedLimit || (combinedLimit !== 'No Limit' && parseFloat(combinedLimit) <= 0))) {
-      newErrors.combinedLimit = 'Combined limit must be greater than 0 Wh'
+      newErrors.combinedLimit = 'Combined limit must be greater than 0 W'
     }
     
     // Check if the proposed limit is less than current month's energy consumption
@@ -2521,7 +2567,7 @@ function CombinedLimitModal({
           const currentMonthlyEnergy = calculateCombinedMonthlyEnergy(devicesData, selectedOutlets)
           
           if (proposedLimit < currentMonthlyEnergy) {
-            newErrors.combinedLimit = `Combined limit (${proposedLimit.toFixed(0)} Wh) cannot be less than current month's energy consumption (${currentMonthlyEnergy.toFixed(0)} Wh)`
+            newErrors.combinedLimit = `Combined limit (${proposedLimit.toFixed(0)} W) cannot be less than current month's energy consumption (${currentMonthlyEnergy.toFixed(0)} W)`
           }
         }
       } catch (error) {
@@ -2770,7 +2816,7 @@ function CombinedLimitModal({
             {(enablePowerLimit || enableScheduling) && (
               <div className={`field-group ${errors.combinedLimit ? 'error' : ''}`}>
                 <label htmlFor="combinedLimit">
-                  Monthly Power Limit (Wh) {enablePowerLimit && <span className="required">*</span>}
+                  Monthly Power Limit (W) {enablePowerLimit && <span className="required">*</span>}
                 </label>
               <input
                 type="text"
@@ -2812,7 +2858,7 @@ function CombinedLimitModal({
                     <span className="value">
                       {enableScheduling && !enablePowerLimit 
                         ? "No Limit" 
-                        : `${parseFloat(combinedLimit).toFixed(0)} Wh`
+                        : `${parseFloat(combinedLimit).toFixed(0)} W`
                       }
                     </span>
                   </div>
@@ -2929,7 +2975,7 @@ function CombinedLimitSuccessModal({
               </svg>
             </div>
             <div className="info-text">
-              <strong>How it works:</strong> The system will continuously monitor the combined monthly energy consumption of all selected outlets. When the total monthly energy reaches {combinedLimit}Wh, all active devices in this group will automatically turn off to prevent exceeding the monthly limit.
+              <strong>How it works:</strong> The system will continuously monitor the combined monthly energy consumption of all selected outlets. When the total monthly energy reaches {combinedLimit}W, all active devices in this group will automatically turn off to prevent exceeding the monthly limit.
             </div>
           </div>
         </div>
@@ -3175,7 +3221,7 @@ function AddDeviceModal({ isOpen, onClose, onSave }: AddDeviceModalProps) {
     if (!formData.department) newErrors.department = 'Department is required'
     if (!formData.office) newErrors.office = 'Office is required'
     if (enablePowerLimit && (!formData.powerLimit || (formData.powerLimit !== 'No Limit' && parseFloat(formData.powerLimit) <= 0))) {
-      newErrors.powerLimit = 'Power limit must be greater than 0 Wh'
+      newErrors.powerLimit = 'Power limit must be greater than 0 W'
     }
     if (!formData.appliance) newErrors.appliance = 'Appliance type is required'
     
@@ -3205,7 +3251,7 @@ function AddDeviceModal({ isOpen, onClose, onSave }: AddDeviceModalProps) {
             }
           }
           
-          const newPowerLimitkW = parseFloat(formData.powerLimit) / 1000 // Convert from Wh to kW
+          const newPowerLimitkW = parseFloat(formData.powerLimit) / 1000 // Convert from W to kW
           
           // Check if new limit is less than current monthly energy
           if (newPowerLimitkW < totalMonthlyEnergy) {
@@ -3213,9 +3259,9 @@ function AddDeviceModal({ isOpen, onClose, onSave }: AddDeviceModalProps) {
             
             // Provide a more specific error message if monthly energy already exceeds the current limit
             if (currentPowerLimit > 0 && totalMonthlyEnergy >= currentPowerLimit) {
-              newErrors.powerLimit = `Monthly energy consumption (${(totalMonthlyEnergy * 1000).toFixed(3)} Wh) already exceeds the current limit (${(currentPowerLimit * 1000).toFixed(3)} Wh). Please increase the limit to at least ${(totalMonthlyEnergy * 1000).toFixed(3)} Wh to save changes.`
+              newErrors.powerLimit = `Monthly energy consumption (${(totalMonthlyEnergy * 1000).toFixed(3)} W) already exceeds the current limit (${(currentPowerLimit * 1000).toFixed(3)} W). Please increase the limit to at least ${(totalMonthlyEnergy * 1000).toFixed(3)} W to save changes.`
             } else {
-              newErrors.powerLimit = `Power limit (${(newPowerLimitkW * 1000).toFixed(3)} Wh) cannot be less than current monthly energy consumption (${(totalMonthlyEnergy * 1000).toFixed(3)} Wh). Please increase the limit to at least ${(totalMonthlyEnergy * 1000).toFixed(3)} Wh to save changes.`
+              newErrors.powerLimit = `Power limit (${(newPowerLimitkW * 1000).toFixed(3)} W) cannot be less than current monthly energy consumption (${(totalMonthlyEnergy * 1000).toFixed(3)} W). Please increase the limit to at least ${(totalMonthlyEnergy * 1000).toFixed(3)} W to save changes.`
             }
           }
         }
@@ -3235,7 +3281,7 @@ function AddDeviceModal({ isOpen, onClose, onSave }: AddDeviceModalProps) {
     if (await validateForm()) {
       try {
         console.log('Starting database update for:', formData.deviceType)
-        console.log('Power limit to set (Wh):', formData.powerLimit)
+        console.log('Power limit to set (W):', formData.powerLimit)
         console.log('Office to assign:', formData.office)
         
         // Update existing outlet in Firebase database
@@ -3250,7 +3296,7 @@ function AddDeviceModal({ isOpen, onClose, onSave }: AddDeviceModalProps) {
         if (formData.powerLimit === 'No Limit') {
           powerLimitToStore = "No Limit" // Store as string for "No Limit" case
         } else {
-          powerLimitToStore = parseFloat(formData.powerLimit) / 1000 // Convert from Wh to kW for storage
+          powerLimitToStore = parseFloat(formData.powerLimit) / 1000 // Convert from W to kW for storage
         }
         
         const powerLimitUpdate = await update(autoCutoffRef, {
@@ -3322,7 +3368,7 @@ function AddDeviceModal({ isOpen, onClose, onSave }: AddDeviceModalProps) {
         
         console.log('Database updates completed successfully!')
         
-        // Add "Wh" suffix to power limit for local state
+        // Add "W" suffix to power limit for local state
         const deviceDataWithUnit = {
           ...formData,
           office: originalOfficeName,
@@ -3608,7 +3654,7 @@ function AddDeviceModal({ isOpen, onClose, onSave }: AddDeviceModalProps) {
                 {(enablePowerLimit || enableScheduling) && (
                   <div className={`form-group ${errors.powerLimit ? 'error' : ''}`}>
                     <label htmlFor="powerLimit">
-                      Set power limit (Wh) {enablePowerLimit && <span className="required">*</span>}
+                      Set power limit (W) {enablePowerLimit && <span className="required">*</span>}
                     </label>
                     <input
                       type="text"
@@ -3624,7 +3670,7 @@ function AddDeviceModal({ isOpen, onClose, onSave }: AddDeviceModalProps) {
                     <div className="field-hint">
                       {enableScheduling && !enablePowerLimit 
                         ? "Devices will only turn off based on the schedule set. No power limit is applied."
-                        : "Enter value in Wh (watt-hours). This limit will be applied to monthly energy consumption."
+                        : "Enter value in W (watts). This limit will be applied to monthly energy consumption."
                       }
                     </div>
                     {errors.powerLimit && <span className="error-message">{errors.powerLimit}</span>}
@@ -3662,8 +3708,8 @@ function AddDeviceModal({ isOpen, onClose, onSave }: AddDeviceModalProps) {
 // Function to automatically determine device status based on power usage
 const getAutomaticStatus = (powerUsage: string, limit: string): 'Active' | 'Inactive' | 'Warning' => {
   // Extract numeric values (remove 'W' suffix)
-  const usage = parseFloat(powerUsage.replace(' Wh', ''))
-  const limitValue = parseFloat(limit.replace(' Wh', '').replace(' W', '').replace('kW', ''))
+  const usage = parseFloat(powerUsage.replace(' W', ''))
+  const limitValue = parseFloat(limit.replace(' W', '').replace('kW', ''))
   
   if (usage === 0) return 'Inactive'
   
@@ -3994,6 +4040,15 @@ export default function SetUp() {
     isOpen: false,
     deviceName: ''
   })
+  const [deleteErrorModal, setDeleteErrorModal] = useState<{
+    isOpen: boolean;
+    deviceName: string;
+    errorMessage: string;
+  }>({
+    isOpen: false,
+    deviceName: '',
+    errorMessage: ''
+  })
   const [noPowerLimitModal, setNoPowerLimitModal] = useState<{
     isOpen: boolean;
     device: Device | null;
@@ -4065,7 +4120,7 @@ export default function SetUp() {
           if (outlet.sensor_data) {
             // Use lifetime_energy as current power usage (already in kW from database)
             const lifetimeEnergyKw = outlet.lifetime_energy || 0
-            const powerUsageDisplay = `${formatNumber(lifetimeEnergyKw * 1000)} Wh`
+            const powerUsageDisplay = `${formatNumber(lifetimeEnergyKw * 1000)} W`
             const powerUsage = lifetimeEnergyKw / 1000 // Keep in kW for calculations
             const powerLimitRaw = outlet.relay_control?.auto_cutoff?.power_limit || 0
             const powerLimit = powerLimitRaw === "No Limit" ? "No Limit" : powerLimitRaw
@@ -4073,7 +4128,7 @@ export default function SetUp() {
             const status = outlet.control?.device || 'off'
             const totalEnergyWatts = outlet.daily_logs?.[todayString]?.total_energy || 0
             // Use total_energy for today's energy (already in kW from database)
-            const todayEnergyDisplay = `${formatNumber(totalEnergyWatts * 1000)} Wh`
+            const todayEnergyDisplay = `${formatNumber(totalEnergyWatts * 1000)} W`
             const totalEnergy = totalEnergyWatts / 1000 // Keep in kW for calculations
             
             // Map office values to display names
@@ -4330,7 +4385,7 @@ export default function SetUp() {
               officeRoom: officeInfo, // Use office info from database
               appliances: outlet.office_info?.appliance || 'Unassigned',
               enablePowerScheduling: outlet.office_info?.enable_power_scheduling || false,
-              limit: powerLimit === "No Limit" ? "No Limit" : `${(powerLimit * 1000).toFixed(3)} Wh`,
+              limit: powerLimit === "No Limit" ? "No Limit" : `${(powerLimit * 1000).toFixed(3)} W`,
               powerUsage: powerUsageDisplay, // Use the new display format
               currentAmpere: currentAmpereDisplay,
               todayUsage: todayEnergyDisplay, // Use the new display format
@@ -4452,7 +4507,7 @@ const checkMonthlyLimit = (deviceData: any): boolean => {
           }
         }
         
-        const totalMonthlyEnergyWh = totalMonthlyEnergy * 1000 // Convert to Wh
+        const totalMonthlyEnergyWh = totalMonthlyEnergy * 1000 // Convert to W
         
         return totalMonthlyEnergyWh >= combinedLimitWatts
       } catch (error) {
@@ -5751,13 +5806,13 @@ const checkMonthlyLimit = (deviceData: any): boolean => {
         const combinedLimit = limitData.combined_limit_watts || 0
         
         console.log('🧪 Testing with outlets:', selectedOutlets)
-        console.log('🧪 Combined limit:', combinedLimit, 'Wh')
+        console.log('🧪 Combined limit:', combinedLimit, 'W')
         
         const totalMonthlyEnergy = calculateCombinedMonthlyEnergy(devicesData, selectedOutlets)
         
         console.log('🧪 CALCULATION RESULTS:')
-        console.log(`📊 Total monthly energy: ${totalMonthlyEnergy.toFixed(3)} Wh`)
-        console.log(`📊 Combined limit: ${combinedLimit} Wh`)
+        console.log(`📊 Total monthly energy: ${totalMonthlyEnergy.toFixed(3)} W`)
+        console.log(`📊 Combined limit: ${combinedLimit} W`)
         console.log(`📊 Exceeds limit: ${totalMonthlyEnergy >= combinedLimit}`)
         console.log(`📊 Percentage: ${combinedLimit > 0 ? ((totalMonthlyEnergy / combinedLimit) * 100).toFixed(1) : 0}%`)
         
@@ -6281,14 +6336,14 @@ const checkMonthlyLimit = (deviceData: any): boolean => {
                 
                 console.log(`SetUp: Combined limit check for ${outletKey}:`, {
                   selectedOutlets,
-                  totalCombinedPower: `${totalCombinedPower.toFixed(3)}Wh`,
-                  combinedLimitWatts: `${combinedLimitWatts}Wh`,
+                  totalCombinedPower: `${totalCombinedPower.toFixed(3)}W`,
+                  combinedLimitWatts: `${combinedLimitWatts}W`,
                   wouldExceedLimit: totalCombinedPower >= combinedLimitWatts
                 })
                 
                 // If turning on this device would exceed the combined limit, prevent it
                 if (totalCombinedPower >= combinedLimitWatts) {
-                  alert(`Cannot turn ON ${device.outletName}. Combined power limit of ${combinedLimitWatts}Wh has been reached for the selected outlets.`)
+                  alert(`Cannot turn ON ${device.outletName}. Combined power limit of ${combinedLimitWatts}W has been reached for the selected outlets.`)
                   return
                 }
               }
@@ -6399,9 +6454,39 @@ const checkMonthlyLimit = (deviceData: any): boolean => {
 
   // Handle actual deletion from Firebase database
   const handleConfirmDelete = async () => {
+    // Safety check: ensure deleteModal has valid deviceId
+    if (!deleteModal.deviceId) {
+      console.error('SetUp: No device ID provided for deletion')
+      setDeleteErrorModal({
+        isOpen: true,
+        deviceName: 'Unknown Device',
+        errorMessage: 'No device selected for deletion'
+      })
+      setDeleteModal({ ...deleteModal, isOpen: false })
+      return
+    }
+
     const deviceToDelete = devices.find(d => d.id === deleteModal.deviceId)
     if (!deviceToDelete) {
-      console.error('Device not found for deletion:', deleteModal.deviceId)
+      console.error('SetUp: Device not found for deletion:', deleteModal.deviceId)
+      setDeleteErrorModal({
+        isOpen: true,
+        deviceName: 'Unknown Device',
+        errorMessage: 'Device not found in the system'
+      })
+      setDeleteModal({ ...deleteModal, isOpen: false })
+      return
+    }
+
+    // Safety check: ensure outletName is valid
+    if (!deviceToDelete.outletName || typeof deviceToDelete.outletName !== 'string') {
+      console.error('SetUp: Invalid outlet name:', deviceToDelete.outletName)
+      setDeleteErrorModal({
+        isOpen: true,
+        deviceName: 'Unknown Device',
+        errorMessage: 'Invalid device information'
+      })
+      setDeleteModal({ ...deleteModal, isOpen: false })
       return
     }
 
@@ -6621,65 +6706,114 @@ const checkMonthlyLimit = (deviceData: any): boolean => {
         // Continue with device deletion even if general logs removal fails
       }
       
-      // 6. Finally, remove the entire outlet from Firebase database
-      console.log('🗑️ SetUp: Starting complete device deletion from devices collection...')
-      
-      // First, let's see what data exists for this outlet
-      const outletRef = ref(realtimeDb, `devices/${deviceToDelete.outletName}`)
-      const outletSnapshot = await get(outletRef)
-      
-      if (outletSnapshot.exists()) {
-        const outletData = outletSnapshot.val()
-        console.log('🔍 SetUp: Outlet data that will be deleted:', outletData)
-        console.log('🔍 SetUp: Outlet data keys:', Object.keys(outletData))
+      // 6. Remove office_info and power_limit from the outlet (preserve outlet structure)
+      try {
+        console.log('🗑️ SetUp: Starting office_info and power_limit deletion (preserving outlet structure)...')
         
-        // Log specific data sections that will be deleted
-        if (outletData.sensor_data) {
-          console.log('🔍 SetUp: Sensor data will be deleted:', outletData.sensor_data)
+        // Safety check: ensure outletName is valid
+        if (!deviceToDelete?.outletName || typeof deviceToDelete.outletName !== 'string') {
+          throw new Error('Invalid outlet name provided')
         }
-        if (outletData.daily_logs) {
-          console.log('🔍 SetUp: Daily logs will be deleted:', Object.keys(outletData.daily_logs))
+        
+        const outletRef = ref(realtimeDb, `devices/${deviceToDelete.outletName}`)
+        const outletSnapshot = await get(outletRef)
+        
+        if (outletSnapshot.exists()) {
+          const outletData = outletSnapshot.val()
+          
+          // Safety check: ensure outletData is valid
+          if (!outletData || typeof outletData !== 'object') {
+            throw new Error('Invalid outlet data structure')
+          }
+          
+          console.log('🔍 SetUp: Outlet data before deletion:', outletData)
+          
+          // Log what will be deleted
+          if (outletData.office_info) {
+            console.log('🔍 SetUp: Office info that will be deleted:', outletData.office_info)
+          } else {
+            console.log('⚠️ SetUp: No office_info found for this outlet')
+          }
+          
+          if (outletData.relay_control?.auto_cutoff?.power_limit !== undefined) {
+            console.log('🔍 SetUp: Power limit that will be deleted:', outletData.relay_control.auto_cutoff.power_limit)
+          } else {
+            console.log('⚠️ SetUp: No power_limit found for this outlet')
+          }
+          
+          // Log what will be preserved
+          console.log('✅ SetUp: The following will be PRESERVED:')
+          if (outletData.sensor_data) {
+            console.log('✅ SetUp: Sensor data will be preserved:', Object.keys(outletData.sensor_data))
+          }
+          if (outletData.daily_logs) {
+            console.log('✅ SetUp: Daily logs will be preserved:', Object.keys(outletData.daily_logs).length, 'days')
+          }
+          if (outletData.control) {
+            console.log('✅ SetUp: Control settings will be preserved:', outletData.control)
+          }
+          if (outletData.schedule) {
+            console.log('✅ SetUp: Schedule will be preserved:', outletData.schedule)
+          }
+          if (outletData.lifetime_energy !== undefined) {
+            console.log('✅ SetUp: Lifetime energy will be preserved:', outletData.lifetime_energy)
+          }
+          
+          // Remove office_info field (with error handling)
+          try {
+            const officeInfoRef = ref(realtimeDb, `devices/${deviceToDelete.outletName}/office_info`)
+            await remove(officeInfoRef)
+            console.log('✅ SetUp: Office info deleted successfully!')
+          } catch (officeInfoError) {
+            console.error('❌ SetUp: Error deleting office_info:', officeInfoError)
+            // Continue with power_limit deletion even if office_info deletion fails
+          }
+          
+          // Remove power_limit from relay_control.auto_cutoff (with error handling)
+          try {
+            const powerLimitRef = ref(realtimeDb, `devices/${deviceToDelete.outletName}/relay_control/auto_cutoff/power_limit`)
+            await remove(powerLimitRef)
+            console.log('✅ SetUp: Power limit deleted successfully!')
+          } catch (powerLimitError) {
+            console.error('❌ SetUp: Error deleting power_limit:', powerLimitError)
+            // Continue even if power_limit deletion fails
+          }
+          
+          // Verify the deletion was successful
+          try {
+            const verifySnapshot = await get(outletRef)
+            if (verifySnapshot.exists()) {
+              const verifyData = verifySnapshot.val()
+              const officeInfoDeleted = !verifyData.office_info
+              const powerLimitDeleted = !verifyData.relay_control?.auto_cutoff?.power_limit
+              
+              if (officeInfoDeleted && powerLimitDeleted) {
+                console.log('✅ SetUp: VERIFICATION SUCCESSFUL - Office info and power_limit removed, outlet structure preserved!')
+                console.log('✅ SetUp: Remaining outlet data:', Object.keys(verifyData))
+              } else {
+                if (!officeInfoDeleted) {
+                  console.log('❌ SetUp: VERIFICATION FAILED - Office info still exists!')
+                }
+                if (!powerLimitDeleted) {
+                  console.log('❌ SetUp: VERIFICATION FAILED - Power limit still exists!')
+                }
+              }
+            }
+          } catch (verifyError) {
+            console.warn('⚠️ SetUp: Error during verification (non-critical):', verifyError)
+            // Verification error is not critical, continue
+          }
+        } else {
+          console.log('⚠️ SetUp: No outlet data found at path:', `devices/${deviceToDelete.outletName}`)
+          // This is not necessarily an error - outlet might not exist
         }
-        if (outletData.office_info) {
-          console.log('🔍 SetUp: Office info will be deleted:', outletData.office_info)
-        }
-        if (outletData.schedule) {
-          console.log('🔍 SetUp: Schedule will be deleted:', outletData.schedule)
-        }
-        if (outletData.relay_control) {
-          console.log('🔍 SetUp: Relay control will be deleted:', outletData.relay_control)
-        }
-        if (outletData.control) {
-          console.log('🔍 SetUp: Control settings will be deleted:', outletData.control)
-        }
-        if (outletData.lifetime_energy !== undefined) {
-          console.log('🔍 SetUp: Lifetime energy will be deleted:', outletData.lifetime_energy)
-        }
-        if (outletData.lifetime_hours !== undefined) {
-          console.log('🔍 SetUp: Lifetime hours will be deleted:', outletData.lifetime_hours)
-        }
-        if (outletData.lifetime_usage_millis !== undefined) {
-          console.log('🔍 SetUp: Lifetime usage millis will be deleted:', outletData.lifetime_usage_millis)
-        }
-      } else {
-        console.log('❌ SetUp: No outlet data found at path:', `devices/${deviceToDelete.outletName}`)
+        
+        console.log('✅ SetUp: Office info and power_limit deletion process completed!')
+      } catch (deleteError) {
+        console.error('❌ SetUp: Error during office_info and power_limit deletion:', deleteError)
+        // Re-throw to be caught by outer catch block
+        throw deleteError
       }
-      
-      console.log('🗑️ SetUp: Deleting outlet at path:', `devices/${deviceToDelete.outletName}`)
-      
-      // Remove the entire outlet and ALL its data from the devices collection
-      const deleteResult = await remove(outletRef)
-      console.log('🗑️ SetUp: Delete result:', deleteResult)
-      
-      // Verify the deletion was successful
-      const verifySnapshot = await get(outletRef)
-      if (!verifySnapshot.exists()) {
-        console.log('✅ SetUp: VERIFICATION SUCCESSFUL - Outlet completely deleted from devices collection!')
-      } else {
-        console.log('❌ SetUp: VERIFICATION FAILED - Outlet still exists in devices collection!')
-      }
-      
-      console.log('✅ SetUp: COMPLETE device deletion successful! All outlet data has been removed from database.')
       
       // Show success modal
       setDeleteSuccessModal({ 
@@ -6698,8 +6832,25 @@ const checkMonthlyLimit = (deviceData: any): boolean => {
         error: error
       })
       
+      // Get error message for user display
+      let errorMessage = 'An unexpected error occurred'
+      if (error instanceof Error) {
+        errorMessage = error.message || errorMessage
+      } else if (typeof error === 'string') {
+        errorMessage = error
+      } else if (error && typeof error === 'object' && 'message' in error) {
+        errorMessage = String((error as any).message) || errorMessage
+      }
+      
       // Close delete confirmation modal on error
       setDeleteModal({ ...deleteModal, isOpen: false })
+      
+      // Show error modal to user (prevents white screen)
+      setDeleteErrorModal({
+        isOpen: true,
+        deviceName: deviceToDelete?.outletName || 'Unknown Device',
+        errorMessage: errorMessage
+      })
     }
   }
 
@@ -7257,7 +7408,7 @@ const checkMonthlyLimit = (deviceData: any): boolean => {
         
         // If combined monthly energy exceeds limit, turn off all active devices
         if (totalCombinedPower >= combinedLimitWatts && activeDevices.length > 0) {
-          console.log(`SetUp: COMBINED MONTHLY LIMIT EXCEEDED - Turning OFF all active devices (${totalCombinedPower.toFixed(3)}Wh >= ${combinedLimitWatts}Wh)`)
+          console.log(`SetUp: COMBINED MONTHLY LIMIT EXCEEDED - Turning OFF all active devices (${totalCombinedPower.toFixed(3)}W >= ${combinedLimitWatts}W)`)
           
           // Turn off all active devices
           for (const outletKey of activeDevices) {
@@ -7343,13 +7494,13 @@ const checkMonthlyLimit = (deviceData: any): boolean => {
       // Parse old usage - handle both W and kW formats
       const oldUsage = oldDevice.powerUsage.includes('kW') ? 
         parseFloat(oldDevice.powerUsage.replace(' kW', '')) : 
-        parseFloat(oldDevice.powerUsage.replace(' Wh', '')) / 1000
+        parseFloat(oldDevice.powerUsage.replace(' W', '')) / 1000
       // Parse new usage - handle both W and kW formats
       const newUsage = updatedDevice.powerUsage.includes('kW') ? 
         parseFloat(updatedDevice.powerUsage.replace(' kW', '')) : 
-        parseFloat(updatedDevice.powerUsage.replace(' Wh', '')) / 1000
-      const oldLimit = parseInt(oldDevice.limit.replace('Wh', '').replace('W', ''))
-      const newLimit = parseInt(updatedDevice.limit.replace('Wh', '').replace('W', ''))
+        parseFloat(updatedDevice.powerUsage.replace(' W', '')) / 1000
+      const oldLimit = parseInt(oldDevice.limit.replace('W', ''))
+      const newLimit = parseInt(updatedDevice.limit.replace('W', ''))
       
     }
     
@@ -7565,13 +7716,13 @@ const checkMonthlyLimit = (deviceData: any): boolean => {
                               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                                 <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
                               </svg>
-                              <span>{String(foundDepartmentLimit.combinedLimit) === "No Limit" ? "No Limit" : `${foundDepartmentLimit.combinedLimit}Wh`}</span>
+                              <span>{String(foundDepartmentLimit.combinedLimit) === "No Limit" ? "No Limit" : `${foundDepartmentLimit.combinedLimit}W`}</span>
                             </div>
                           </div>
                         )
                       } else {
-                        // Ensure proper Wh unit formatting without creating Whh
-                        return device.limit.includes('Wh') ? device.limit : device.limit.replace(' W', ' Wh')
+                        // Ensure proper W unit formatting
+                        return device.limit.includes('W') ? device.limit : device.limit + ' W'
                       }
                     })()}
                   </td>
@@ -7707,6 +7858,14 @@ const checkMonthlyLimit = (deviceData: any): boolean => {
           console.log('SetUp: Delete success modal closed - table will update via real-time listener');
         }}
         deviceName={deleteSuccessModal.deviceName}
+      />
+
+      {/* Delete Error Modal */}
+      <DeleteErrorModal
+        isOpen={deleteErrorModal.isOpen}
+        onClose={() => setDeleteErrorModal({ isOpen: false, deviceName: '', errorMessage: '' })}
+        deviceName={deleteErrorModal.deviceName}
+        errorMessage={deleteErrorModal.errorMessage}
       />
 
 

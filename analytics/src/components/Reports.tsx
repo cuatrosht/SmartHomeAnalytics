@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Bar } from 'react-chartjs-2'
 import {
   Chart as ChartJS,
@@ -14,6 +14,8 @@ import {
 import { ref, onValue, off, get, update } from 'firebase/database'
 import { realtimeDb } from '../firebase/config'
 import jsPDF from 'jspdf'
+import headerImage from '../assets/image.png'
+import footerImage from '../assets/image1.png'
 import './Reports.css'
 
 // REMOVED: Helper functions for automatic scheduling - no longer needed
@@ -543,6 +545,29 @@ export default function Reports() {
     setIsPdfPreviewModalOpen(false)
   }
 
+  // Helper function to convert image to base64 data URL for jsPDF and get dimensions
+  const imageToDataUrl = (imagePath: string): Promise<{ dataUrl: string; width: number; height: number }> => {
+    return new Promise((resolve, reject) => {
+      const img = new Image()
+      img.crossOrigin = 'anonymous'
+      img.onload = () => {
+        const canvas = document.createElement('canvas')
+        canvas.width = img.width
+        canvas.height = img.height
+        const ctx = canvas.getContext('2d')
+        if (ctx) {
+          ctx.drawImage(img, 0, 0)
+          const dataUrl = canvas.toDataURL('image/png')
+          resolve({ dataUrl, width: img.width, height: img.height })
+        } else {
+          reject(new Error('Could not get canvas context'))
+        }
+      }
+      img.onerror = reject
+      img.src = imagePath
+    })
+  }
+
   // Generate and download PDF report with selected office data
   const generatePDFReport = async (targetOffice: string = '', startDate?: string, endDate?: string) => {
     try {
@@ -696,10 +721,30 @@ export default function Reports() {
       console.log('PDF: Total energy:', deviceMonthlyData.reduce((sum, device) => sum + (device.monthlyEnergy / 1000), 0), 'kWh')
       console.log('PDF: Total cost:', deviceMonthlyData.reduce((sum, device) => sum + device.monthlyCost, 0), 'PHP')
 
+      // Load header image and get dimensions
+      const headerImageData = await imageToDataUrl(headerImage)
+      const headerImageDataUrl = headerImageData.dataUrl
+      const headerImageAspectRatio = headerImageData.width / headerImageData.height
+
+      // Load footer image and get dimensions
+      const footerImageData = await imageToDataUrl(footerImage)
+      const footerImageDataUrl = footerImageData.dataUrl
+      const footerImageAspectRatio = footerImageData.width / footerImageData.height
+
       const doc = new jsPDF()
       const pageWidth = doc.internal.pageSize.getWidth()
       const pageHeight = doc.internal.pageSize.getHeight()
-      let yPosition = 20
+      let yPosition = 0
+
+      const headerMargin = 10
+      const footerImageMargin = 0
+      const footerImageOffsetY = 2
+      const footerTextMargin = 15
+      const footerTextOffsetY = 16
+      const maxHeaderImageWidth = pageWidth - headerMargin * 2
+      const footerImageWidth = Math.min(pageWidth / 3, pageWidth - footerImageMargin * 2)
+      const footerImageHeight = footerImageWidth / footerImageAspectRatio
+      const footerReservedSpace = footerImageHeight + footerImageOffsetY + 15
 
       // Helper function to add text with proper formatting
       const addText = (text: string, x: number, y: number, options: any = {}) => {
@@ -731,32 +776,50 @@ export default function Reports() {
 
       // Helper function to check if we need a new page
       const checkNewPage = (requiredSpace: number = 20) => {
-        if (yPosition + requiredSpace > pageHeight - 20) {
+        if (yPosition + requiredSpace > pageHeight - 20 - footerReservedSpace) {
           doc.addPage()
-          yPosition = 20
+          yPosition = 0
+          // Add header image to new page
+          try {
+            const imageWidth = maxHeaderImageWidth
+            const imageHeight = imageWidth / headerImageAspectRatio
+            doc.addImage(headerImageDataUrl, 'PNG', headerMargin, yPosition, imageWidth, imageHeight)
+            yPosition += imageHeight + 10
+          } catch (error) {
+            console.error('Error adding header image to new page:', error)
+          }
           return true
         }
         return false
       }
 
-      // Institutional Header
-      // Only show department name if not "All Departments"
-      if (selectedPdfDepartment !== 'All Departments') {
+      // Institutional Header - Add header image
+      try {
+        // Calculate image dimensions to fit page width (with smaller margins)
+        const imageWidth = maxHeaderImageWidth
+        const imageHeight = imageWidth / headerImageAspectRatio
+        
+        // Add the header image
+        doc.addImage(headerImageDataUrl, 'PNG', headerMargin, yPosition, imageWidth, imageHeight)
+        yPosition += imageHeight + 10
+      } catch (error) {
+        console.error('Error adding header image to PDF:', error)
+        // Fallback to text header if image fails
+        if (selectedPdfDepartment !== 'All Departments') {
+          doc.setFontSize(12)
+          doc.setFont('arial', 'normal')
+          doc.text(selectedPdfDepartment, pageWidth / 2, yPosition, { align: 'center' })
+          yPosition += 8
+        }
         doc.setFontSize(12)
         doc.setFont('arial', 'normal')
-        doc.text(selectedPdfDepartment, pageWidth / 2, yPosition, { align: 'center' })
+        doc.text('Camarines Norte State College', pageWidth / 2, yPosition, { align: 'center' })
         yPosition += 8
+        doc.setFontSize(12)
+        doc.setFont('arial', 'normal')
+        doc.text('Daet, Camarines Norte', pageWidth / 2, yPosition, { align: 'center' })
+        yPosition += 15
       }
-      
-      doc.setFontSize(12)
-      doc.setFont('arial', 'normal')
-      doc.text('Camarines Norte State College', pageWidth / 2, yPosition, { align: 'center' })
-      yPosition += 8
-      
-      doc.setFontSize(12)
-      doc.setFont('arial', 'normal')
-      doc.text('Daet, Camarines Norte', pageWidth / 2, yPosition, { align: 'center' })
-      yPosition += 15
       
       // Report Title
       doc.setFontSize(16)
@@ -839,15 +902,15 @@ export default function Reports() {
     addText('Appliance', xPosition + 2, yPosition + 4, { fontSize: 10, bold: true })
     xPosition += colWidths[selectedReportType === 'Outlets' ? 2 : 1]
     
-    // Power Limit (Wh) - split into two lines with better spacing
+    // Power Limit (W) - split into two lines with better spacing
     addText('Power Limit', xPosition + 2, yPosition + 3, { fontSize: 10, bold: true })
-    addText('(Wh)', xPosition + 2, yPosition + 9, { fontSize: 10, bold: true })
+    addText('(W)', xPosition + 2, yPosition + 9, { fontSize: 10, bold: true })
     xPosition += colWidths[selectedReportType === 'Outlets' ? 3 : 2]
     
-    // Total Power Usage (Wh) - split into three lines
+    // Total Power Usage (W) - split into three lines
     addText('Total Power', xPosition + 2, yPosition + 2, { fontSize: 10, bold: true })
     addText('Usage', xPosition + 2, yPosition + 6, { fontSize: 10, bold: true })
-    addText('(Wh)', xPosition + 2, yPosition + 10, { fontSize: 10, bold: true })
+    addText('(W)', xPosition + 2, yPosition + 10, { fontSize: 10, bold: true })
     xPosition += colWidths[selectedReportType === 'Outlets' ? 4 : 3]
     
     // Total No. of Hours (hrs) - split into three lines
@@ -965,7 +1028,7 @@ export default function Reports() {
     
     // Total Usage row - single cell spanning all columns
     addRect(20, yPosition - 2, totalTableWidth, rowHeight)
-    addText(`Total Usage: ${totalMonthlyEnergy.toFixed(3)} Wh (${totalHours.toFixed(3)} hours)`, 22, yPosition + 4, { fontSize: 10, bold: true })
+    addText(`Total Usage: ${totalMonthlyEnergy.toFixed(3)} W (${totalHours.toFixed(3)} hours)`, 22, yPosition + 4, { fontSize: 10, bold: true })
     yPosition += rowHeight
     
     // Estimated Cost row - single cell spanning all columns
@@ -976,7 +1039,6 @@ export default function Reports() {
 
     // Add power usage summary text right after the estimated cost row
     yPosition += 10
-    checkNewPage(60)
     
     // Power usage summary text with Aptos font
     doc.setFont('helvetica', 'normal') // Using helvetica as closest to Aptos in jsPDF
@@ -985,24 +1047,20 @@ export default function Reports() {
     
     // Create power usage summary text based on whether combined limit is used
     let powerUsageText = ''
-    if (combinedLimitInfo?.enabled && combinedLimitInfo?.combinedLimit > 0) {
-      powerUsageText = `The outlet performance data shows a total power usage of ${totalMonthlyEnergy.toFixed(3)} Wh across all monitored appliances, operating for a combined ${totalHours.toFixed(3)} hours, which resulted in an estimated monthly cost of PHP ${totalMonthlyCost.toFixed(2)}. The analysis covers ${totalDevices} EcoPlug devices in ${officeDisplayName}, with a combined power limit of ${(combinedLimitInfo.combinedLimit / 1000).toFixed(0)} kilowatts.`
-    } else {
-      const powerLimits = deviceMonthlyData.map(d => d.powerLimit).filter(p => p > 0)
-      const minPowerLimit = powerLimits.length > 0 ? Math.min(...powerLimits) : 0
-      const maxPowerLimit = powerLimits.length > 0 ? Math.max(...powerLimits) : 0
-      powerUsageText = `The outlet performance data shows a total power usage of ${totalMonthlyEnergy.toFixed(3)} Wh across all monitored appliances, operating for a combined ${totalHours.toFixed(3)} hours, which resulted in an estimated monthly cost of PHP ${totalMonthlyCost.toFixed(2)}. The analysis covers ${totalDevices} EcoPlug devices in ${officeDisplayName}, with individual power limits ranging from ${minPowerLimit.toFixed(3)} Wh to ${maxPowerLimit.toFixed(3)} Wh.`
-    }
+    powerUsageText = `The outlet performance data shows a total power usage of ${totalMonthlyEnergy.toFixed(3)} W across all monitored appliances, operating for a combined ${totalHours.toFixed(3)} hours, which resulted in an estimated monthly cost of PHP ${totalMonthlyCost.toFixed(2)}. The analysis covers ${totalDevices} EcoPlug devices in ${officeDisplayName}.`
     
     // Split text into lines to fit page width
     const powerUsageMaxWidth = pageWidth - 40 // 20px margin on each side
     const lines = doc.splitTextToSize(powerUsageText, powerUsageMaxWidth)
+    const powerUsageLineHeight = 6
+    const powerUsageHeight = lines.length * powerUsageLineHeight + 10
+    checkNewPage(powerUsageHeight)
     
     // Add each line
     lines.forEach((line: string) => {
       checkNewPage(15)
       doc.text(line, 20, yPosition)
-      yPosition += 6
+      yPosition += powerUsageLineHeight
     })
 
     // II. Power Saving Recommendation table
@@ -1037,19 +1095,19 @@ export default function Reports() {
     addText('Appliance', powerSavingXPosition + 2, yPosition + 4, { fontSize: 10, bold: true })
     powerSavingXPosition += powerSavingColWidths[1]
     
-    // Avg. Daily Power Usage (Wh) - split into multiple lines
+    // Avg. Daily Power Usage (W) - split into multiple lines
     addText('Avg. Daily', powerSavingXPosition + 2, yPosition + 2, { fontSize: 10, bold: true })
     addText('Power Usage', powerSavingXPosition + 2, yPosition + 6, { fontSize: 10, bold: true })
-    addText('(Wh)', powerSavingXPosition + 2, yPosition + 10, { fontSize: 10, bold: true })
+    addText('(W)', powerSavingXPosition + 2, yPosition + 10, { fontSize: 10, bold: true })
     powerSavingXPosition += powerSavingColWidths[2]
     
     // Power Limit
     addText('Power Limit', powerSavingXPosition + 2, yPosition + 4, { fontSize: 10, bold: true })
     powerSavingXPosition += powerSavingColWidths[3]
     
-    // Total Power Usage (Wh) - split into multiple lines
+    // Total Power Usage (W) - split into multiple lines
     addText('Total Power', powerSavingXPosition + 2, yPosition + 2, { fontSize: 10, bold: true })
-    addText('Usage (Wh)', powerSavingXPosition + 2, yPosition + 6, { fontSize: 10, bold: true })
+    addText('Usage (W)', powerSavingXPosition + 2, yPosition + 6, { fontSize: 10, bold: true })
     powerSavingXPosition += powerSavingColWidths[4]
     
     // Recommended Power Limit - split into multiple lines
@@ -1150,7 +1208,6 @@ export default function Reports() {
 
     // Add power-saving analysis text at the bottom of the table
     yPosition += 15
-    checkNewPage(80)
     
     // Power-saving analysis text with Aptos font
     doc.setFont('helvetica', 'normal') // Using helvetica as closest to Aptos in jsPDF
@@ -1161,11 +1218,13 @@ export default function Reports() {
     const totalRecommendedLimits = deviceMonthlyData.reduce((sum, device) => sum + (device.powerLimit * 0.9), 0)
     const potentialSavings = totalCurrentLimits > 0 ? ((totalCurrentLimits - totalRecommendedLimits) / totalCurrentLimits * 100).toFixed(1) : '0'
     
-    const powerSavingAnalysisText = `The power-saving analysis shows that all appliances in ${officeDisplayName} operated under their respective power limits, but further optimization is still possible. The analysis covers ${totalDevices} devices with a total current power limit of ${totalCurrentLimits.toFixed(3)} Wh. By implementing the recommended power limits totaling ${totalRecommendedLimits.toFixed(3)} Wh, potential savings of approximately ${potentialSavings}% could be achieved through optimized operating schedules and reduced standby consumption. This optimization strategy focuses on maintaining functionality while reducing energy waste, particularly during off-hours and low-usage periods.`
+    const powerSavingAnalysisText = `The power-saving analysis shows that all appliances in ${officeDisplayName} operated under their respective power limits, but further optimization is still possible. The analysis covers ${totalDevices} devices with a total current power limit of ${totalCurrentLimits.toFixed(3)} W. By implementing the recommended power limits totaling ${totalRecommendedLimits.toFixed(3)} W, potential savings of approximately ${potentialSavings}% could be achieved through optimized operating schedules and reduced standby consumption. This optimization strategy focuses on maintaining functionality while reducing energy waste, particularly during off-hours and low-usage periods.`
     
     // Split text into lines to fit page width
     const analysisMaxWidth = pageWidth - 40 // 20px margin on each side
     const analysisLines = doc.splitTextToSize(powerSavingAnalysisText, analysisMaxWidth)
+    const analysisTotalHeight = analysisLines.length * 6 + 10
+    checkNewPage(analysisTotalHeight)
     
     // Add each line
     analysisLines.forEach((line: string) => {
@@ -1203,6 +1262,29 @@ export default function Reports() {
       fontSize: 9, 
       color: '#666666' 
     })
+
+    // Add footer with image and pagination across all pages
+    const addFooterAndPagination = () => {
+      const totalPages = doc.getNumberOfPages()
+      for (let pageNumber = 1; pageNumber <= totalPages; pageNumber++) {
+        doc.setPage(pageNumber)
+        const currentPageWidth = doc.internal.pageSize.getWidth()
+        const currentPageHeight = doc.internal.pageSize.getHeight()
+        const footerY = currentPageHeight - footerImageHeight - footerImageOffsetY
+        try {
+          doc.addImage(footerImageDataUrl, 'PNG', footerImageMargin, footerY, footerImageWidth, footerImageHeight)
+        } catch (error) {
+          console.error('Error adding footer image to page', pageNumber, error)
+        }
+        doc.setFontSize(10)
+        doc.setFont('arial', 'normal')
+        const pageText = `Page ${pageNumber} of ${totalPages}`
+        const pageTextY = currentPageHeight - footerTextOffsetY
+        doc.text(pageText, currentPageWidth - footerTextMargin, pageTextY, { align: 'right' })
+      }
+    }
+
+    addFooterAndPagination()
 
     // Generate filename
     const timestamp = new Date().toISOString().split('T')[0]
@@ -1297,6 +1379,32 @@ export default function Reports() {
     combinedLimit: 0,
     device_control: 'on'
   })
+  const previewOfficeDisplayName = selectedPdfOffice && selectedPdfOffice !== '' ? selectedPdfOffice : 'All Offices'
+
+  const previewPowerUsageText = useMemo(() => {
+    if (!previewData?.deviceTableData || previewData.deviceTableData.length === 0) return ''
+
+    const totalMonthlyEnergy = previewData.deviceTableData.reduce((sum: number, device: any) => sum + (device.monthlyEnergy || 0), 0)
+    const totalHours = previewData.deviceTableData.reduce((sum: number, device: any) => sum + (device.totalHours || 0), 0)
+    const totalMonthlyCost = previewData.deviceTableData.reduce(
+      (sum: number, device: any) => sum + (Math.floor((device.monthlyCost || 0) * 100) / 100),
+      0
+    )
+    const totalDevices = previewData.deviceTableData.length
+
+    return `The outlet performance data shows a total power usage of ${totalMonthlyEnergy.toFixed(3)} W across all monitored appliances, operating for a combined ${totalHours.toFixed(3)} hours, which resulted in an estimated monthly cost of PHP ${totalMonthlyCost.toFixed(2)}. The analysis covers ${totalDevices} EcoPlug devices in ${previewOfficeDisplayName}.`
+  }, [previewData, combinedLimitInfo, previewOfficeDisplayName])
+
+  const previewPowerSavingText = useMemo(() => {
+    if (!previewData?.deviceTableData || previewData.deviceTableData.length === 0) return ''
+
+    const totalDevices = previewData.deviceTableData.length
+    const totalCurrentLimits = previewData.deviceTableData.reduce((sum: number, device: any) => sum + (device.powerLimit || 0), 0)
+    const totalRecommendedLimits = previewData.deviceTableData.reduce((sum: number, device: any) => sum + ((device.powerLimit || 0) * 0.9), 0)
+    const potentialSavings = totalCurrentLimits > 0 ? (((totalCurrentLimits - totalRecommendedLimits) / totalCurrentLimits) * 100).toFixed(1) : '0'
+
+    return `The power-saving analysis shows that all appliances in ${previewOfficeDisplayName} operated under their respective power limits, but further optimization is still possible. The analysis covers ${totalDevices} devices with a total current power limit of ${totalCurrentLimits.toFixed(3)} W. By implementing the recommended power limits totaling ${totalRecommendedLimits.toFixed(3)} W, potential savings of approximately ${potentialSavings}% could be achieved through optimized operating schedules and reduced standby consumption. This optimization strategy focuses on maintaining functionality while reducing energy waste, particularly during off-hours and low-usage periods.`
+  }, [previewData, previewOfficeDisplayName])
   // Track all department combined limits
   const [allDepartmentCombinedLimits, setAllDepartmentCombinedLimits] = useState<Record<string, {
     enabled: boolean;
@@ -2097,9 +2205,11 @@ export default function Reports() {
             title="Generate PDF Report"
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M6 14h12v8H6v-8z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+              <polyline points="7 10 12 15 17 10" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+              <line x1="12" y1="15" x2="12" y2="3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
             </svg>
-            Print Report
+            Download Reports
           </button>
           <div className="dropdowns-container" ref={dropdownRef}>
             <div className="dropdown">
@@ -2163,7 +2273,7 @@ export default function Reports() {
             <div className="metric-content">
               <div className="metric-title">Total Consumption</div>
               <div className="metric-value">
-                {formatNumber(totalEnergy * 1000)} Wh
+                {formatNumber(totalEnergy * 1000)} W
               </div>
               <div className="metric-trend positive">
                 Live data from database
@@ -2184,7 +2294,7 @@ export default function Reports() {
             <div className="metric-content">
               <div className="metric-title">Current Power Usage This Month</div>
               <div className="metric-value">
-                {formatNumber(totalPower * 1000)} Wh
+                {formatNumber(totalPower * 1000)} W
               </div>
               <div className="metric-trend positive">
                 Monthly power consumption
@@ -2254,7 +2364,7 @@ export default function Reports() {
                       labels: chartData.labels,
                       datasets: [
                         {
-                          label: 'Energy Usage (Wh)',
+                          label: 'Energy Usage (W)',
                           data: chartData.energyUsage.map(dayData => (dayData[0] || 0) * 1000),
                           backgroundColor: '#2563eb',
                           borderColor: '#2563eb',
@@ -2291,7 +2401,7 @@ export default function Reports() {
                             label: function(context) {
                               const value = context.parsed.y
                                 // Data is already in watts
-                                return `Energy Usage: ${formatNumber(value)} Wh`
+                                return `Energy Usage: ${formatNumber(value)} W`
                             }
                           }
                         }
@@ -2315,7 +2425,7 @@ export default function Reports() {
                           },
                           title: {
                             display: true,
-                            text: 'Energy (Wh)',
+                            text: 'Energy (W)',
                             color: '#374151',
                             font: {
                               size: 14,
@@ -2382,7 +2492,7 @@ export default function Reports() {
                           : device.outletId || 'Unknown'
                         
                         return {
-                          label: `Outlet ${outletNum} - Energy (Wh)`,
+                          label: `Outlet ${outletNum} - Energy (W)`,
                           data: chartData.energyUsage.map(dayData => (dayData[deviceIndex] || 0) * 1000),
                           backgroundColor: color,
                           borderColor: color,
@@ -2427,7 +2537,7 @@ export default function Reports() {
                           label: function(context) {
                             const value = context.parsed.y
                             const label = context.dataset.label || ''
-                            return `${label}: ${formatNumber(value)} Wh`
+                            return `${label}: ${formatNumber(value)} W`
                           }
                         }
                         }
@@ -2451,7 +2561,7 @@ export default function Reports() {
                           },
                           title: {
                             display: true,
-                            text: 'Energy (Wh)',
+                            text: 'Energy (W)',
                             color: '#374151',
                             font: {
                               size: 12,
@@ -2542,7 +2652,7 @@ export default function Reports() {
                 {getFilteredDevicesBySearch(filteredDevices, searchQuery).map((device, index) => {
                   // Use lifetime_energy for device consumption display (convert to watts)
                   const lifetimeEnergyKw = device.lifetime_energy || 0
-                  const usageDisplay = `${formatNumber(lifetimeEnergyKw * 1000)} Wh`
+                  const usageDisplay = `${formatNumber(lifetimeEnergyKw * 1000)} W`
                   
                   const currentEnergy = lifetimeEnergyKw // Already in kW from database
                   const percentage = currentTotalEnergy > 0 ? (currentEnergy / currentTotalEnergy) * 100 : 0
@@ -2612,7 +2722,7 @@ export default function Reports() {
                       labels: chartData.labels,
                       datasets: [
                         {
-                          label: 'Energy Usage (Wh)',
+                          label: 'Energy Usage (W)',
                           data: chartData.energyUsage.map(dayData => (dayData[0] || 0) * 1000),
                           backgroundColor: '#2563eb',
                           borderColor: '#2563eb',
@@ -2673,7 +2783,7 @@ export default function Reports() {
                           },
                           title: {
                             display: true,
-                            text: 'Energy (Wh)',
+                            text: 'Energy (W)',
                             color: '#374151',
                             font: {
                               size: 16,
@@ -2740,7 +2850,7 @@ export default function Reports() {
                           : device.outletId || 'Unknown'
                         
                         return {
-                          label: `Outlet ${outletNum} - Energy (Wh)`,
+                          label: `Outlet ${outletNum} - Energy (W)`,
                           data: chartData.energyUsage.map(dayData => (dayData[deviceIndex] || 0) * 1000),
                           backgroundColor: color,
                           borderColor: color,
@@ -2786,7 +2896,7 @@ export default function Reports() {
                           label: function(context) {
                             const value = context.parsed.y
                             const label = context.dataset.label || ''
-                            return `${label}: ${formatNumber(value)} Wh`
+                            return `${label}: ${formatNumber(value)} W`
                           }
                         }
                         }
@@ -2810,7 +2920,7 @@ export default function Reports() {
                           },
                           title: {
                             display: true,
-                            text: 'Energy (Wh)',
+                            text: 'Energy (W)',
                             color: '#374151',
                             font: {
                               size: 14,
@@ -3150,13 +3260,18 @@ export default function Reports() {
                 <div className="pdf-preview-content">
                   {/* PDF Header */}
                   <div className="pdf-preview-header">
+                    {/* Header Image */}
                     <div style={{ textAlign: 'center', marginBottom: '16px' }}>
-                      {/* Only show department name if not "All Departments" */}
-                      {selectedPdfDepartment !== 'All Departments' && (
-                        <p style={{ margin: '4px 0', fontSize: '14px', fontWeight: '500' }}>{selectedPdfDepartment}</p>
-                      )}
-                      <p style={{ margin: '4px 0', fontSize: '14px', fontWeight: '500' }}>Camarines Norte State College</p>
-                      <p style={{ margin: '4px 0', fontSize: '14px', fontWeight: '500' }}>Daet, Camarines Norte</p>
+                      <img 
+                        src={headerImage} 
+                        alt="CNSC Header" 
+                        style={{ 
+                          maxWidth: '100%', 
+                          height: 'auto',
+                          display: 'block',
+                          margin: '0 auto'
+                        }} 
+                      />
                     </div>
                     <h2 style={{ textAlign: 'center', marginTop: '16px' }}>{selectedReportType === 'Outlets' ? 'Outlet Consumption Ranking' : 'EcoPlug Performance Summary Report'}</h2>
                     <div className="pdf-preview-separator"></div>
@@ -3191,8 +3306,8 @@ export default function Reports() {
                         {selectedReportType === 'Outlets' && <div className="table-cell">Rank</div>}
                         <div className="table-cell">Outlet</div>
                         <div className="table-cell">Appliance</div>
-                        <div className="table-cell">Power Limit (Wh)</div>
-                        <div className="table-cell">Total Power Usage (Wh)</div>
+                        <div className="table-cell">Power Limit (W)</div>
+                        <div className="table-cell">Total Power Usage (W)</div>
                         <div className="table-cell">Total No. of Hours (hrs)</div>
                         <div className="table-cell">Monthly Cost (PHP)</div>
                         {selectedReportType !== 'Outlets' && <div className="table-cell">Share of Total (%)</div>}
@@ -3238,6 +3353,12 @@ export default function Reports() {
                     </div>
                   </div>
 
+                {previewPowerUsageText && (
+                  <div className="pdf-preview-paragraph">
+                    <p>{previewPowerUsageText}</p>
+                  </div>
+                )}
+
                   {/* II. Power Saving Recommendation Preview */}
                   <div className="pdf-preview-table">
                     <h3>II. Power Saving Recommendation</h3>
@@ -3245,9 +3366,9 @@ export default function Reports() {
                       <div className="table-header">
                         <div className="table-cell">Outlet</div>
                         <div className="table-cell">Appliance</div>
-                        <div className="table-cell">Avg. Daily Power Usage (Wh)</div>
+                        <div className="table-cell">Avg. Daily Power Usage (W)</div>
                         <div className="table-cell">Power Limit</div>
-                        <div className="table-cell">Total Power Usage (Wh)</div>
+                        <div className="table-cell">Total Power Usage (W)</div>
                         <div className="table-cell">Recommended Power Limit</div>
                       </div>
                       {previewData?.deviceTableData?.slice(0, 3).map((device: any, index: number) => {
@@ -3275,6 +3396,12 @@ export default function Reports() {
                       )}
                     </div>
                   </div>
+
+                {previewPowerSavingText && (
+                  <div className="pdf-preview-paragraph">
+                    <p>{previewPowerSavingText}</p>
+                  </div>
+                )}
                 </div>
 
                 <div className="preview-actions">
@@ -3302,4 +3429,3 @@ export default function Reports() {
     </div>
   )
 }
-
