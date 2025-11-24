@@ -353,12 +353,53 @@ export default function Reports() {
   // Format date for display
   const formatDate = (dateString: string) => {
     if (!dateString) return ''
-    const date = new Date(dateString)
-    return date.toLocaleDateString('en-US', { 
-      year: 'numeric', 
-      month: 'long', 
-      day: 'numeric' 
-    })
+    try {
+      const date = new Date(dateString)
+      if (isNaN(date.getTime())) return ''
+      return date.toLocaleDateString('en-US', { 
+        year: 'numeric', 
+        month: 'long', 
+        day: 'numeric' 
+      })
+    } catch (error) {
+      console.error('Error formatting date:', error)
+      return ''
+    }
+  }
+
+  // Format date range - if same month, use "November 1-30, 2025" format
+  const formatDateRange = (startDateString: string, endDateString: string) => {
+    if (!startDateString || !endDateString) return ''
+    try {
+      const startDate = new Date(startDateString)
+      const endDate = new Date(endDateString)
+      
+      // Check if dates are valid
+      if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+        return `${formatDate(startDateString)} to ${formatDate(endDateString)}`
+      }
+      
+      // Check if same month and year
+      const startMonth = startDate.getMonth()
+      const startYear = startDate.getFullYear()
+      const endMonth = endDate.getMonth()
+      const endYear = endDate.getFullYear()
+      
+      if (startMonth === endMonth && startYear === endYear) {
+        // Same month: "November 1-30, 2025"
+        const monthName = startDate.toLocaleDateString('en-US', { month: 'long' })
+        const startDay = startDate.getDate()
+        const endDay = endDate.getDate()
+        return `${monthName} ${startDay}-${endDay}, ${startYear}`
+      } else {
+        // Different months: "November 1, 2025 to November 30, 2025"
+        return `${formatDate(startDateString)} to ${formatDate(endDateString)}`
+      }
+    } catch (error) {
+      console.error('Error formatting date range:', error)
+      // Fallback to original format on error
+      return `${formatDate(startDateString)} to ${formatDate(endDateString)}`
+    }
   }
 
   // Handle date range confirmation and show preview
@@ -834,17 +875,8 @@ export default function Reports() {
 
       // Add report details with real data
       if (startDate && endDate) {
-        const startDateFormatted = new Date(startDate).toLocaleDateString('en-US', { 
-          year: 'numeric', 
-          month: 'long', 
-          day: 'numeric' 
-        })
-        const endDateFormatted = new Date(endDate).toLocaleDateString('en-US', { 
-          year: 'numeric', 
-          month: 'long', 
-          day: 'numeric' 
-        })
-        addText(`Date Range: ${startDateFormatted} to ${endDateFormatted}`, 20, yPosition, { fontSize: 12 })
+        const dateRangeFormatted = formatDateRange(startDate, endDate)
+        addText(`Date Range: ${dateRangeFormatted}`, 20, yPosition, { fontSize: 12 })
       } else {
         addText(`Date: ${currentDate}`, 20, yPosition, { fontSize: 12 })
       }
@@ -3277,7 +3309,7 @@ export default function Reports() {
                     <div className="pdf-preview-separator"></div>
                     
                     <div className="pdf-preview-details" style={{ fontSize: '12px', lineHeight: '1.8' }}>
-                      <p><strong>Date Range:</strong> {formatDate(selectedStartDate)} to {formatDate(selectedEndDate)}</p>
+                      <p><strong>Date Range:</strong> {formatDateRange(selectedStartDate, selectedEndDate)}</p>
                       {selectedPdfDepartment !== 'All Departments' && (
                         <p><strong>Department:</strong> {selectedPdfDepartment}</p>
                       )}

@@ -3848,12 +3848,53 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
   // Format date for display
   const formatDate = (dateString: string) => {
     if (!dateString) return ''
-    const date = new Date(dateString)
-    return date.toLocaleDateString('en-US', { 
-      year: 'numeric', 
-      month: 'long', 
-      day: 'numeric' 
-    })
+    try {
+      const date = new Date(dateString)
+      if (isNaN(date.getTime())) return ''
+      return date.toLocaleDateString('en-US', { 
+        year: 'numeric', 
+        month: 'long', 
+        day: 'numeric' 
+      })
+    } catch (error) {
+      console.error('Error formatting date:', error)
+      return ''
+    }
+  }
+
+  // Format date range - if same month, use "November 1-30, 2025" format
+  const formatDateRange = (startDateString: string, endDateString: string) => {
+    if (!startDateString || !endDateString) return ''
+    try {
+      const startDate = new Date(startDateString)
+      const endDate = new Date(endDateString)
+      
+      // Check if dates are valid
+      if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+        return `${formatDate(startDateString)} to ${formatDate(endDateString)}`
+      }
+      
+      // Check if same month and year
+      const startMonth = startDate.getMonth()
+      const startYear = startDate.getFullYear()
+      const endMonth = endDate.getMonth()
+      const endYear = endDate.getFullYear()
+      
+      if (startMonth === endMonth && startYear === endYear) {
+        // Same month: "November 1-30, 2025"
+        const monthName = startDate.toLocaleDateString('en-US', { month: 'long' })
+        const startDay = startDate.getDate()
+        const endDay = endDate.getDate()
+        return `${monthName} ${startDay}-${endDay}, ${startYear}`
+      } else {
+        // Different months: "November 1, 2025 to November 30, 2025"
+        return `${formatDate(startDateString)} to ${formatDate(endDateString)}`
+      }
+    } catch (error) {
+      console.error('Error formatting date range:', error)
+      // Fallback to original format on error
+      return `${formatDate(startDateString)} to ${formatDate(endDateString)}`
+    }
   }
 
   // Handle date range confirmation
@@ -4081,7 +4122,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     }
 
     // Report title
-    addText('Top Consumption Summary Report', pageWidth / 2, yPosition, { fontSize: 16, bold: true, align: 'center' })
+    addText('Consumption Summary Report', pageWidth / 2, yPosition, { fontSize: 16, bold: true, align: 'center' })
     yPosition += 20
 
     // Add a separator line
@@ -4089,7 +4130,8 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     yPosition += 15
 
     // Report details
-    addText(`Date Range: ${formatDate(selectedStartDate)} to ${formatDate(selectedEndDate)}`, 20, yPosition, { fontSize: 12 })
+    const dateRangeFormatted = formatDateRange(selectedStartDate, selectedEndDate)
+    addText(`Date Range: ${dateRangeFormatted}`, 20, yPosition, { fontSize: 12 })
     yPosition += 7
 
     if (selectedReportDepartment !== 'All Departments') {
@@ -5757,11 +5799,11 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                         }} 
                       />
                     </div>
-                    <h2 style={{ textAlign: 'center', marginTop: '16px' }}>Top Consumption Summary Report</h2>
+                    <h2 style={{ textAlign: 'center', marginTop: '16px' }}>Consumption Summary Report</h2>
                     <div className="dashboard-pdf-preview-separator"></div>
                     
                     <div className="dashboard-pdf-preview-details" style={{ fontSize: '12px', lineHeight: '1.8' }}>
-                      <p><strong>Date Range:</strong> {formatDate(selectedStartDate)} to {formatDate(selectedEndDate)}</p>
+                      <p><strong>Date Range:</strong> {formatDateRange(selectedStartDate, selectedEndDate)}</p>
                       {selectedReportDepartment !== 'All Departments' && (
                         <p><strong>Department:</strong> {selectedReportDepartment}</p>
                       )}
