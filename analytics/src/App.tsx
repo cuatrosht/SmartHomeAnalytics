@@ -102,25 +102,21 @@ function App() {
       
       // Calculate sidebar width based on screen size
       if (width <= 320) {
-        setSidebarWidth(220)
+        setSidebarWidth(180)
       } else if (width <= 360) {
-        setSidebarWidth(240)
+        setSidebarWidth(200)
       } else if (width <= 480) {
-        setSidebarWidth(260)
+        setSidebarWidth(220)
       } else if (width <= 768) {
-        setSidebarWidth(280)
+        setSidebarWidth(240)
       } else if (width <= 1024) {
         setSidebarWidth(240)
       } else {
         setSidebarWidth(260)
       }
       
-      // On desktop, always show sidebar. On mobile, hide by default
-      if (!mobile) {
-        setSidebarOpen(true)
-      } else {
-        setSidebarOpen(false)
-      }
+      // Always show sidebar on all screen sizes
+      setSidebarOpen(true)
     }
 
     // Set initial state
@@ -690,9 +686,7 @@ function App() {
     const checkMobile = () => {
       const mobile = window.innerWidth <= 768
       setIsMobile(mobile)
-      if (!mobile) {
-        setSidebarOpen(false)
-      }
+      // Sidebar always stays open on all screen sizes
     }
 
     checkMobile()
@@ -2156,35 +2150,9 @@ function App() {
         padding:16, 
         position:'relative', 
         paddingTop:80, 
-        marginLeft: isMobile ? 0 : `${sidebarWidth}px`,
+        marginLeft: `${sidebarWidth}px`, // Always account for sidebar on all screen sizes
         transition: 'margin-left 0.3s ease'
       }}>
-        {/* Mobile menu toggle button */}
-        {isMobile && (
-          <button
-            onClick={() => setSidebarOpen(!sidebarOpen)}
-            style={{
-              position: 'absolute',
-              top: 24,
-              left: 24,
-              zIndex: 1001,
-              background: '#052f66',
-              border: 'none',
-              borderRadius: '8px',
-              padding: '8px',
-              color: 'white',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center'
-            }}
-            aria-label="Toggle menu"
-          >
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M3 12h18M3 6h18M3 18h18" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-            </svg>
-          </button>
-        )}
         
         <div style={{
           position:'absolute', 

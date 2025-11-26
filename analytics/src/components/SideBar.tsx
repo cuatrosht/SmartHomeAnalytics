@@ -73,9 +73,6 @@ export default function SideBar({ onLogout, onNavigate, isOpen = true, onToggle,
     console.log('SideBar: Calling onLogout callback...')
     onLogout?.()
     setShowLogoutModal(false)
-    if (window.innerWidth <= 768) {
-      onToggle?.()
-    }
     console.log('SideBar: Logout process completed')
   }
 
@@ -88,10 +85,6 @@ export default function SideBar({ onLogout, onNavigate, isOpen = true, onToggle,
       className={`sb-item ${activeView === k ? 'active' : ''}`}
       onClick={() => { 
         onNavigate?.(k);
-        // Close sidebar on mobile after navigation
-        if (window.innerWidth <= 768) {
-          onToggle?.();
-        }
       }}
       aria-current={activeView === k ? 'page' : undefined}
     >
@@ -102,23 +95,6 @@ export default function SideBar({ onLogout, onNavigate, isOpen = true, onToggle,
 
   return (
     <>
-      {/* Mobile overlay */}
-      {isOpen && window.innerWidth <= 768 && (
-        <div 
-          className="sidebar-overlay" 
-          onClick={onToggle}
-          style={{
-            position: 'fixed',
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            background: 'rgba(0,0,0,0.5)',
-            zIndex: 999
-          }}
-        />
-      )}
-      
       <aside className={`sidebar ${isOpen ? 'open' : ''}`} aria-label="Primary">
         <div className="sb-header">
           <span className="sb-brand-icon" aria-hidden="true">
