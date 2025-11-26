@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { createUserWithEmailAndPassword, signInWithPopup, GoogleAuthProvider, updateProfile } from 'firebase/auth'
+import { createUserWithEmailAndPassword, signInWithPopup, GoogleAuthProvider, updateProfile, signOut } from 'firebase/auth'
 import { ref, set, get } from 'firebase/database'
 import { auth, realtimeDb } from '../firebase/config'
 import { logUserActionToUserLogs } from '../utils/userLogging'
@@ -305,6 +305,83 @@ export default function SignUp({ onSuccess, onNavigateToLogin }: SignUpProps) {
           throw new Error('Google authentication failed - no user returned')
         }
 
+        // IMPORTANT: Check if user already exists in database before creating account
+        // Check both by UID (in case they signed up with Google before) and by email (in case they signed up with email/password)
+        try {
+          // Check by UID first
+          const existingUserRef = ref(realtimeDb, `users/${user.uid}`)
+          const existingUserSnapshot = await get(existingUserRef)
+          
+          if (existingUserSnapshot.exists()) {
+            // User already exists - show error first, then sign out
+            console.log('User already exists in database (by UID), preventing duplicate account creation')
+            setLoading(false)
+            // Show error modal immediately (synchronously)
+            openModal('error', 'Account Already Exists', `An account with the email ${user.email || 'this email'} already exists. Please sign in instead of creating a new account.`)
+            // Use requestAnimationFrame to ensure modal renders, then sign out after additional delay
+            requestAnimationFrame(() => {
+              setTimeout(async () => {
+                try {
+                  await signOut(auth)
+                } catch (signOutError) {
+                  console.error('Error signing out:', signOutError)
+                }
+              }, 500)
+            })
+            return
+          }
+          
+          // Also check by email in case user signed up with email/password first
+          if (user.email) {
+            const usersRef = ref(realtimeDb, 'users')
+            const allUsersSnapshot = await get(usersRef)
+            
+            if (allUsersSnapshot.exists()) {
+              const allUsers = allUsersSnapshot.val()
+              // Check if any user has this email
+              const userWithEmail = Object.values(allUsers).find((u: any) => 
+                u.email && u.email.toLowerCase() === user.email?.toLowerCase()
+              )
+              
+              if (userWithEmail) {
+                // User with this email already exists - show error first, then sign out
+                console.log('User already exists in database (by email), preventing duplicate account creation')
+                setLoading(false)
+                // Show error modal immediately (synchronously)
+                openModal('error', 'Account Already Exists', `An account with the email ${user.email || 'this email'} already exists. Please sign in instead of creating a new account.`)
+                // Use requestAnimationFrame to ensure modal renders, then sign out after additional delay
+                requestAnimationFrame(() => {
+                  setTimeout(async () => {
+                    try {
+                      await signOut(auth)
+                    } catch (signOutError) {
+                      console.error('Error signing out:', signOutError)
+                    }
+                  }, 500)
+                })
+                return
+              }
+            }
+          }
+        } catch (checkError) {
+          console.error('Error checking for existing user:', checkError)
+          // If check fails, show error first, then sign out
+          setLoading(false)
+          // Show error modal immediately (synchronously)
+          openModal('error', 'Account Check Failed', 'Unable to verify account status. Please try again or sign in if you already have an account.')
+          // Use requestAnimationFrame to ensure modal renders, then sign out after additional delay
+          requestAnimationFrame(() => {
+            setTimeout(async () => {
+              try {
+                await signOut(auth)
+              } catch (signOutError) {
+                console.error('Error signing out:', signOutError)
+              }
+            }, 500)
+          })
+          return
+        }
+
         // Safe display name extraction
         let displayName = 'Google User'
         let firstName = ''
@@ -348,6 +425,8 @@ export default function SignUp({ onSuccess, onNavigateToLogin }: SignUpProps) {
           await set(ref(realtimeDb, `users/${user.uid}`), userData)
         } catch (dbError) {
           console.error('Error saving user data:', dbError)
+          // Sign out if database save fails
+          await signOut(auth)
           throw new Error('Failed to save user data to database')
         }
         
