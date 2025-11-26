@@ -654,21 +654,7 @@
   max-width: 520px;
   width: 90%;
   max-height: 90vh;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.edit-schedule-modal .modal-body {
   overflow-y: auto;
-  flex: 1;
-  min-height: 0;
-  -webkit-overflow-scrolling: touch;
-}
-
-.edit-schedule-modal .modal-footer {
-  flex-shrink: 0;
-  position: relative;
 }
 
 .device-info {
@@ -1313,37 +1299,12 @@
     margin: 20px;
     max-width: calc(100vw - 40px);
     border-radius: 12px;
-    display: flex;
-    flex-direction: column;
-    max-height: 90vh;
-    overflow: hidden;
   }
 
   .edit-schedule-modal {
     max-width: calc(100vw - 40px);
     width: 95%;
     margin: 20px;
-    display: flex;
-    flex-direction: column;
-    max-height: 90vh;
-    overflow: hidden;
-  }
-  
-  .edit-schedule-modal .modal-body {
-    overflow-y: auto;
-    flex: 1;
-    min-height: 0;
-    -webkit-overflow-scrolling: touch;
-  }
-  
-  .edit-schedule-modal .modal-footer {
-    flex-shrink: 0;
-    position: sticky;
-    bottom: 0;
-    background: #fafafa;
-    z-index: 10;
-    border-top: 1px solid #e5e7eb;
-    box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.05);
   }
 
   /* Edit Schedule Modal Tablet Responsive */
@@ -1371,12 +1332,6 @@
   
   .modal-footer {
     padding: 14px 20px 18px 20px;
-    position: sticky;
-    bottom: 0;
-    background: #fafafa;
-    z-index: 10;
-    border-top: 1px solid #e5e7eb;
-    box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.05);
   }
 
   .time-section {
@@ -1480,40 +1435,6 @@
     width: 98%;
     margin: 10px;
     max-height: 95vh;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
-  
-  .edit-schedule-modal .modal-body {
-    padding: 16px;
-    overflow-y: auto;
-    flex: 1;
-    min-height: 0;
-    -webkit-overflow-scrolling: touch;
-  }
-  
-  .edit-schedule-modal .modal-footer {
-    flex-shrink: 0;
-    position: sticky;
-    bottom: 0;
-    background: #fafafa;
-    z-index: 10;
-    border-top: 1px solid #e5e7eb;
-    box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.05);
-    padding: 12px 16px;
-    display: flex;
-    gap: 10px;
-    justify-content: flex-end;
-  }
-  
-  .edit-schedule-modal .btn-primary,
-  .edit-schedule-modal .btn-secondary {
-    min-width: 80px;
-    padding: 10px 16px;
-    font-size: 14px;
-    height: 40px;
-    flex-shrink: 0;
   }
   
   .modal-body {
@@ -1647,21 +1568,7 @@
 .outlet-selection-modal {
   max-width: 800px;
   max-height: 90vh;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.outlet-selection-modal .modal-body {
   overflow-y: auto;
-  flex: 1;
-  min-height: 0;
-  -webkit-overflow-scrolling: touch;
-}
-
-.outlet-selection-modal .modal-footer {
-  flex-shrink: 0;
-  position: relative;
 }
 
 .outlet-selection {
@@ -2130,49 +2037,6 @@
     padding: 10px 20px;
     font-size: 13px;
     height: 40px;
-  }
-  
-  /* Ensure modal footer is always visible on very small screens */
-  .edit-schedule-modal {
-    max-height: 100vh;
-  }
-  
-  .edit-schedule-modal .modal-footer {
-    padding: 10px 12px;
-    gap: 8px;
-  }
-  
-  .edit-schedule-modal .btn-primary,
-  .edit-schedule-modal .btn-secondary {
-    min-width: 70px;
-    padding: 8px 14px;
-    font-size: 13px;
-    height: 38px;
-  }
-}
-
-/* Extra small mobile devices */
-@media (max-width: 360px) {
-  .edit-schedule-modal {
-    max-height: 100vh;
-    margin: 5px;
-    width: calc(100vw - 10px);
-    max-width: calc(100vw - 10px);
-  }
-  
-  .edit-schedule-modal .modal-footer {
-    padding: 8px 10px;
-    gap: 6px;
-    flex-wrap: wrap;
-  }
-  
-  .edit-schedule-modal .btn-primary,
-  .edit-schedule-modal .btn-secondary {
-    flex: 1;
-    min-width: calc(50% - 3px);
-    padding: 8px 12px;
-    font-size: 12px;
-    height: 36px;
   }
 }
 

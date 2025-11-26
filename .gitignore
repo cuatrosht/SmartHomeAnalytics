@@ -81,6 +81,8 @@ dist
 
 # Gatsby files
 .cache/
+# Note: analytics/public is needed for Vite static assets
+!analytics/public/
 public
 
 # Storybook build outputs
@@ -170,6 +172,8 @@ dist
 
 # Gatsby files
 .cache/
+# Note: analytics/public is needed for Vite static assets
+!analytics/public/
 public
 
 # Storybook build outputs
