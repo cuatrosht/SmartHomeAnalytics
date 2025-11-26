@@ -73,7 +73,6 @@ function App() {
   })
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [isMobile, setIsMobile] = useState(false)
-  const [sidebarWidth, setSidebarWidth] = useState(260) // Default sidebar width
   const [showNotificationModal, setShowNotificationModal] = useState(false)
   const [notifications, setNotifications] = useState<Array<{
     id: string
@@ -100,22 +99,8 @@ function App() {
       const mobile = width <= 768
       setIsMobile(mobile)
       
-      // Calculate sidebar width based on screen size
-      if (width <= 320) {
-        setSidebarWidth(180)
-      } else if (width <= 360) {
-        setSidebarWidth(200)
-      } else if (width <= 480) {
-        setSidebarWidth(220)
-      } else if (width <= 768) {
-        setSidebarWidth(240)
-      } else if (width <= 1024) {
-        setSidebarWidth(240)
-      } else {
-        setSidebarWidth(260)
-      }
-      
       // Always show sidebar on all screen sizes
+      // Sidebar width is now controlled by CSS media queries based on viewport width
       setSidebarOpen(true)
     }
 
@@ -2145,13 +2130,11 @@ function App() {
         })()}
         userRole={userRole}
       />
-      <main style={{
+      <main className="main-content" style={{
         flex:1, 
         padding:16, 
         position:'relative', 
-        paddingTop:80, 
-        marginLeft: `${sidebarWidth}px`, // Always account for sidebar on all screen sizes
-        transition: 'margin-left 0.3s ease'
+        paddingTop:80
       }}>
         
         <div style={{

@@ -4,6 +4,19 @@
 	padding: 0;
 }
 
+/* Main content area - responsive margin based on sidebar width */
+.main-content {
+	margin-left: var(--sidebar-width, 260px);
+	transition: margin-left 0.3s ease;
+}
+
+/* On mobile, sidebar is hidden by default, so no margin needed */
+@media (max-width: 768px) {
+	.main-content {
+		margin-left: 0;
+	}
+}
+
 /* Pulse animation for real-time indicator */
 @keyframes pulse {
 	0% {
