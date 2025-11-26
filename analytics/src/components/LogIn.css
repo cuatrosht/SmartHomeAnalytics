@@ -20,11 +20,14 @@
   align-items: center;
   justify-content: center;
   min-height: 100vh;
+  height: 100vh;
+  max-height: 100vh;
   background: linear-gradient(135deg, var(--bg-start), var(--bg-end));
   position: relative;
   padding: 16px;
   box-sizing: border-box;
   overflow-y: auto;
+  overflow-x: hidden;
  }
 
 /* Decorative dotted grid */
@@ -48,6 +51,8 @@
   padding: 24px;
   margin: 20px auto;
   min-height: auto;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 @media (min-width: 420px) {
@@ -68,13 +73,14 @@
   background: #f3f6ff;
   display: grid; place-items: center;
   box-shadow: var(--shadow-md);
+  flex-shrink: 0;
 }
 .brand-logo-svg { width: 36px; height: 36px; display: block; }
 .brand-text { display: grid; }
 .brand-name { font-weight: 800; color: var(--text); letter-spacing: 0.5px; }
 .brand-sub { font-size: 12px; color: var(--muted); letter-spacing: 1.2px; }
-.welcome { margin: 10px 0 4px; font-size: 28px; color: var(--text); }
-.subtitle { margin: 0; color: var(--muted); font-size: 14px; }
+.welcome { margin: 10px 0 4px; font-size: 28px; color: var(--text); line-height: 1.2; }
+.subtitle { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.3; }
 
 /* Form */
 .form { margin-top: 18px; display: grid; gap: 14px; }
@@ -231,16 +237,23 @@
 @media (max-width: 768px) {
   .login-page {
     padding: 12px;
-    align-items: center;
+    align-items: flex-start;
     min-height: 100vh;
+    height: 100vh;
+    max-height: 100vh;
+    padding-top: 20px;
+    padding-bottom: 20px;
   }
   
   .login-card {
-    padding: 24px;
+    padding: 20px;
     border-radius: 14px;
     max-width: 100%;
     width: 100%;
-    margin: 0 auto 20px auto;
+    margin: 0 auto;
+    max-height: calc(100vh - 40px);
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
   }
   
   .brand {
@@ -302,12 +315,18 @@
 @media (max-width: 480px) {
   .login-page {
     padding: 8px;
+    padding-top: 16px;
+    padding-bottom: 16px;
+    align-items: flex-start;
   }
   
   .login-card {
-    padding: 20px;
+    padding: 18px;
     border-radius: 12px;
-    margin: 0 auto 16px auto;
+    margin: 0 auto;
+    max-height: calc(100vh - 32px);
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
   }
   
   .brand {
@@ -373,16 +392,23 @@
 @media (max-width: 360px) {
   .login-page {
     padding: 6px;
+    padding-top: 12px;
+    padding-bottom: 12px;
+    align-items: flex-start;
   }
   
   .login-card {
-    padding: 16px;
+    padding: 14px;
     border-radius: 10px;
-    margin: 0 auto 12px auto;
+    margin: 0 auto;
+    max-height: calc(100vh - 24px);
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
   }
   
   .brand {
     gap: 8px;
+    margin-bottom: 6px;
   }
   
   .brand-logo {
@@ -397,10 +423,14 @@
   
   .welcome {
     font-size: 20px;
+    margin: 8px 0 4px;
+    line-height: 1.2;
   }
   
   .subtitle {
     font-size: 12px;
+    margin: 0;
+    line-height: 1.3;
   }
   
   .brand-name {
@@ -413,6 +443,12 @@
   
   .form {
     gap: 10px;
+    margin-top: 14px;
+  }
+  
+  .login-footer {
+    margin-top: 8px;
+    font-size: 12px;
   }
   
   .input-wrapper {
@@ -456,24 +492,37 @@
 @media (max-width: 320px) {
   .login-page {
     padding: 4px;
+    padding-top: 8px;
+    padding-bottom: 8px;
+    align-items: flex-start;
   }
   
   .login-card {
     padding: 12px;
     border-radius: 8px;
-    margin: 0 auto 8px auto;
+    margin: 0 auto;
+    max-height: calc(100vh - 16px);
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
   }
   
   .welcome {
     font-size: 18px;
+    margin: 8px 0 4px;
   }
   
   .subtitle {
     font-size: 11px;
+    margin: 0;
   }
   
   .form {
     gap: 8px;
+    margin-top: 12px;
+  }
+  
+  .input-wrapper {
+    grid-template-columns: 30px 1fr 30px;
   }
   
   .input-wrapper input {
@@ -485,6 +534,29 @@
   .oauth-btn {
     padding: 8px 10px;
     font-size: 12px;
+  }
+  
+  .login-footer {
+    margin-top: 8px;
+    font-size: 12px;
+  }
+  
+  .brand-logo {
+    width: 40px;
+    height: 40px;
+  }
+  
+  .brand-logo-svg {
+    width: 24px;
+    height: 24px;
+  }
+  
+  .brand-name {
+    font-size: 13px;
+  }
+  
+  .brand-sub {
+    font-size: 10px;
   }
   
   .modal-card {

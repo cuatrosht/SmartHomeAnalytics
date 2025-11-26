@@ -1,28 +1,79 @@
 import './App.css'
-import { useMemo, useState, useEffect } from 'react'
+import { useMemo, useState, useEffect, useRef } from 'react'
 import { signOut, onAuthStateChanged } from 'firebase/auth'
 import { ref, onValue, off, get, update } from 'firebase/database'
 import { auth, realtimeDb } from './firebase/config'
 import LogIn from './components/LogIn'
 import SignUp from './components/SignUp'
-import SideBar from './components/SideBar'
+import SideBar, { type SidebarItemKey } from './components/SideBar'
 import Dashboard from './components/Dashboard'
 import SetUp from './components/SetUp'
 import Schedule from './components/Schedule'
 import Reports from './components/Reports'
 import UserManagment from './components/UserManagment'
-// Logs view removed
 import ActiveDevice from './components/ActiveDevice'
 import ErrorBoundary from './components/ErrorBoundary'
 
 function App() {
   const [isAuthed, setIsAuthed] = useState(false)
+  const [isCheckingAuth, setIsCheckingAuth] = useState(true) // Add loading state to prevent flash
   const [userName, setUserName] = useState('User')
   const [userRole, setUserRole] = useState<'Coordinator' | 'admin'>('Coordinator')
   const [authView, setAuthView] = useState<'login' | 'signup'>('login')
-  const [activeView, setActiveView] = useState<'dashboard' | 'setup' | 'schedule' | 'activeDevice' | 'reports' | 'users' | 'userLogs' | 'deviceLogs' | 'offices'>('dashboard')
+  
+  // Safe helper function to validate activeView values
+  const isValidActiveView = (value: string | null): value is 'dashboard' | 'setup' | 'schedule' | 'activeDevice' | 'reports' | 'users' | 'userLogs' | 'deviceLogs' | 'offices' => {
+    const validViews: Array<'dashboard' | 'setup' | 'schedule' | 'activeDevice' | 'reports' | 'users' | 'userLogs' | 'deviceLogs' | 'offices'> = [
+      'dashboard', 'setup', 'schedule', 'activeDevice', 'reports', 'users', 'userLogs', 'deviceLogs', 'offices'
+    ]
+    return value !== null && typeof value === 'string' && validViews.includes(value as any)
+  }
+
+  // Safe helper function to get activeView from localStorage
+  const getActiveViewFromStorage = (): 'dashboard' | 'setup' | 'schedule' | 'activeDevice' | 'reports' | 'users' | 'userLogs' | 'deviceLogs' | 'offices' => {
+    try {
+      const savedView = localStorage.getItem('activeView')
+      if (savedView && isValidActiveView(savedView)) {
+        return savedView
+      }
+    } catch (error) {
+      // localStorage might be disabled or unavailable (e.g., in private browsing)
+      console.warn('Could not read activeView from localStorage:', error)
+    }
+    return 'dashboard' // Safe default
+  }
+
+  // Safe helper function to save activeView to localStorage
+  const saveActiveViewToStorage = (view: 'dashboard' | 'setup' | 'schedule' | 'activeDevice' | 'reports' | 'users' | 'userLogs' | 'deviceLogs' | 'offices'): void => {
+    try {
+      if (isValidActiveView(view)) {
+        localStorage.setItem('activeView', view)
+      }
+    } catch (error) {
+      // localStorage might be disabled, full, or unavailable
+      console.warn('Could not save activeView to localStorage:', error)
+      // Don't throw - this is not critical functionality
+    }
+  }
+
+  // Safe helper function to clear activeView from localStorage (for logout)
+  const clearActiveViewFromStorage = (): void => {
+    try {
+      localStorage.removeItem('activeView')
+    } catch (error) {
+      // localStorage might be disabled or unavailable
+      console.warn('Could not clear activeView from localStorage:', error)
+      // Don't throw - this is not critical functionality
+    }
+  }
+
+  // Initialize activeView from localStorage if available, otherwise default to 'dashboard'
+  const [activeView, setActiveView] = useState<'dashboard' | 'setup' | 'schedule' | 'activeDevice' | 'reports' | 'users' | 'userLogs' | 'deviceLogs' | 'offices'>(() => {
+    return getActiveViewFromStorage()
+  })
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [isMobile, setIsMobile] = useState(false)
+  const [sidebarWidth, setSidebarWidth] = useState(260) // Default sidebar width
   const [showNotificationModal, setShowNotificationModal] = useState(false)
   const [notifications, setNotifications] = useState<Array<{
     id: string
@@ -36,11 +87,34 @@ function App() {
     deviceId?: string
   }>>([])
   
-  // Handle sidebar state based on screen size
+  // Persist activeView to localStorage whenever it changes (only when authenticated)
+  useEffect(() => {
+    if (isAuthed && isValidActiveView(activeView)) {
+      saveActiveViewToStorage(activeView)
+    }
+  }, [activeView, isAuthed])
+
   useEffect(() => {
     const handleResize = () => {
-      const mobile = window.innerWidth <= 768
+      const width = window.innerWidth
+      const mobile = width <= 768
       setIsMobile(mobile)
+      
+      // Calculate sidebar width based on screen size
+      if (width <= 320) {
+        setSidebarWidth(220)
+      } else if (width <= 360) {
+        setSidebarWidth(240)
+      } else if (width <= 480) {
+        setSidebarWidth(260)
+      } else if (width <= 768) {
+        setSidebarWidth(280)
+      } else if (width <= 1024) {
+        setSidebarWidth(240)
+      } else {
+        setSidebarWidth(260)
+      }
+      
       // On desktop, always show sidebar. On mobile, hide by default
       if (!mobile) {
         setSidebarOpen(true)
@@ -626,11 +700,20 @@ function App() {
     return () => window.removeEventListener('resize', checkMobile)
   }, [])
 
+  // Use refs to track auth state without causing re-renders
+  const isAuthedRef = useRef(isAuthed)
+  const isRestoringSessionRef = useRef(false)
+
+  // Update ref when isAuthed changes
+  useEffect(() => {
+    isAuthedRef.current = isAuthed
+  }, [isAuthed])
+
   // Firebase authentication state listener
   useEffect(() => {
     console.log('Setting up Firebase auth state listener...')
     
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
       console.log('Firebase auth state changed:', user ? 'User logged in' : 'User logged out')
       console.log('User details:', user ? {
         uid: user.uid,
@@ -639,13 +722,110 @@ function App() {
       } : 'No user')
       
       // If user is null and we think we're authenticated, there's a mismatch
-      if (!user && isAuthed) {
+      if (!user && isAuthedRef.current) {
         console.log('⚠️ Firebase says user is logged out but local state says authenticated - syncing...')
         setIsAuthed(false)
         setAuthView('login')
         setUserName('User')
         setUserRole('Coordinator')
         setActiveView('dashboard')
+        // Clear localStorage for security
+        clearActiveViewFromStorage()
+        isRestoringSessionRef.current = false
+        setIsCheckingAuth(false) // Auth check complete
+        return
+      }
+      
+      // If user exists but we're not authenticated locally, restore session (e.g., on page refresh)
+      if (user && !isAuthedRef.current && !isRestoringSessionRef.current) {
+        console.log('🔄 User is authenticated in Firebase but not locally - restoring session...')
+        isRestoringSessionRef.current = true
+        
+        try {
+          // Fetch user data from Realtime Database
+          const userRef = ref(realtimeDb, `users/${user.uid}`)
+          const userSnapshot = await get(userRef)
+          
+          if (userSnapshot.exists()) {
+            const userData = userSnapshot.val()
+            const displayName = userData.displayName || userData.firstName || userData.email || user.displayName || 'User'
+            const userRole = userData.role || 'Coordinator'
+            const isVerified = userData.verified === true
+            const verificationStatus = userData.verificationStatus || (isVerified ? 'verified' : 'pending')
+            
+            console.log('User data from database:', { displayName, userRole, isVerified, verificationStatus })
+            
+            // Check verification status
+            if (verificationStatus === 'rejected') {
+              console.log('⚠️ Account rejected - signing out')
+              await signOut(auth)
+              setIsAuthed(false)
+              setAuthView('login')
+              setActiveView('dashboard')
+              // Clear localStorage for security
+              clearActiveViewFromStorage()
+              isRestoringSessionRef.current = false
+              setIsCheckingAuth(false) // Auth check complete
+              return
+            }
+            
+            // Check if user is verified (admin can bypass pending status)
+            if (userRole !== 'admin') {
+              if (!isVerified && verificationStatus !== 'verified') {
+                console.log('⚠️ Account not verified - signing out')
+                await signOut(auth)
+                setIsAuthed(false)
+                setAuthView('login')
+                setActiveView('dashboard')
+                // Clear localStorage for security
+                clearActiveViewFromStorage()
+                isRestoringSessionRef.current = false
+                setIsCheckingAuth(false) // Auth check complete
+                return
+              }
+            }
+            
+            // Restore authentication state
+            console.log('✅ Restoring authentication state:', { displayName, userRole })
+            setUserName(displayName)
+            setUserRole(userRole)
+            setIsAuthed(true)
+            setAuthView('login')
+            // Safely restore activeView from localStorage if available
+            const savedView = getActiveViewFromStorage()
+            if (savedView !== 'dashboard') {
+              // Only update if it's different from default to avoid unnecessary re-renders
+              setActiveView(savedView)
+              console.log('✅ Restored activeView from localStorage:', savedView)
+            }
+            isRestoringSessionRef.current = false
+            setIsCheckingAuth(false) // Auth check complete
+          } else {
+            console.log('⚠️ User not found in database - signing out')
+            await signOut(auth)
+            setIsAuthed(false)
+            setAuthView('login')
+            setActiveView('dashboard')
+            // Clear localStorage for security
+            clearActiveViewFromStorage()
+            isRestoringSessionRef.current = false
+            setIsCheckingAuth(false) // Auth check complete
+          }
+        } catch (error) {
+          console.error('Error restoring session:', error)
+          // On error, sign out to be safe
+          await signOut(auth)
+          setIsAuthed(false)
+          setAuthView('login')
+          setActiveView('dashboard')
+          // Clear localStorage for security
+          clearActiveViewFromStorage()
+          isRestoringSessionRef.current = false
+          setIsCheckingAuth(false) // Auth check complete
+        }
+      } else if (!user) {
+        // No user found - auth check complete, show login
+        setIsCheckingAuth(false)
       }
     })
 
@@ -653,7 +833,7 @@ function App() {
       console.log('Cleaning up Firebase auth state listener...')
       unsubscribe()
     }
-  }, [isAuthed])
+  }, []) // Empty dependency array - only run once on mount
 
   // Real-time notification listener with enhanced monitoring
   useEffect(() => {
@@ -1841,6 +2021,41 @@ function App() {
     }
   }, [isAuthed])
 
+  // Show loading screen while checking authentication state to prevent flash
+  if (isCheckingAuth) {
+    return (
+      <div style={{
+        display: 'flex',
+        justifyContent: 'center',
+        alignItems: 'center',
+        minHeight: '100vh',
+        backgroundColor: '#f5f5f5'
+      }}>
+        <div style={{
+          textAlign: 'center',
+          color: '#052f66'
+        }}>
+          <div style={{
+            width: '40px',
+            height: '40px',
+            border: '4px solid #e0e0e0',
+            borderTop: '4px solid #052f66',
+            borderRadius: '50%',
+            animation: 'spin 1s linear infinite',
+            margin: '0 auto 16px'
+          }} />
+          <p style={{ margin: 0, fontSize: '16px' }}>Loading...</p>
+          <style>{`
+            @keyframes spin {
+              0% { transform: rotate(0deg); }
+              100% { transform: rotate(360deg); }
+            }
+          `}</style>
+        </div>
+      </div>
+    )
+  }
+
   if (!isAuthed) {
     if (authView === 'login') {
       return (
@@ -1876,6 +2091,8 @@ function App() {
               setUserName('User')
               setUserRole('Coordinator')
               setActiveView('dashboard')
+              // Clear localStorage for security
+              clearActiveViewFromStorage()
               return
             }
             
@@ -1893,6 +2110,8 @@ function App() {
             setUserName('User')
             setUserRole('Coordinator')
             setActiveView('dashboard')
+            // Clear localStorage for security
+            clearActiveViewFromStorage()
             
             console.log('Logout completed successfully')
           } catch (error: any) {
@@ -1910,12 +2129,26 @@ function App() {
             setUserName('User')
             setUserRole('Coordinator')
             setActiveView('dashboard')
+            // Clear localStorage for security
+            clearActiveViewFromStorage()
           }
         }} 
         onNavigate={(k) => setActiveView(k)}
         isOpen={sidebarOpen}
         onToggle={() => setSidebarOpen(!sidebarOpen)}
-        activeView={activeView === 'userLogs' ? 'users' : activeView === 'offices' ? 'users' : activeView}
+        activeView={(() => {
+          // Map sub-views of User Management to 'users' for SideBar highlighting
+          // This ensures the 'User & Management' menu item stays highlighted
+          // when viewing User Logs, Device Logs, or Offices
+          // Type-safe: All mapped values are valid SidebarItemKey types
+          if (activeView === 'userLogs' || activeView === 'deviceLogs' || activeView === 'offices') {
+            return 'users' as const
+          }
+          // Type assertion is safe because activeView state is already typed correctly
+          // and all other values ('dashboard', 'setup', 'schedule', 'activeDevice', 'reports', 'users')
+          // are valid SidebarItemKey values
+          return activeView as SidebarItemKey
+        })()}
         userRole={userRole}
       />
       <main style={{
@@ -1923,7 +2156,7 @@ function App() {
         padding:16, 
         position:'relative', 
         paddingTop:80, 
-        marginLeft: isMobile ? 0 : '260px',
+        marginLeft: isMobile ? 0 : `${sidebarWidth}px`,
         transition: 'margin-left 0.3s ease'
       }}>
         {/* Mobile menu toggle button */}
