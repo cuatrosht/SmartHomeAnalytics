@@ -733,7 +733,7 @@ const formatOfficeName = (office: string): string => {
     .join(' ')
   
   // Handle specific cases
-  if (formatted.toLowerCase().includes('computer lab')) {
+  if (formatted.toLowerCase().includes('computer lab') && !formatted.toLowerCase().includes('laboratory')) {
     return formatted.replace(/computer lab/i, 'Computer Laboratory')
   }
   
