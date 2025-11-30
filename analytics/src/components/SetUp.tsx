@@ -7722,6 +7722,9 @@ const checkMonthlyLimit = (deviceData: any): boolean => {
                         )
                       } else {
                         // Ensure proper W unit formatting
+                        if (device.limit === "No Limit" || device.limit === "No Limit W") {
+                          return "No Limit"
+                        }
                         return device.limit.includes('W') ? device.limit : device.limit + ' W'
                       }
                     })()}

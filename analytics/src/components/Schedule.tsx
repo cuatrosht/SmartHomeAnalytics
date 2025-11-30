@@ -721,50 +721,72 @@ const isDeviceActiveBySchedule = (schedule: any, controlState: string, deviceDat
 
 // Helper function to format office name
 const formatOfficeName = (office: string): string => {
-  if (!office || office === 'Unassigned') {
-    return 'Unassigned'
+  try {
+    if (!office || office === 'Unassigned') {
+      return 'Unassigned'
+    }
+    
+    // Ensure office is a string to prevent split errors
+    if (typeof office !== 'string') {
+      return String(office) || 'Unassigned'
+    }
+    
+    // Convert kebab-case or snake_case to proper title case
+    const formatted = office
+      .replace(/[-_]/g, ' ') // Replace hyphens and underscores with spaces
+      .split(' ')
+      .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+      .join(' ')
+    
+    // Handle specific cases
+    if (formatted.toLowerCase().includes('computer lab') && !formatted.toLowerCase().includes('laboratory')) {
+      return formatted.replace(/computer lab/i, 'Computer Laboratory')
+    }
+    
+    if (formatted.toLowerCase().includes('deans office')) {
+      return formatted.replace(/deans office/i, "Dean's Office")
+    }
+    
+    return formatted
+  } catch (error) {
+    console.error('Error formatting office name:', error, office)
+    // Return original value or fallback to prevent white screen
+    return typeof office === 'string' ? office : 'Unassigned'
   }
-  
-  // Convert kebab-case or snake_case to proper title case
-  const formatted = office
-    .replace(/[-_]/g, ' ') // Replace hyphens and underscores with spaces
-    .split(' ')
-    .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-    .join(' ')
-  
-  // Handle specific cases
-  if (formatted.toLowerCase().includes('computer lab') && !formatted.toLowerCase().includes('laboratory')) {
-    return formatted.replace(/computer lab/i, 'Computer Laboratory')
-  }
-  
-  if (formatted.toLowerCase().includes('deans office')) {
-    return formatted.replace(/deans office/i, "Dean's Office")
-  }
-  
-  return formatted
 }
 
 // Helper function to format frequency display
 const formatFrequencyDisplay = (frequency: string): string => {
-  if (!frequency) return ''
-  
-  const freq = frequency.toLowerCase()
-  if (freq === 'weekdays') return 'Weekdays'
-  if (freq === 'weekends') return 'Weekends'
-  
-  // Handle custom days format: M,T,W,TH,SAT,SUN
-  const dayMap: { [key: string]: string } = {
-    'monday': 'M',
-    'tuesday': 'T',
-    'wednesday': 'W',
-    'thursday': 'TH',
-    'friday': 'F',
-    'saturday': 'SAT',
-    'sunday': 'SUN'
+  try {
+    if (!frequency) return ''
+    
+    // Ensure frequency is a string to prevent split errors
+    if (typeof frequency !== 'string') {
+      return String(frequency) || ''
+    }
+    
+    const freq = frequency.toLowerCase()
+    if (freq === 'weekdays') return 'Weekdays'
+    if (freq === 'weekends') return 'Weekends'
+    
+    // Handle custom days format: M,T,W,TH,SAT,SUN
+    const dayMap: { [key: string]: string } = {
+      'monday': 'M',
+      'tuesday': 'T',
+      'wednesday': 'W',
+      'thursday': 'TH',
+      'friday': 'F',
+      'saturday': 'SAT',
+      'sunday': 'SUN'
+    }
+    
+    const days = frequency.split(', ').map(day => dayMap[day.toLowerCase()] || day)
+    return days.join(',')
+  } catch (error) {
+    console.error('Error formatting frequency display:', error, frequency)
+    // Return original value or fallback to prevent white screen
+    return typeof frequency === 'string' ? frequency : ''
   }
-  
-  const days = frequency.split(', ').map(day => dayMap[day.toLowerCase()] || day)
-  return days.join(',')
 }
 
 
@@ -991,13 +1013,23 @@ function EditScheduleModal({ isOpen, onClose, device, onSave, onLimitExceeded }:
 
   // Get timezone abbreviation
   const getTimezoneAbbr = () => {
-    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
-    const date = new Date()
-    const timeZoneAbbr = date.toLocaleTimeString('en-US', { 
-      timeZoneName: 'short',
-      timeZone 
-    }).split(' ').pop()
-    return timeZoneAbbr || 'UTC'
+    try {
+      const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
+      const date = new Date()
+      const timeString = date.toLocaleTimeString('en-US', { 
+        timeZoneName: 'short',
+        timeZone 
+      })
+      if (!timeString || typeof timeString !== 'string') {
+        return 'UTC'
+      }
+      const timeZoneAbbr = timeString.split(' ').pop()
+      return timeZoneAbbr || 'UTC'
+    } catch (error) {
+      console.error('Error getting timezone abbreviation:', error)
+      // Return fallback to prevent white screen
+      return 'UTC'
+    }
   }
 
   // Convert 12-hour time to 24-hour for input
@@ -5455,6 +5487,9 @@ export default function Schedule() {
                         )
                       } else {
                         // Ensure proper W unit formatting
+                        if (device.limit === "No Limit" || device.limit === "No Limit W") {
+                          return "No Limit"
+                        }
                         return device.limit.includes('W') ? device.limit : device.limit + ' W'
                       }
                     })()}
