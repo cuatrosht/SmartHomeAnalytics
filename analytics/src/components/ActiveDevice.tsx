@@ -3047,12 +3047,10 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
         main_status: 'ON'
       })
       
-      // Update status to OFF
-      await update(ref(realtimeDb, `devices/${outletKey}`), {
-        status: 'OFF'
-      })
+      // Do NOT update status - keep it as is (status should not be changed during override)
+      // Only main_status is updated to 'ON' for override mode
       
-      console.log(`Successfully overridden schedule and turned OFF ${outletKey} with main_status=ON`)
+      console.log(`Successfully overridden schedule and turned OFF ${outletKey} with main_status=ON (status unchanged)`)
       
       // Log the device control activity
       await logDeviceControlActivity(
@@ -3501,13 +3499,9 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
         })
       }
       
-      // If turning off, also update status to OFF
-      if (newControlState === 'off') {
-        const deviceStatusRef = ref(realtimeDb, `devices/${outletKey}`)
-        await update(deviceStatusRef, {
-          status: 'OFF'
-        })
-      }
+      // Do NOT update status when turning OFF - keep it as is
+      // Status should not be changed when manually toggling device OFF
+      // Only main_status and control.device are updated
       
       console.log(`Successfully toggled ${outletKey} to control:${newControlState}/main:${newMainStatus}`)
       
