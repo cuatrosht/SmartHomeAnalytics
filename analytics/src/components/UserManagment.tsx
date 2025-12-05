@@ -59,6 +59,8 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
   const [userLogsCurrentPage, setUserLogsCurrentPage] = useState(1);
   const itemsPerPage = 10;
   const [users, setUsers] = useState<User[]>([]);
+  const [userStatusFilter, setUserStatusFilter] = useState<'all' | 'verified' | 'pending' | 'rejected'>('all');
+  const [userStatusMenuOpen, setUserStatusMenuOpen] = useState(false);
   const [userLogs, setUserLogs] = useState<UserLog[]>([]);
   const [deviceLogs, setDeviceLogs] = useState<DeviceLog[]>([]);
   const [deviceLogsSearchTerm, setDeviceLogsSearchTerm] = useState('');
@@ -462,17 +464,24 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
   const filteredUsers = useMemo(() => {
     try {
       if (!users || !Array.isArray(users)) return [];
-      if (!searchTerm || typeof searchTerm !== 'string') return users;
+      const searchLower = typeof searchTerm === 'string' ? searchTerm.toLowerCase() : '';
       
-      const searchLower = searchTerm.toLowerCase();
       return users.filter(user => {
         try {
           const userName = user?.name || '';
           const userEmail = user?.email || '';
-          return (
+          const matchesSearch =
+            !searchLower ||
             (typeof userName === 'string' && userName.toLowerCase().includes(searchLower)) ||
-            (typeof userEmail === 'string' && userEmail.toLowerCase().includes(searchLower))
-          );
+            (typeof userEmail === 'string' && userEmail.toLowerCase().includes(searchLower));
+
+          // status filter using verificationStatus already normalized
+          const statusVal = user?.verificationStatus || 'pending';
+          const matchesStatus =
+            userStatusFilter === 'all' ||
+            statusVal === userStatusFilter;
+
+          return matchesSearch && matchesStatus;
         } catch (filterError) {
           console.error('Error filtering user:', filterError);
           return false;
@@ -482,7 +491,32 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
       console.error('Error in filteredUsers calculation:', error);
       return users || [];
     }
-  }, [users, searchTerm]);
+  }, [users, searchTerm, userStatusFilter]);
+
+  // Safe filtered offices with search on department and office
+  const filteredOffices = useMemo(() => {
+    try {
+      if (!offices || !Array.isArray(offices)) return [];
+      const term = typeof searchTerm === 'string' ? searchTerm.toLowerCase() : '';
+      if (!term) return offices;
+      return offices.filter(office => {
+        try {
+          const dept = office?.department || '';
+          const off = office?.office || '';
+          return (
+            (typeof dept === 'string' && dept.toLowerCase().includes(term)) ||
+            (typeof off === 'string' && off.toLowerCase().includes(term))
+          );
+        } catch (filterError) {
+          console.error('Error filtering office:', filterError);
+          return false;
+        }
+      });
+    } catch (error) {
+      console.error('Error in filteredOffices calculation:', error);
+      return offices || [];
+    }
+  }, [offices, searchTerm]);
 
   // Helper function to filter logs by time period
   const filterLogsByTimePeriod = (logs: UserLog[], period: 'all' | 'day' | 'week' | 'month' | 'year'): UserLog[] => {
@@ -1151,11 +1185,6 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
                   </svg>
                   Add Office
                 </button>
-                <button className="um-filter-btn">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M3 6h18M7 12h10M10 18h4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                  </svg>
-                </button>
               </div>
             </div>
 
@@ -1170,8 +1199,8 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
                   </tr>
                 </thead>
                 <tbody>
-                  {offices.length > 0 ? (
-                    offices.map((office, index) => (
+                  {filteredOffices.length > 0 ? (
+                    filteredOffices.map((office, index) => (
                       <tr key={office.id}>
                         <td>{index + 1}</td>
                         <td>{office.department}</td>
@@ -1560,11 +1589,52 @@ const UserManagment: React.FC<Props> = ({ onNavigate, currentView = 'users' }) =
                     onChange={(e) => setSearchTerm(e.target.value)}
                   />
                 </div>
-                <button className="um-filter-btn">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M3 6h18M7 12h10M10 18h4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                  </svg>
-                </button>
+                <div className="um-filter-wrapper">
+                  <button
+                    className="um-filter-btn"
+                    type="button"
+                    onClick={() => setUserStatusMenuOpen(v => !v)}
+                    aria-label="Filter by verification status"
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M3 6h18M7 12h10M10 18h4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                    <span className="um-filter-label">
+                      {userStatusFilter === 'all'
+                        ? 'All'
+                        : userStatusFilter === 'verified'
+                        ? 'Verified'
+                        : userStatusFilter === 'rejected'
+                        ? 'Rejected'
+                        : 'Pending'}
+                    </span>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="dropdown-arrow">
+                      <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                    </svg>
+                  </button>
+                  {userStatusMenuOpen && (
+                    <div className="um-filter-menu">
+                      {[
+                        { key: 'all', label: 'All' },
+                        { key: 'verified', label: 'Verified' },
+                        { key: 'pending', label: 'Pending' },
+                        { key: 'rejected', label: 'Rejected' },
+                      ].map(item => (
+                        <button
+                          key={item.key}
+                          type="button"
+                          className={`um-filter-item ${userStatusFilter === item.key ? 'active' : ''}`}
+                          onClick={() => {
+                            setUserStatusFilter(item.key as 'all' | 'verified' | 'pending' | 'rejected')
+                            setUserStatusMenuOpen(false)
+                          }}
+                        >
+                          {item.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
 

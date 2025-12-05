@@ -532,6 +532,82 @@ const ScheduleOverrideModal = memo(({
   )
 })
 
+// Schedule Undo Modal Component - for undoing override (turning ON, main_status -> OFF)
+const ScheduleUndoModal = memo(({ 
+  scheduleUndoModal, 
+  setModalOpen, 
+  setScheduleUndoModal, 
+  onConfirmUndo 
+}: {
+  scheduleUndoModal: { isOpen: boolean; device: any; scheduleInfo: string };
+  setModalOpen: (open: boolean) => void;
+  setScheduleUndoModal: (modal: { isOpen: boolean; device: any; scheduleInfo: string }) => void;
+  onConfirmUndo: (deviceId: string) => void;
+}) => {
+  if (!scheduleUndoModal.isOpen || !scheduleUndoModal.device) return null
+
+  const device = scheduleUndoModal.device
+
+  const handleConfirm = () => {
+    setModalOpen(false)
+    setScheduleUndoModal({ isOpen: false, device: null, scheduleInfo: '' })
+    onConfirmUndo(device.id)
+  }
+
+  const handleCancel = () => {
+    setModalOpen(false)
+    setScheduleUndoModal({ isOpen: false, device: null, scheduleInfo: '' })
+  }
+
+  return (
+    <div className="modal-overlay warning-overlay" onClick={handleCancel}>
+      <div className="warning-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="warning-icon">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="12" cy="12" r="10" fill="#dbeafe" stroke="#3b82f6" strokeWidth="2"/>
+            <path d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" fill="#3b82f6"/>
+          </svg>
+        </div>
+        <h3>Undo Override?</h3>
+        <p><strong>"{device.outletName}" is in override mode during its schedule.</strong></p>
+        <div className="warning-details">
+          <div className="warning-stat">
+            <span className="label">Device:</span>
+            <span className="value">{device.outletName}</span>
+          </div>
+          <div className="warning-stat">
+            <span className="label">Location:</span>
+            <span className="value">{device.officeRoom}</span>
+          </div>
+          <div className="warning-stat">
+            <span className="label">Schedule:</span>
+            <span className="value">{scheduleUndoModal.scheduleInfo}</span>
+          </div>
+        </div>
+        <p className="warning-message">
+          Turning ON will undo the override: <strong>device control will be ON</strong> and <strong>main_status will be set to OFF</strong> so schedule/automation can control it again.
+        </p>
+        <div className="modal-footer">
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={handleCancel}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn-primary"
+            onClick={handleConfirm}
+          >
+            Undo Override & Turn ON
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+})
+
 const BypassModal = memo(({ bypassModal, setModalOpen, setBypassModal, toggleDeviceStatus, userRole = 'Coordinator' }: {
   bypassModal: { isOpen: boolean; device: any; reason: string };
   setModalOpen: (open: boolean) => void;
@@ -735,6 +811,7 @@ interface Device {
   }
   controlState: string
   mainStatus: string
+  department?: string
   todayTotalEnergy?: number
   powerLimit?: number
   currentDate?: string
@@ -755,6 +832,7 @@ interface FirebaseDeviceData {
   office_info?: {
     assigned_date: string
     office: string
+    department?: string
     appliance?: string
     enable_power_scheduling?: boolean
   }
@@ -871,6 +949,9 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
   }
 
   const [searchQuery, setSearchQuery] = useState('')
+  const [departments, setDepartments] = useState<string[]>(['All Departments'])
+  const [selectedDepartment, setSelectedDepartment] = useState('All Departments')
+  const [departmentMenuOpen, setDepartmentMenuOpen] = useState(false)
   const [activeDevices, setActiveDevices] = useState<Device[]>([])
   const [loading, setLoading] = useState(true)
   const [successModal, setSuccessModal] = useState<{
@@ -976,6 +1057,17 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
 
   // Schedule override modal state (for turning OFF device during active schedule)
   const [scheduleOverrideModal, setScheduleOverrideModal] = useState<{
+    isOpen: boolean;
+    device: Device | null;
+    scheduleInfo: string;
+  }>({
+    isOpen: false,
+    device: null,
+    scheduleInfo: ''
+  })
+
+  // Schedule undo modal state (for turning ON device and undoing override)
+  const [scheduleUndoModal, setScheduleUndoModal] = useState<{
     isOpen: boolean;
     device: Device | null;
     scheduleInfo: string;
@@ -1493,6 +1585,7 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
       
       if (data) {
         const devicesArray: Device[] = []
+        const deptSet = new Set<string>()
         let deviceId = 1
 
         Object.keys(data).forEach((outletKey) => {
@@ -1534,6 +1627,10 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
           
           const officeValue = outlet.office_info?.office || ''
           const officeInfo = officeValue ? (officeNames[officeValue] || formatOfficeName(officeValue)) : '—'
+          const departmentValue = outlet.office_info?.department || ''
+          if (departmentValue) {
+            deptSet.add(departmentValue)
+          }
           
           // Check for idle status from root level
           const sensorStatus = outlet.status
@@ -1713,7 +1810,8 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
               days: scheduleDays
             },
             controlState: controlState,
-            mainStatus: mainStatus
+            mainStatus: mainStatus,
+            department: departmentValue
           }
           
           devicesArray.push(deviceData)
@@ -1722,6 +1820,7 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
 
         console.log('ActiveDevice: Setting devices array:', devicesArray)
         setActiveDevices(devicesArray)
+        setDepartments(['All Departments', ...Array.from(deptSet)])
       } else {
         console.log('ActiveDevice: No data in Firebase - all devices deleted or database empty')
         setActiveDevices([])
@@ -3019,14 +3118,21 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
     return () => off(electricityRateRef, 'value', unsubscribe)
   }, [])
 
-  // Filter devices based on search query
+  // Filter devices based on search query and department
   const filteredDevices = useMemo(() => {
-    return activeDevices.filter(device =>
-      device.outletName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      device.appliances.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      device.officeRoom.toLowerCase().includes(searchQuery.toLowerCase())
-    )
-  }, [activeDevices, searchQuery])
+    return activeDevices.filter(device => {
+      const matchesSearch =
+        device.outletName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        device.appliances.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        device.officeRoom.toLowerCase().includes(searchQuery.toLowerCase())
+
+      const matchesDepartment =
+        selectedDepartment === 'All Departments' ||
+        (device.department || '').toLowerCase() === selectedDepartment.toLowerCase()
+
+      return matchesSearch && matchesDepartment
+    })
+  }, [activeDevices, searchQuery, selectedDepartment])
 
   // Handle schedule override confirmation - turn OFF device and set main_status to ON
   const handleScheduleOverride = async (deviceId: string) => {
@@ -3073,6 +3179,56 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
       })
     } finally {
       // Clear loading state
+      setUpdatingDevices(prev => {
+        const newSet = new Set(prev)
+        newSet.delete(deviceId)
+        return newSet
+      })
+    }
+  }
+
+  // Handle undoing override - turn ON device, set main_status to OFF (allow automation)
+  const handleScheduleUndo = async (deviceId: string) => {
+    try {
+      const device = activeDevices.find(d => d.id === deviceId)
+      if (!device) return
+
+      const outletKey = device.outletName.replace(/\s+/g, '_').replace(/'/g, '')
+
+      console.log(`ActiveDevice: Schedule undo confirmed - Turning ON ${outletKey} with main_status=OFF`)
+
+      // Set control to ON and main_status to OFF (undo override)
+      await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
+        main_status: 'OFF'
+      })
+
+      await update(ref(realtimeDb, `devices/${outletKey}/control`), {
+        device: 'on'
+      })
+
+      // Do NOT update status - keep as is
+
+      // Log activity
+      await logDeviceControlActivity(
+        'Turn on outlet',
+        device.outletName,
+        device.officeRoom || 'Unknown',
+        device.appliances || 'Unknown'
+      )
+
+      // Show success modal
+      showModalSafely('success', {
+        deviceName: device.outletName,
+        action: 'turned ON (Undo Override)'
+      })
+    } catch (error) {
+      console.error('Error undoing schedule override:', error)
+      const deviceName = activeDevices.find(d => d.id === deviceId)?.outletName || 'Unknown Device'
+      showModalSafely('error', {
+        message: `Failed to undo override for "${deviceName}". Please try again.`
+      })
+    } finally {
+      setScheduleUndoModal({ isOpen: false, device: null, scheduleInfo: '' })
       setUpdatingDevices(prev => {
         const newSet = new Set(prev)
         newSet.delete(deviceId)
@@ -3229,6 +3385,80 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
         newMainStatus = 'OFF'
       } else {
         // Device is currently OFF, so we want to turn it ON
+        // If device is in override mode (main_status = ON) and within schedule, ask to undo override
+        const outletKey = device.outletName.replace(/\s+/g, '_').replace(/'/g, '')
+        const outletDisplayName = outletKey.replace('_', ' ')
+        const normalizedOutletKey = outletKey.replace(/_/g, ' ').toLowerCase().trim()
+        const currentMainStatusFromDevice = device.mainStatus || 'OFF'
+
+        // Fetch latest device data for accurate schedule check
+        const deviceRefForOn = ref(realtimeDb, `devices/${outletKey}`)
+        const deviceSnapshotForOn = await get(deviceRefForOn)
+        const deviceDataForOn = deviceSnapshotForOn.val()
+
+        let isWithinScheduleForOn = false
+        if (deviceDataForOn?.schedule && (deviceDataForOn.schedule.timeRange || deviceDataForOn.schedule.startTime)) {
+          // Check combined group for schedule check context
+          let deviceDepartmentLimitForOn: { department: string; limitInfo: any; device_control?: string } | null = null
+          const deviceDept = (deviceDataForOn.office_info as any)?.department
+          const deviceDeptKey = deviceDept ? deviceDept.toLowerCase().replace(/\s+/g, '-') : null
+
+          if (deviceDeptKey && allDepartmentCombinedLimits[deviceDeptKey]) {
+            const deptLimitInfo = allDepartmentCombinedLimits[deviceDeptKey]
+            if (deptLimitInfo.enabled && deptLimitInfo.selectedOutlets) {
+              const isInDeptLimit = deptLimitInfo.selectedOutlets.some((selectedOutlet: string) => {
+                const normalizedSelected = selectedOutlet.replace(/_/g, ' ').toLowerCase().trim()
+                return normalizedSelected === normalizedOutletKey ||
+                       selectedOutlet === outletKey ||
+                       selectedOutlet.replace(/_/g, ' ') === outletKey.replace(/_/g, ' ') ||
+                       selectedOutlet === outletDisplayName
+              })
+
+              if (isInDeptLimit) {
+                deviceDepartmentLimitForOn = {
+                  department: deviceDeptKey,
+                  limitInfo: deptLimitInfo,
+                  device_control: deptLimitInfo.device_control || 'on'
+                }
+              }
+            }
+          }
+
+          const isInAnyCombinedGroupForOn = !!deviceDepartmentLimitForOn
+          isWithinScheduleForOn = isDeviceActiveBySchedule(deviceDataForOn.schedule, 'on', deviceDataForOn, isInAnyCombinedGroupForOn)
+        }
+
+        if (currentMainStatusFromDevice === 'ON' && isWithinScheduleForOn) {
+          // Show undo override modal
+          const schedule = deviceDataForOn?.schedule
+          let scheduleInfo = ''
+          if (schedule) {
+            if (schedule.timeRange && schedule.timeRange !== 'No schedule') {
+              scheduleInfo = `${schedule.timeRange} (${schedule.frequency || 'Daily'})`
+            } else if (schedule.startTime && schedule.endTime) {
+              scheduleInfo = `${schedule.startTime} - ${schedule.endTime} (${schedule.frequency || 'Daily'})`
+            } else {
+              scheduleInfo = 'Active Schedule'
+            }
+          } else {
+            scheduleInfo = 'Active Schedule'
+          }
+
+          setScheduleUndoModal({
+            isOpen: true,
+            device: device,
+            scheduleInfo
+          })
+
+          // Clear loading state before returning
+          setUpdatingDevices(prev => {
+            const newSet = new Set(prev)
+            newSet.delete(deviceId)
+            return newSet
+          })
+          return
+        }
+
         if (bypassConfirmed) {
           // Bypass confirmed: turn on device regardless of restrictions
           console.log(`ActiveDevice: BYPASS CONFIRMED - Turning ON ${outletKey} - bypassing all validation checks`)
@@ -3697,19 +3927,54 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
             <p>Monitor and manage your connected devices</p>
           </div>
         </div>
-        <div className="search-container">
-          <div className="search-input-wrapper">
-            <svg className="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <circle cx="11" cy="11" r="8" stroke="#9ca3af" strokeWidth="2"/>
-              <path d="m21 21-4.35-4.35" stroke="#9ca3af" strokeWidth="2" strokeLinecap="round"/>
-            </svg>
-            <input
-              type="text"
-              placeholder="Search device"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="search-input"
-            />
+        <div className="search-filter-container">
+          <div className="search-container">
+            <div className="search-input-wrapper">
+              <svg className="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="11" cy="11" r="8" stroke="#9ca3af" strokeWidth="2"/>
+                <path d="m21 21-4.35-4.35" stroke="#9ca3af" strokeWidth="2" strokeLinecap="round"/>
+              </svg>
+              <input
+                type="text"
+                placeholder="Search device"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="search-input"
+              />
+            </div>
+          </div>
+          <div className="department-filter">
+            <button
+              type="button"
+              className="dept-filter-btn"
+              onClick={() => setDepartmentMenuOpen(v => !v)}
+              aria-label="Filter by department"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M3 5h18M6 12h12M9 19h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+              </svg>
+              <span>{selectedDepartment}</span>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ transform: departmentMenuOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform .2s ease' }}>
+                <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+              </svg>
+            </button>
+            {departmentMenuOpen && (
+              <div className="dept-dropdown">
+                {departments.map(dept => (
+                  <button
+                    key={dept}
+                    type="button"
+                    className={`dept-option ${selectedDepartment === dept ? 'active' : ''}`}
+                    onClick={() => {
+                      setSelectedDepartment(dept)
+                      setDepartmentMenuOpen(false)
+                    }}
+                  >
+                    {dept}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </section>
@@ -3830,6 +4095,14 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
         setModalOpen={setModalOpen}
         setScheduleOverrideModal={setScheduleOverrideModal}
         onConfirmOverride={handleScheduleOverride}
+      />
+
+      {/* Schedule Undo Modal */}
+      <ScheduleUndoModal 
+        scheduleUndoModal={scheduleUndoModal}
+        setModalOpen={setModalOpen}
+        setScheduleUndoModal={setScheduleUndoModal}
+        onConfirmUndo={handleScheduleUndo}
       />
 
       {/* Bypass Confirmation Modal */}

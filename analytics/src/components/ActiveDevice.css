@@ -8,7 +8,7 @@
   background: #ffffff;
   border-radius: 8px;
   box-shadow: 0 2px 4px -1px rgba(0, 0, 0, 0.1), 0 1px 2px -1px rgba(0, 0, 0, 0.06);
-  overflow: hidden;
+  overflow: visible;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -92,6 +92,104 @@
   position: relative;
 }
 
+.search-filter-container {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: flex-start;
+  gap: 6px;
+}
+
+.department-filter {
+  position: relative;
+  margin-top: -15px;
+  font-weight: 400;
+  font-size: 15px;
+}
+
+.dept-filter-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+  font-weight: 400;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+  transition: all 0.15s ease;
+}
+
+.dept-filter-btn:hover {
+  border-color: rgba(255, 255, 255, 0.4);
+  background: rgba(255, 255, 255, 0.18);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.18);
+}
+
+.dept-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 220px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+  z-index: 20;
+  padding: 6px;
+}
+
+.dept-option {
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  border-radius: 10px;
+  cursor: pointer;
+  color: #111827;
+  font-weight: 500;
+}
+
+.dept-option:hover {
+  background: #f3f4f6;
+}
+
+.dept-option.active {
+  background: #e0f2fe;
+  color: #1f2937;
+  font-weight: 600;
+}
+
+.dept-option:focus,
+.dept-option:active {
+  outline: none;
+  background: #e0f2fe;
+  color: #1f2937;
+  font-weight: 600;
+}
+
+/* Mobile adjustments: align filter under search */
+@media (max-width: 640px) {
+  .search-filter-container {
+    align-items: flex-start;
+    width: 100%;
+  }
+  .department-filter {
+    width: 240px;
+  }
+  .dept-filter-btn {
+    width: 100%;
+  }
+  .dept-dropdown {
+    right: auto;
+    left: 0;
+    min-width: 240px;
+  }
+}
+
 .search-input-wrapper {
   position: relative;
   display: flex;
@@ -106,8 +204,8 @@
 
 .search-input {
   width: 100%;
-  max-width: 280px;
-  padding: 10px 10px 10px 36px;
+  max-width: 240px;
+  padding: 9px 10px 9px 34px;
   border: 1px solid rgba(255, 255, 255, 0.2);
   border-radius: 6px;
   font-size: 13px;
