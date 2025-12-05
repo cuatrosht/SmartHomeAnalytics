@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { auth } from '../firebase/config'
 import { logAuthEvent } from '../utils/userLogging'
 import './SideBar.css'
@@ -16,6 +16,16 @@ interface SideBarProps {
 
 export default function SideBar({ onLogout, onNavigate, isOpen = true, onToggle, activeView = 'dashboard', userRole = 'Coordinator' }: SideBarProps) {
   const [showLogoutModal, setShowLogoutModal] = useState(false)
+  const [isMobile, setIsMobile] = useState(false)
+
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile(window.innerWidth <= 768)
+    }
+    checkMobile()
+    window.addEventListener('resize', checkMobile)
+    return () => window.removeEventListener('resize', checkMobile)
+  }, [])
 
 
 
@@ -95,6 +105,13 @@ export default function SideBar({ onLogout, onNavigate, isOpen = true, onToggle,
 
   return (
     <>
+      {/* Mobile overlay - only show when sidebar is open on mobile */}
+      {isOpen && isMobile && onToggle && (
+        <div 
+          className="sidebar-overlay" 
+          onClick={onToggle}
+        />
+      )}
       <aside className={`sidebar ${isOpen ? 'open' : ''}`} aria-label="Primary">
         <div className="sb-header">
           <span className="sb-brand-icon" aria-hidden="true">

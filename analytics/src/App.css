@@ -2,18 +2,39 @@
 	min-height: 100vh;
 	margin: 0;
 	padding: 0;
+	width: 100%;
+	font-size: 16px; /* Consistent base font size */
+	box-sizing: border-box;
 }
 
 /* Main content area - responsive margin based on sidebar width */
 .main-content {
 	margin-left: var(--sidebar-width, 260px);
 	transition: margin-left 0.3s ease;
+	width: 100%;
+	box-sizing: border-box;
+	font-size: 16px; /* Consistent base font size */
+}
+
+/* Standardize main element */
+main {
+	width: 100%;
+	box-sizing: border-box;
+	font-size: 16px; /* Consistent base font size */
+	-webkit-text-size-adjust: 100%;
+	-moz-text-size-adjust: 100%;
+	-ms-text-size-adjust: 100%;
+	text-size-adjust: 100%;
 }
 
 /* On mobile, sidebar is hidden by default, so no margin needed */
 @media (max-width: 768px) {
 	.main-content {
 		margin-left: 0;
+	}
+	
+	main {
+		font-size: 16px; /* Consistent base font size on mobile */
 	}
 }
 

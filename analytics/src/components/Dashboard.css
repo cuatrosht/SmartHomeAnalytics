@@ -466,8 +466,287 @@
   padding: 0;
   position: relative;
   width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+  background: #ffffff;
+  border-radius: 12px;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  overflow: visible;
+  box-sizing: border-box;
+}
+
+/* Ensure ALL child containers stay within the wrapper */
+.dash-wrap > section,
+.dash-wrap > .panel,
+.dash-wrap > .cards-row,
+.dash-wrap > .charts-section,
+.dash-wrap > .energy-analytics-container,
+.dash-wrap > .consumption-report-container {
+  width: 100%;
   max-width: 100%;
-  background: transparent;
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+/* ===== RESPONSIVE BREAKPOINTS (Mobile First) ===== */
+
+/* Mobile: All screens below 768px - container should shrink to fit */
+@media (max-width: 767px) {
+  .dash-wrap {
+    width: 100%;
+    max-width: 100%;
+    margin: 0;
+    padding: 0;
+    border-radius: 0;
+    box-shadow: none;
+    overflow: visible;
+    box-sizing: border-box;
+    min-width: 0;
+  }
+  
+  .dash-hero {
+    flex-direction: column;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+  }
+  
+  .hero-text,
+  .hero-text h1,
+  .hero-text p {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    white-space: normal;
+  }
+  
+  .dropdowns-container {
+    width: 100%;
+    max-width: 100%;
+    flex-wrap: wrap;
+  }
+  
+  .dropdown,
+  .dropdowns-container .dropdown {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+  }
+  
+  .hero-pill {
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    justify-content: center;
+  }
+  
+  .panel,
+  .panel-head,
+  .panel-subtitle {
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+  }
+  
+  .panel-head {
+    flex-wrap: wrap;
+  }
+  
+  .panel-subtitle {
+    margin-left: 0;
+    margin-top: 4px;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    white-space: normal;
+  }
+  
+  .stats-grid {
+    width: 100%;
+    max-width: 100%;
+  }
+  
+  .stat-card,
+  .stat-title,
+  .stat-value {
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    white-space: normal;
+  }
+  
+  .table-container {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    width: 100%;
+    max-width: 100%;
+  }
+  
+  .data-table {
+    min-width: 500px;
+    width: 100%;
+  }
+  
+  .chart-area {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    min-width: 0;
+  }
+  
+  .chart-area canvas {
+    max-width: 100% !important;
+    height: auto !important;
+    width: auto !important;
+  }
+  
+  /* Ensure ALL child containers stay within wrapper */
+  .panel,
+  .cards-row,
+  .charts-section,
+  .energy-analytics-container,
+  .consumption-report-container,
+  .tables-section,
+  .table-panel,
+  .chart-panel,
+  .report-content,
+  .report-header,
+  .dashboard-device-usage-panel {
+    width: 100% !important;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
+    min-width: 0 !important;
+  }
+}
+
+/* Small Mobile: 640px and below */
+@media (max-width: 640px) {
+  .dash-wrap {
+    gap: 8px;
+  }
+  
+  .dash-hero {
+    padding: 10px 0 10px 10px;
+    gap: 8px;
+  }
+
+  .dropdowns-container {
+    padding: 0;
+    margin: 0;
+    margin-left: auto;
+    margin-right: 0;
+  }
+  
+  .hero-text h1 {
+    font-size: 16px;
+  }
+  
+  .hero-text p {
+    font-size: 11px;
+  }
+  
+  .panel {
+    padding: 10px;
+  }
+  
+  .stats-grid {
+    gap: 8px;
+  }
+  
+  .stat-card {
+    padding: 10px;
+  }
+  
+  .stat-title {
+    font-size: 10px;
+    text-align: center;
+  }
+  
+  .stat-value {
+    font-size: 24px;
+  }
+  
+  .stat-badge {
+    font-size: 10px;
+    padding: 4px 8px;
+    max-width: calc(100% - 20px);
+  }
+  
+  .data-table {
+    min-width: 400px;
+  }
+}
+
+/* Extra Small Mobile: 320px and below */
+@media (max-width: 320px) {
+  .dash-wrap {
+    gap: 8px;
+  }
+  
+  .dash-hero {
+    padding: 8px 0 8px 8px;
+    gap: 8px;
+  }
+
+  .dropdowns-container {
+    padding: 0;
+    margin: 0;
+    margin-left: auto;
+    margin-right: 0;
+  }
+  
+  .hero-icon {
+    width: 24px;
+    height: 24px;
+  }
+  
+  .hero-text h1 {
+    font-size: 14px;
+  }
+  
+  .hero-text p {
+    font-size: 9px;
+  }
+  
+  .hero-pill {
+    padding: 6px 8px;
+    font-size: 10px;
+  }
+  
+  .panel {
+    padding: 8px;
+  }
+  
+  .stat-card {
+    padding: 12px;
+    min-height: 100px;
+  }
+  
+  .stat-title {
+    font-size: 10px;
+  }
+  
+  .stat-value {
+    font-size: 24px;
+  }
+  
+  .data-table {
+    min-width: 400px;
+  }
+}
+
+/* Tablet and Desktop: Apply container styling */
+@media (min-width: 768px) {
+  .dash-wrap {
+    max-width: 1200px;
+    margin: 0 auto;
+    border-radius: 12px;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+    overflow: hidden;
+  }
 }
 
 /* Hero Section */
@@ -481,9 +760,12 @@
   border-radius: 12px; 
   box-shadow: var(--shadow-lg);
   width: 100%;
+  max-width: 100%;
   min-height: 80px;
   position: relative;
   overflow: visible;
+  box-sizing: border-box;
+  min-width: 0; /* Allow hero to shrink if needed */
 }
 
 .hero-left { 
@@ -491,6 +773,8 @@
   align-items: flex-start; 
   gap: 12px; 
   flex: 1;
+  min-width: 0; /* Allow flex item to shrink */
+  max-width: 100%;
 }
 
 .hero-icon { 
@@ -509,6 +793,7 @@
   flex-direction: column; 
   gap: 4px; 
   flex: 1;
+  min-width: 0; /* Allow text to shrink and wrap */
 }
 
 .hero-text h1 { 
@@ -516,6 +801,9 @@
   font-size: 18px; 
   font-weight: 700;
   line-height: 1.2;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  max-width: 100%;
 }
 
 .hero-text p { 
@@ -524,6 +812,10 @@
   opacity: 0.9;
   line-height: 1.4;
   font-weight: 400;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  max-width: 100%;
+  white-space: normal; /* Allow text to wrap */
 }
 
 .hero-pill { 
@@ -550,8 +842,10 @@
 /* Dropdown Styles */
 .dropdown { 
   position: relative; 
-  min-width: 200px;
-  width: 100%;
+  min-width: 180px;
+  width: auto;
+  flex-shrink: 0;
+  max-width: 100%;
 }
 
 /* Dropdowns Container - Reduces spacing between dropdowns */
@@ -559,11 +853,20 @@
   display: flex;
   gap: 12px;
   align-items: center;
+  flex-shrink: 0; /* Prevent dropdowns from shrinking */
+  min-width: 0; /* Allow container to shrink if needed */
+  padding: 0;
+  margin: 0;
+  margin-left: auto;
+  margin-right: 0;
+  justify-content: flex-end;
 }
 
 .dropdowns-container .dropdown {
-  min-width: 180px;
+  min-width: 0; /* Allow dropdown to shrink on small screens */
   width: auto;
+  flex: 0 1 auto; /* Don't grow, can shrink, auto basis */
+  max-width: 100%;
 }
 
 .dropdown-menu { 
@@ -736,6 +1039,10 @@
   border: 1px solid var(--border-color);
   position: relative;
   overflow: visible;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
 }
 
 .panel-head { 
@@ -745,6 +1052,16 @@
   margin-bottom: 8px; 
   color: #111827; 
   flex-wrap: wrap;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.panel-head h2 {
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  max-width: 100%;
+  flex: 1;
+  min-width: 0;
 }
 
 .panel-subtitle {
@@ -754,6 +1071,10 @@
   font-weight: 500;
   margin-left: 20px;
   margin-top: 2px;
+  white-space: normal;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  max-width: 100%;
 }
 
 .panel-head .bolt { 
@@ -764,8 +1085,10 @@
 .stats-grid { 
   display: grid; 
   grid-template-columns: 1fr; 
-  gap: var(--mobile-gap);
+  gap: var(--mobile-gap); 
   width: 100%;
+  box-sizing: border-box;
+  overflow: visible; /* Allow badges to show */
 }
 
 .stat-card { 
@@ -778,8 +1101,12 @@
   text-align: center; 
   min-height: 120px; 
   position: relative;
-  overflow: hidden;
+  overflow: visible; /* Changed to visible to prevent badge truncation */
   transition: all 0.3s ease;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0; /* Allow card to shrink */
 }
 
 .stat-card:hover {
@@ -790,13 +1117,14 @@
 .stat-card::before {
   content: '';
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
+  top: 0px;
+  left: 3.5px;
+  right: 3.5px;
   height: 3px;
   background: linear-gradient(90deg, #3b82f6, #8b5cf6);
   opacity: 0;
   transition: opacity 0.3s ease;
+  border-radius: 2px;
 }
 
 .stat-card:hover::before {
@@ -876,17 +1204,28 @@
   font-size: 12px; 
   text-transform: uppercase; 
   opacity: .9; 
+  white-space: normal; /* Allow wrapping for long titles */
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  max-width: 100%;
 }
 
 .stat-value { 
   font-size: 28px; 
   font-weight: 800; 
   margin-top: 6px; 
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  max-width: 100%;
+  line-height: 1.2;
 }
 
 .stat-unit { 
   font-size: 12px; 
   opacity: .9; 
+  white-space: normal;
+  word-wrap: break-word;
+  max-width: 100%;
 }
 
 .stat-badge { 
@@ -898,6 +1237,11 @@
   font-size: 11px; 
   padding: 6px 10px; 
   border-radius: 999px; 
+  white-space: nowrap; /* Prevent text wrapping */
+  z-index: 1; /* Ensure badge is above other content */
+  max-width: calc(100% - 20px); /* Prevent overflow */
+  overflow: hidden;
+  text-overflow: ellipsis; /* Show ellipsis if text is too long */
 }
 
 /* Cards Row */
@@ -906,6 +1250,9 @@
   grid-template-columns: 1fr; 
   gap: var(--mobile-gap);
   width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
 }
 
 .mini-card { 
@@ -990,6 +1337,9 @@
   grid-template-columns: 1fr; 
   gap: var(--mobile-gap);
   width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
 }
 
 .chart-card { 
@@ -997,7 +1347,11 @@
   border: 1px solid #e5e7eb; 
   border-radius: 10px; 
   padding: 16px; 
-  box-shadow: 0 2px 12px rgba(0,0,0,.08); 
+  box-shadow: 0 2px 12px rgba(0,0,0,.08);
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
 }
 
 .chart-header { 
@@ -1164,6 +1518,10 @@
   padding: 16px;
   box-shadow: 0 2px 12px rgba(0,0,0,.08);
   margin-bottom: 16px;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
 }
 
 .analytics-header {
@@ -1195,6 +1553,10 @@
 .tables-section {
   display: grid;
   gap: 16px;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
 }
 
 .table-panel {
@@ -1203,6 +1565,10 @@
   border-radius: 10px;
   padding: 16px;
   box-shadow: 0 2px 12px rgba(0,0,0,.08);
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
 }
 
 /* Add spacing only between Usage Rank and Office Ranking */
@@ -1466,6 +1832,10 @@
   padding: 16px;
   box-shadow: 0 2px 12px rgba(0,0,0,.08);
   margin-bottom: 16px;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
 }
 
 .report-header {
@@ -1473,6 +1843,10 @@
   flex-direction: column;
   gap: 8px;
   margin-bottom: 16px;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
 }
 
 .report-header h2 {
@@ -1487,6 +1861,10 @@
   display: flex;
   flex-direction: column;
   gap: 16px;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
 }
 
 .chart-panel {
@@ -1494,6 +1872,10 @@
   border: 1px solid #e5e7eb;
   border-radius: 8px;
   padding: 16px;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
 }
 
 .chart-header {
@@ -1572,6 +1954,10 @@
   min-height: 240px;
   padding: 16px;
   overflow: hidden;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
 }
 
 .chart-container {
@@ -1689,6 +2075,10 @@
   border: 1px solid #e5e7eb;
   border-radius: 8px;
   padding: 16px;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
 }
 
 .dashboard-device-header {
@@ -2167,12 +2557,19 @@
     align-items: center;
     justify-content: space-between;
     gap: 20px;
-    padding: 20px;
+    padding: 20px 0 20px 20px;
   }
   
   .hero-left {
     width: auto;
     justify-content: flex-start;
+  }
+
+  .dropdowns-container {
+    padding: 0;
+    margin: 0;
+    margin-left: auto;
+    margin-right: 0;
   }
 }
 
@@ -2217,12 +2614,19 @@
     align-items: center;
     justify-content: space-between;
     gap: 22px;
-    padding: 22px;
+    padding: 22px 0 22px 22px;
   }
   
   .hero-left {
     width: auto;
     justify-content: flex-start;
+  }
+
+  .dropdowns-container {
+    padding: 0;
+    margin: 0;
+    margin-left: auto;
+    margin-right: 0;
   }
 }
 
@@ -2267,12 +2671,19 @@
     align-items: center;
     justify-content: space-between;
     gap: 24px;
-    padding: 24px;
+    padding: 24px 0 24px 24px;
   }
   
   .hero-left {
     width: auto;
     justify-content: flex-start;
+  }
+
+  .dropdowns-container {
+    padding: 0;
+    margin: 0;
+    margin-left: auto;
+    margin-right: 0;
   }
 }
 
@@ -2317,285 +2728,30 @@
     align-items: center;
     justify-content: space-between;
     gap: 28px;
-    padding: 28px;
+    padding: 28px 0 28px 28px;
   }
   
   .hero-left {
     width: auto;
     justify-content: flex-start;
   }
+
+  .dropdowns-container {
+    padding: 0;
+    margin: 0;
+    margin-left: auto;
+    margin-right: 0;
+  }
 }
 
 /* ===== ENHANCED MOBILE RESPONSIVE (320px - 767px) ===== */
-@media (max-width: 767px) {
-  .dash-wrap {
-    gap: var(--mobile-gap);
-    padding: 0;
-    background: transparent;
-  }
-  
-  .dash-hero {
-    flex-direction: column;
-    gap: var(--mobile-gap);
-    padding: var(--mobile-padding);
-  }
-  
-  .filter-container {
-    flex-direction: column;
-    gap: 8px;
-    width: 100%;
-  }
-  
-  .office-reports-btn {
-    width: 100%;
-    min-width: auto;
-    justify-content: center;
-    padding: 12px 20px;
-    font-size: 14px;
-  }
-  
-  .filter-dropdown-btn {
-    width: 100%;
-    min-width: auto;
-  }
-  
-  /* Office Selection Modal Mobile Responsive */
-  .chart-modal-content.office-selection-modal {
-    max-width: 400px;
-    width: 95%;
-  }
-  
-  .office-selection-grid {
-    grid-template-columns: 1fr;
-    gap: 8px;
-    max-width: 100%;
-  }
-  
-  .office-option {
-    padding: 10px;
-  }
-  
-  .office-option-content h4 {
-    font-size: 13px;
-  }
-  
-  .office-option-content p {
-    font-size: 11px;
-  }
-  
-  /* Date Range Modal Mobile Responsive */
-  .chart-modal-content.date-range-modal {
-    max-width: 400px;
-    width: 95%;
-  }
-  
-  .date-range-container {
-    padding: 16px;
-  }
-  
-  .date-input-group {
-    margin-bottom: 16px;
-  }
-  
-  .date-input {
-    padding: 10px;
-    font-size: 13px;
-  }
-  
-  .date-range-actions {
-    flex-direction: column;
-    gap: 8px;
-    margin-top: 20px;
-  }
-  
-  .btn-primary,
-  .btn-secondary {
-    padding: 10px 20px;
-    font-size: 13px;
-  }
-  
-  /* Report Type Modal Mobile Responsive */
-  .chart-modal-content.report-type-modal {
-    max-width: 400px;
-    width: 95%;
-  }
-  
-  .report-type-container {
-    padding: 16px;
-    gap: 12px;
-  }
-  
-  .report-type-option {
-    padding: 16px;
-  }
-  
-  .report-type-content h4 {
-    font-size: 15px;
-  }
-  
-  .report-type-content p {
-    font-size: 13px;
-  }
-  
-  /* Dashboard PDF Preview Modal Mobile Responsive */
-  .chart-modal-content.dashboard-pdf-preview-modal {
-    max-width: 95%;
-    width: 95%;
-    max-height: 85vh;
-  }
-  
-  .dashboard-pdf-preview-content {
-    max-height: 60vh;
-  }
-  
-  .dashboard-table-preview {
-    grid-template-columns: 1fr;
-    gap: 0;
-  }
-  
-  .dashboard-table-header,
-  .dashboard-table-row {
-    display: block;
-    border: 1px solid #e5e7eb;
-    margin-bottom: 1px;
-  }
-  
-  .dashboard-table-header .dashboard-table-cell,
-  .dashboard-table-row .dashboard-table-cell {
-    display: block;
-    padding: 8px 12px;
-    border-bottom: 1px solid #f3f4f6;
-    text-align: left;
-  }
-  
-  .dashboard-table-header .dashboard-table-cell:before,
-  .dashboard-table-row .dashboard-table-cell:before {
-    content: attr(data-label) ": ";
-    font-weight: 600;
-    color: #374151;
-  }
-  
-  .dashboard-preview-actions {
-    flex-direction: column;
-    gap: 8px;
-    padding: 16px;
-    justify-content: center;
-  }
-  
-  .dashboard-preview-actions .btn-primary,
-  .dashboard-preview-actions .btn-secondary {
-    width: 100%;
-    min-width: auto;
-  }
-  
-  .hero-left {
-    width: 100%;
-    justify-content: flex-start;
-    align-items: flex-start;
-    gap: 10px;
-  }
-  
-  .dropdown {
-    width: 100%;
-    min-width: auto;
-  }
-  
-  .dropdown-menu {
-    position: absolute;
-    left: 0;
-    right: 0;
-    top: calc(100% + 8px);
-    width: 100%;
-    min-width: 100%;
-    max-width: none;
-  }
-  
-  .hero-icon {
-    width: 28px;
-    height: 28px;
-    margin-top: 0;
-  }
-  
-  .hero-text h1 {
-    font-size: 16px;
-    line-height: 1.3;
-  }
-  
-  .hero-text p {
-    font-size: 11px;
-    line-height: 1.4;
-  }
-  
-  .stats-grid {
-    grid-template-columns: 1fr;
-    gap: var(--mobile-gap);
-  }
-  
-  .cards-row {
-    grid-template-columns: 1fr;
-    gap: var(--mobile-gap);
-  }
-  
-  .charts-section {
-    grid-template-columns: 1fr;
-    gap: var(--mobile-gap);
-  }
-  
-  .chart-card {
-    padding: var(--mobile-padding);
-  }
-  
-  .chart-area {
-    min-height: 200px;
-  }
-  
-  .data-table {
-    font-size: 11px;
-  }
-  
-  .data-table th,
-  .data-table td {
-    padding: 6px 8px;
-  }
-  
-  /* Enhanced mobile table responsiveness */
-  .table-container {
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-  }
-  
-  .data-table {
-    min-width: 100%;
-  }
-  
-  /* Mobile chart responsiveness */
-  .chart-area canvas {
-    max-width: 100% !important;
-    height: auto !important;
-  }
-  
-  /* Mobile modal responsiveness */
-  .chart-modal-content {
-    max-width: 95vw;
-    max-height: 95vh;
-    margin: 10px;
-  }
-  
-  .chart-modal-header {
-    padding: 12px;
-  }
-  
-  .chart-modal-body {
-    padding: 12px;
-    min-height: 250px;
-  }
-}
+/* Consolidated into main responsive breakpoints above */
 
 /* ===== TABLET STYLES (768px and up) ===== */
 @media (min-width: 768px) {
   .dash-wrap {
     gap: var(--tablet-gap);
-    padding: 0;
+    padding: 0; /* Remove padding - main element already has padding */
     background: transparent;
   }
   
@@ -2603,7 +2759,14 @@
     flex-direction: row;
     align-items: flex-start;
     justify-content: space-between;
-    padding: var(--tablet-padding);
+    padding: var(--tablet-padding) 0 var(--tablet-padding) var(--tablet-padding);
+  }
+
+  .dropdowns-container {
+    padding: 0;
+    margin: 0;
+    margin-left: auto;
+    margin-right: 0;
   }
   
   .hero-left {
@@ -2620,11 +2783,16 @@
   .hero-text h1 {
     font-size: 18px;
     line-height: 1.2;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
   }
   
   .hero-text p {
     font-size: 12px;
     line-height: 1.4;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    white-space: normal;
   }
   
   .hero-pill {
@@ -2705,6 +2873,15 @@
     bottom: 12px;
     font-size: 12px;
     padding: 6px 10px;
+    white-space: nowrap;
+    max-width: calc(100% - 24px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  
+  .stat-card {
+    overflow: visible;
+    padding-bottom: 20px; /* Extra padding for badge */
   }
   
   .cards-row { 
@@ -2867,14 +3044,21 @@
   .dash-wrap {
     gap: var(--desktop-gap);
     padding: 0;
-    max-width: 1400px;
+    max-width: 1200px;
     margin: 0 auto;
-    background: transparent;
+    background: #ffffff;
   }
   
   .dash-hero {
-    padding: var(--desktop-padding);
+    padding: var(--desktop-padding) 0 var(--desktop-padding) var(--desktop-padding);
     align-items: flex-start;
+  }
+
+  .dropdowns-container {
+    padding: 0;
+    margin: 0;
+    margin-left: auto;
+    margin-right: 0;
   }
   
   .hero-left {
@@ -2890,11 +3074,16 @@
   .hero-text h1 {
     font-size: 20px;
     line-height: 1.2;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
   }
   
   .hero-text p {
     font-size: 13px;
     line-height: 1.4;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    white-space: normal;
   }
   
   .hero-pill {
@@ -2975,6 +3164,15 @@
     bottom: 14px;
     font-size: 13px;
     padding: 8px 12px;
+    white-space: nowrap;
+    max-width: calc(100% - 28px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  
+  .stat-card {
+    overflow: visible;
+    padding-bottom: 24px; /* Extra padding for badge */
   }
   
   .cards-row {
@@ -3169,81 +3367,194 @@
 /* Extra Small Mobile (320px and below) */
 @media (max-width: 320px) {
   .dash-wrap {
-    gap: 8px;
-    padding: 0;
-    background: transparent;
+    gap: 8px !important;
+    padding: 0 !important;
+    max-width: 100% !important;
+    width: 100% !important;
+    margin: 0 !important;
+    background: #ffffff !important;
+    border-radius: 0 !important;
+    overflow: visible !important;
+    min-width: 0 !important;
   }
   
   .dash-hero {
-    padding: 8px;
-    flex-direction: column;
-    gap: 8px;
+    padding: 8px !important;
+    flex-direction: column !important;
+    gap: 8px !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
+  }
+
+  .dropdowns-container {
+    padding: 0 !important;
+    margin: 0 !important;
+    margin-left: auto !important;
+    margin-right: 0 !important;
   }
   
   .hero-left {
-    align-items: flex-start;
-    gap: 8px;
+    align-items: flex-start !important;
+    gap: 8px !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
   }
   
   .hero-icon {
-    width: 24px;
-    height: 24px;
-    margin-top: 0;
+    width: 24px !important;
+    height: 24px !important;
+    margin-top: 0 !important;
+    flex-shrink: 0 !important;
+  }
+  
+  .hero-text {
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
   }
   
   .hero-text h1 {
-    font-size: 14px;
-    line-height: 1.3;
+    font-size: 14px !important;
+    line-height: 1.3 !important;
+    word-wrap: break-word !important;
+    overflow-wrap: break-word !important;
+    white-space: normal !important;
+    max-width: 100% !important;
   }
   
   .hero-text p {
-    font-size: 9px;
-    line-height: 1.4;
+    font-size: 9px !important;
+    line-height: 1.4 !important;
+    word-wrap: break-word !important;
+    overflow-wrap: break-word !important;
+    white-space: normal !important;
+    max-width: 100% !important;
+  }
+  
+  .dropdowns-container {
+    width: 100% !important;
+    max-width: 100% !important;
+    flex-wrap: wrap !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    margin-left: auto !important;
+    margin-right: 0 !important;
+  }
+  
+  .dropdown {
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
   }
   
   .hero-pill {
-    padding: 6px 8px;
-    font-size: 10px;
+    padding: 6px 8px !important;
+    font-size: 10px !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
+    justify-content: center !important;
+  }
+  
+  .panel {
+    width: 100% !important;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
+    padding: 8px !important;
+  }
+  
+  .panel-head {
+    width: 100% !important;
+    max-width: 100% !important;
+    flex-wrap: wrap !important;
+  }
+  
+  .panel-subtitle {
+    width: 100% !important;
+    max-width: 100% !important;
+    word-wrap: break-word !important;
+    overflow-wrap: break-word !important;
+    white-space: normal !important;
+    margin-left: 0 !important;
   }
   
   .stats-grid {
-    grid-template-columns: 1fr;
-    gap: 8px;
+    grid-template-columns: 1fr !important;
+    gap: 8px !important;
+    width: 100% !important;
+    max-width: 100% !important;
   }
   
   .stat-card {
-    padding: 12px;
-    min-height: 100px;
-  }
-  
-  .stat-value {
-    font-size: 24px;
+    padding: 12px !important;
+    min-height: 100px !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
   }
   
   .stat-title {
-    font-size: 10px;
+    font-size: 10px !important;
+    word-wrap: break-word !important;
+    overflow-wrap: break-word !important;
+    white-space: normal !important;
+    text-align: center !important;
+  }
+  
+  .stat-value {
+    font-size: 24px !important;
+    word-wrap: break-word !important;
   }
   
   .mini-card {
-    padding: 8px;
-    min-height: 60px;
+    padding: 8px !important;
+    min-height: 60px !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
   }
   
   .chart-card {
-    padding: 12px;
+    padding: 12px !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
   }
   
   .chart-area {
-    min-height: 180px;
+    min-height: 180px !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    overflow-x: auto !important;
+  }
+  
+  .table-container {
+    width: 100% !important;
+    max-width: 100% !important;
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+  }
+  
+  .data-table {
+    min-width: 400px !important;
+    width: 100% !important;
   }
 }
 
 /* Small Mobile (321px - 480px) */
 @media (min-width: 321px) and (max-width: 480px) {
   .dash-wrap {
-    gap: 10px;
-    padding: 0;
-    background: transparent;
+    gap: 10px !important;
+    padding: 0 !important;
+    max-width: 100% !important;
+    width: 100% !important;
+    margin: 0 !important;
+    background: #ffffff !important;
+    border-radius: 0 !important;
+    overflow: visible !important;
+    min-width: 0 !important;
   }
   
   .dash-hero {
@@ -3300,9 +3611,15 @@
 /* Medium Mobile (481px - 640px) */
 @media (min-width: 481px) and (max-width: 640px) {
   .dash-wrap {
-    gap: 12px;
-    padding: 0;
-    background: transparent;
+    gap: 12px !important;
+    padding: 0 !important;
+    max-width: 100% !important;
+    width: 100% !important;
+    margin: 0 !important;
+    background: #ffffff !important;
+    border-radius: 0 !important;
+    overflow: visible !important;
+    min-width: 0 !important;
   }
   
   .dash-hero {
@@ -3359,9 +3676,15 @@
 /* Large Mobile (641px - 767px) */
 @media (min-width: 641px) and (max-width: 767px) {
   .dash-wrap {
-    gap: 14px;
-    padding: 0;
-    background: transparent;
+    gap: 14px !important;
+    padding: 0 !important;
+    max-width: 100% !important;
+    width: 100% !important;
+    margin: 0 !important;
+    background: #ffffff !important;
+    border-radius: 0 !important;
+    overflow: visible !important;
+    min-width: 0 !important;
   }
   
   .dash-hero {

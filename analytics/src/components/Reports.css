@@ -1,12 +1,22 @@
 /* Reports Component Styles */
 .reports-container {
   width: 100%;
-  max-width: 1200px;
+  max-width: 100%; /* Responsive - full width on mobile */
   margin: 0 auto;
   background: #ffffff;
-  border-radius: 12px;
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  border-radius: 0; /* No border radius on mobile for edge-to-edge */
+  box-shadow: none; /* No shadow on mobile */
   overflow: hidden;
+  box-sizing: border-box;
+}
+
+/* Responsive container sizing */
+@media (min-width: 768px) {
+  .reports-container {
+    max-width: 1200px;
+    border-radius: 12px;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  }
 }
 
 /* Chart Modal Styles */
@@ -196,13 +206,13 @@
 .print-report-btn {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   background: rgba(255, 255, 255, 0.1);
   border: 1px solid rgba(255, 255, 255, 0.2);
   color: white;
-  padding: 10px 16px;
+  padding: 8px 14px;
   border-radius: 8px;
-  font-size: 14px;
+  font-size: 12px;
   font-weight: 500;
   cursor: pointer;
   transition: all 0.2s ease;
@@ -221,6 +231,8 @@
 
 .print-report-btn svg {
   flex-shrink: 0;
+  width: 14px;
+  height: 14px;
 }
 
 .hero-left {
@@ -260,18 +272,39 @@
   position: relative;
 }
 
+/* Dropdowns Container - Reduces spacing between dropdowns */
+.dropdowns-container {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-shrink: 0; /* Prevent dropdowns from shrinking */
+  min-width: 0; /* Allow container to shrink if needed */
+  padding: 0;
+  margin: 0;
+  margin-left: auto;
+  margin-right: 0;
+  justify-content: flex-end;
+}
+
+.dropdowns-container .dropdown {
+  min-width: 0; /* Allow dropdown to shrink on small screens */
+  width: auto;
+  flex: 0 1 auto; /* Don't grow, can shrink, auto basis */
+  max-width: 100%;
+}
+
 .hero-pill {
   background: rgba(255, 255, 255, 0.1);
   border: 1px solid rgba(255, 255, 255, 0.2);
   color: white;
-  padding: 12px 16px;
-  border-radius: 12px;
-  font-size: 14px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-size: 12px;
   font-weight: 500;
   cursor: pointer;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   backdrop-filter: blur(10px);
   transition: all 0.2s ease;
 }
@@ -279,6 +312,11 @@
 .hero-pill:hover {
   background: rgba(255, 255, 255, 0.15);
   border-color: rgba(255, 255, 255, 0.3);
+}
+
+.hero-pill svg {
+  width: 14px;
+  height: 14px;
 }
 
 .dropdown-menu {
@@ -687,11 +725,51 @@
 
 @media (max-width: 768px) {
   .reports-container {
-    width: 100vw;
-    max-width: 100vw;
+    width: 100%;
+    max-width: 100%;
     margin: 0;
     border-radius: 0;
     box-shadow: none;
+  }
+  
+  /* Ensure tables scroll horizontally on mobile */
+  .table-container,
+  .usage-table-container,
+  .ranking-table-container {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    width: 100%;
+    max-width: 100%;
+  }
+  
+  table,
+  .usage-table,
+  .ranking-table {
+    min-width: 600px; /* Minimum width to allow horizontal scroll */
+    width: 100%;
+  }
+  
+  /* Make charts responsive */
+  .chart-area {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    height: auto !important;
+    min-height: 200px;
+  }
+  
+  .chart-area canvas {
+    max-width: 100% !important;
+    height: auto !important;
+  }
+  
+  /* Ensure text wraps */
+  .hero-text p,
+  .panel-subtitle,
+  .section-title {
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    white-space: normal;
   }
   
   .reports-main-container {
@@ -726,9 +804,39 @@
   }
   
   .dropdown-menu {
-    min-width: 100%;
-    right: 0;
-    left: 0;
+    position: absolute !important;
+    top: calc(100% + 8px) !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: auto !important;
+    width: 100% !important;
+    max-width: none !important;
+    min-width: 100% !important;
+    z-index: 50 !important;
+    max-height: 50vh !important;
+    overflow-y: auto !important;
+    overflow-x: visible !important;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.15) !important;
+    border: 1px solid #d1d5db !important;
+    border-radius: 8px !important;
+    padding: 8px !important;
+    display: block !important;
+  }
+  
+  .dropdown-menu::before,
+  .dropdown-menu::after {
+    display: none !important;
+  }
+  
+  .dropdown {
+    z-index: 10 !important;
+    width: 100% !important;
+    min-width: auto !important;
+  }
+  
+  .menu-item {
+    padding: 10px 12px !important;
+    font-size: 14px !important;
   }
   
   .metrics-grid {
@@ -825,10 +933,28 @@
 
 @media (max-width: 480px) {
   .reports-container {
-    width: 100vw;
-    max-width: 100vw;
+    width: 100%;
+    max-width: 100%;
     margin: 0;
     border-radius: 0;
+  }
+  
+  /* Ensure all tables scroll on small screens */
+  .table-preview,
+  .reports-container .table-preview {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  
+  /* Make chart legends responsive */
+  .chart-legend {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  
+  .chart-legend-item {
+    font-size: 11px;
+    white-space: nowrap;
   }
   
   .reports-main-container {
@@ -854,18 +980,18 @@
   
   .hero-text h1 {
     font-size: 18px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 200px;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    white-space: normal;
+    max-width: 100%;
   }
   
   .hero-text p {
     font-size: 12px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 200px;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    white-space: normal;
+    max-width: 100%;
   }
   
   .hero-actions {
@@ -889,14 +1015,44 @@
   }
   
   .dropdown-menu {
-    position: fixed;
-    top: auto;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    border-radius: 12px 12px 0 0;
-    max-height: 50vh;
-    overflow-y: auto;
+    position: absolute !important;
+    top: calc(100% + 6px) !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: auto !important;
+    width: 100% !important;
+    max-width: none !important;
+    min-width: 100% !important;
+    z-index: 50 !important;
+    max-height: 40vh !important;
+    overflow-y: auto !important;
+    overflow-x: visible !important;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.2) !important;
+    border: 1px solid #d1d5db !important;
+    border-radius: 8px !important;
+    padding: 6px !important;
+    display: block !important;
+  }
+  
+  .dropdown-menu::before,
+  .dropdown-menu::after {
+    display: none !important;
+  }
+  
+  .dropdown {
+    z-index: 10 !important;
+    width: 100% !important;
+    min-width: auto !important;
+  }
+  
+  .menu-item {
+    padding: 14px 16px !important;
+    font-size: 15px !important;
+    border-bottom: 1px solid #e5e7eb;
+  }
+  
+  .menu-item:last-child {
+    border-bottom: none;
   }
   
   .menu-item {

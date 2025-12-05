@@ -509,6 +509,19 @@
   background: #8b5cf6;
 }
 
+/* Toggle Switch Override Mode (main_status = ON) - Blue */
+.toggle-switch.override .toggle-slider {
+  background: #3b82f6;
+}
+
+.toggle-switch.override .toggle-input:checked + .toggle-slider {
+  background: #3b82f6;
+}
+
+.toggle-switch.override .toggle-input:not(:checked) + .toggle-slider {
+  background: #3b82f6;
+}
+
 /* No Devices State */
 .no-devices {
   text-align: center;
@@ -1762,6 +1775,24 @@
   justify-content: center;
   z-index: 1000;
   backdrop-filter: blur(4px);
+  padding: 16px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  box-sizing: border-box;
+}
+
+/* General Modal Content Styles */
+.modal-content {
+  background: white;
+  border-radius: 16px;
+  padding: 24px;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+  animation: modalSlideIn 0.2s ease-out;
+  max-width: 90vw;
+  max-height: 90vh;
+  overflow-y: auto;
+  box-sizing: border-box;
+  position: relative;
 }
 
 .success-overlay {
@@ -2073,8 +2104,12 @@
 .history-modal {
   max-width: 800px;
   width: 90%;
+  max-width: calc(100vw - 32px);
   max-height: 90vh;
+  max-height: calc(100vh - 32px);
   overflow-y: auto;
+  box-sizing: border-box;
+  margin: auto;
 }
 
 .history-modal .modal-icon.history {
@@ -2512,7 +2547,16 @@
   
   .history-modal {
     width: 95%;
+    max-width: calc(100vw - 32px);
     max-height: 95vh;
+    max-height: calc(100vh - 32px);
+    padding: 16px;
+    box-sizing: border-box;
+  }
+  
+  .modal-content {
+    max-width: calc(100vw - 32px);
+    max-height: calc(100vh - 32px);
     padding: 16px;
   }
   

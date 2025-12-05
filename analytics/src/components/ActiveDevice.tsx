@@ -441,6 +441,97 @@ const SuccessModal = memo(({ successModal, setModalOpen, setSuccessModal }: {
   )
 })
 
+// Schedule Override Modal Component - for turning OFF device during active schedule
+const ScheduleOverrideModal = memo(({ 
+  scheduleOverrideModal, 
+  setModalOpen, 
+  setScheduleOverrideModal, 
+  onConfirmOverride 
+}: {
+  scheduleOverrideModal: { isOpen: boolean; device: any; scheduleInfo: string };
+  setModalOpen: (open: boolean) => void;
+  setScheduleOverrideModal: (modal: { isOpen: boolean; device: any; scheduleInfo: string }) => void;
+  onConfirmOverride: (deviceId: string) => void;
+}) => {
+  if (!scheduleOverrideModal.isOpen || !scheduleOverrideModal.device) return null
+
+  const device = scheduleOverrideModal.device
+
+  const handleConfirm = () => {
+    setModalOpen(false)
+    setScheduleOverrideModal({ isOpen: false, device: null, scheduleInfo: '' })
+    // Call the override handler
+    onConfirmOverride(device.id)
+  }
+
+  const handleCancel = () => {
+    setModalOpen(false)
+    setScheduleOverrideModal({ isOpen: false, device: null, scheduleInfo: '' })
+  }
+
+  return (
+    <div className="modal-overlay warning-overlay" onClick={handleCancel}>
+      <div className="warning-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="warning-icon">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="12" cy="12" r="10" fill="#fef3c7" stroke="#f59e0b" strokeWidth="2"/>
+            <path d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" fill="#f59e0b"/>
+          </svg>
+        </div>
+        <h3>Override Schedule?</h3>
+        <p><strong>"{device.outletName}" is currently within its scheduled time.</strong></p>
+        <div className="warning-details">
+          <div className="warning-stat">
+            <span className="label">Device:</span>
+            <span className="value">{device.outletName}</span>
+          </div>
+          <div className="warning-stat">
+            <span className="label">Location:</span>
+            <span className="value">{device.officeRoom}</span>
+          </div>
+          <div className="warning-stat">
+            <span className="label">Schedule:</span>
+            <span className="value">{scheduleOverrideModal.scheduleInfo}</span>
+          </div>
+        </div>
+        <p className="warning-message">
+          This device is scheduled to be ON right now. Do you want to override the schedule and turn it OFF?
+        </p>
+        <div className="bypass-info">
+          <div className="bypass-info-header">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <circle cx="12" cy="12" r="10" fill="#dbeafe" stroke="#3b82f6" strokeWidth="2"/>
+              <path d="M12 16v-4m0-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" fill="#3b82f6"/>
+            </svg>
+            <span className="bypass-info-title">Important Notice</span>
+          </div>
+          <p className="bypass-info-text">
+            When you override the schedule and turn OFF this device, the <strong>main_status</strong> will be set to ON. 
+            This will <strong>enable manual override mode</strong> for this device. 
+            The device will remain OFF until manually turned on, and the schedule will not automatically turn it back on.
+          </p>
+        </div>
+        <div className="modal-footer">
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={handleCancel}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn-primary"
+            onClick={handleConfirm}
+          >
+            Override & Turn OFF
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+})
+
 const BypassModal = memo(({ bypassModal, setModalOpen, setBypassModal, toggleDeviceStatus, userRole = 'Coordinator' }: {
   bypassModal: { isOpen: boolean; device: any; reason: string };
   setModalOpen: (open: boolean) => void;
@@ -881,6 +972,17 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
     isOpen: false,
     device: null,
     reason: ''
+  })
+
+  // Schedule override modal state (for turning OFF device during active schedule)
+  const [scheduleOverrideModal, setScheduleOverrideModal] = useState<{
+    isOpen: boolean;
+    device: Device | null;
+    scheduleInfo: string;
+  }>({
+    isOpen: false,
+    device: null,
+    scheduleInfo: ''
   })
 
   // Idle detection state
@@ -2926,6 +3028,61 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
     )
   }, [activeDevices, searchQuery])
 
+  // Handle schedule override confirmation - turn OFF device and set main_status to ON
+  const handleScheduleOverride = async (deviceId: string) => {
+    try {
+      const device = activeDevices.find(d => d.id === deviceId)
+      if (!device) return
+
+      const outletKey = device.outletName.replace(/\s+/g, '_').replace(/'/g, '')
+      
+      console.log(`ActiveDevice: Schedule override confirmed - Turning OFF ${outletKey} with main_status=ON`)
+      
+      // Update control to OFF and main_status to ON (override mode)
+      await update(ref(realtimeDb, `devices/${outletKey}/control`), {
+        device: 'off'
+      })
+      
+      await update(ref(realtimeDb, `devices/${outletKey}/relay_control`), {
+        main_status: 'ON'
+      })
+      
+      // Update status to OFF
+      await update(ref(realtimeDb, `devices/${outletKey}`), {
+        status: 'OFF'
+      })
+      
+      console.log(`Successfully overridden schedule and turned OFF ${outletKey} with main_status=ON`)
+      
+      // Log the device control activity
+      await logDeviceControlActivity(
+        'Turn off outlet',
+        device.outletName,
+        device.officeRoom || 'Unknown',
+        device.appliances || 'Unknown'
+      )
+      
+      // Show success modal
+      showModalSafely('success', {
+        deviceName: device.outletName,
+        action: 'turned OFF (Schedule Override)'
+      })
+    } catch (error) {
+      console.error('Error overriding schedule:', error)
+      const deviceName = activeDevices.find(d => d.id === deviceId)?.outletName || 'Unknown Device'
+      showModalSafely('error', {
+        message: `Failed to override schedule for "${deviceName}". Please try again.`
+      })
+    } finally {
+      // Clear loading state
+      setUpdatingDevices(prev => {
+        const newSet = new Set(prev)
+        newSet.delete(deviceId)
+        return newSet
+      })
+    }
+  }
+
   // Toggle device status (ON/OFF) - updates both relay status and main status
   // Shows bypass confirmation modal when restrictions exist
   const toggleDeviceStatus = async (deviceId: string, bypassConfirmed: boolean = false) => {
@@ -2961,7 +3118,115 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
       
       // If device is currently ON, turn it OFF
       if (currentControlState === 'on') {
-        console.log(`ActiveDevice: Turning OFF ${outletKey} - no validation needed`)
+        // Check if device is within its scheduled time and schedule limit hasn't been exceeded
+        const deviceRef = ref(realtimeDb, `devices/${outletKey}`)
+        const deviceSnapshot = await get(deviceRef)
+        const deviceData = deviceSnapshot.val()
+        
+        // Check if device has a schedule and is currently within schedule time
+        if (deviceData?.schedule && (deviceData.schedule.timeRange || deviceData.schedule.startTime)) {
+          // Check if device is in any combined group for schedule check
+          const outletDisplayName = outletKey.replace('_', ' ')
+          const normalizedOutletKey = outletKey.replace(/_/g, ' ').toLowerCase().trim()
+          
+          let deviceDepartmentLimit: { department: string; limitInfo: any; device_control?: string } | null = null
+          const deviceDept = (deviceData.office_info as any)?.department
+          const deviceDeptKey = deviceDept ? deviceDept.toLowerCase().replace(/\s+/g, '-') : null
+          
+          if (deviceDeptKey && allDepartmentCombinedLimits[deviceDeptKey]) {
+            const deptLimitInfo = allDepartmentCombinedLimits[deviceDeptKey]
+            if (deptLimitInfo.enabled && deptLimitInfo.selectedOutlets) {
+              const isInDeptLimit = deptLimitInfo.selectedOutlets.some((selectedOutlet: string) => {
+                const normalizedSelected = selectedOutlet.replace(/_/g, ' ').toLowerCase().trim()
+                return normalizedSelected === normalizedOutletKey || 
+                       selectedOutlet === outletKey ||
+                       selectedOutlet.replace(/_/g, ' ') === outletKey.replace(/_/g, ' ')
+              })
+              
+              if (isInDeptLimit) {
+                const deptPath = getDepartmentCombinedLimitPath(deviceDeptKey)
+                const deptRef = ref(realtimeDb, deptPath)
+                const deptSnapshot = await get(deptRef)
+                const deptDeviceControl = deptSnapshot.exists() ? deptSnapshot.val()?.device_control : 'on'
+                
+                deviceDepartmentLimit = {
+                  department: deviceDeptKey,
+                  limitInfo: deptLimitInfo,
+                  device_control: deptDeviceControl
+                }
+              }
+            }
+          }
+          
+          const isInAnyCombinedGroup = !!deviceDepartmentLimit
+          const isWithinSchedule = isDeviceActiveBySchedule(deviceData.schedule, 'on', deviceData, isInAnyCombinedGroup)
+          
+          // Check if schedule limit hasn't been exceeded
+          let scheduleLimitExceeded = false
+          if (!isInAnyCombinedGroup) {
+            // Check individual monthly limit
+            const powerLimit = deviceData?.relay_control?.auto_cutoff?.power_limit || 0
+            if (powerLimit > 0) {
+              const now = new Date()
+              const currentYear = now.getFullYear()
+              const currentMonth = now.getMonth() + 1
+              const daysInMonth = new Date(currentYear, currentMonth, 0).getDate()
+              let totalMonthlyEnergy = 0
+              
+              for (let day = 1; day <= daysInMonth; day++) {
+                const dateKey = `day_${currentYear}_${String(currentMonth).padStart(2, '0')}_${String(day).padStart(2, '0')}`
+                const dayData = deviceData.daily_logs?.[dateKey]
+                if (dayData && dayData.total_energy) {
+                  totalMonthlyEnergy += dayData.total_energy
+                }
+              }
+              
+              scheduleLimitExceeded = totalMonthlyEnergy >= powerLimit
+            }
+          } else if (deviceDepartmentLimit) {
+            // Check combined monthly limit
+            if (deviceDepartmentLimit.device_control === 'off') {
+              scheduleLimitExceeded = true
+            } else {
+              const monthlyLimitCheck = await checkMonthlyLimitBeforeTurnOn(outletKey, {
+                ...deviceDepartmentLimit.limitInfo,
+                department: deviceDepartmentLimit.department
+              })
+              scheduleLimitExceeded = !monthlyLimitCheck.canTurnOn
+            }
+          }
+          
+          // If device is within schedule and limit hasn't been exceeded, show override confirmation
+          if (isWithinSchedule && !scheduleLimitExceeded) {
+            const schedule = deviceData.schedule
+            let scheduleInfo = ''
+            
+            if (schedule.timeRange && schedule.timeRange !== 'No schedule') {
+              scheduleInfo = `${schedule.timeRange} (${schedule.frequency || 'Daily'})`
+            } else if (schedule.startTime && schedule.endTime) {
+              scheduleInfo = `${schedule.startTime} - ${schedule.endTime} (${schedule.frequency || 'Daily'})`
+            } else {
+              scheduleInfo = 'Active Schedule'
+            }
+            
+            setScheduleOverrideModal({
+              isOpen: true,
+              device: device,
+              scheduleInfo: scheduleInfo
+            })
+            
+            // Clear loading state before returning
+            setUpdatingDevices(prev => {
+              const newSet = new Set(prev)
+              newSet.delete(deviceId)
+              return newSet
+            })
+            return
+          }
+        }
+        
+        // No schedule or schedule limit exceeded or outside schedule - turn OFF normally
+        console.log(`ActiveDevice: Turning OFF ${outletKey} - no schedule override needed`)
         newControlState = 'off'
         newMainStatus = 'OFF'
       } else {
@@ -3306,8 +3571,13 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
     )
   }
 
-  // Get toggle switch styling based on device status
+  // Get toggle switch styling based on device status and main_status
   const getToggleSwitchClass = (device: Device) => {
+    // If main_status is ON, show blue (override/bypass mode)
+    if (device.mainStatus === 'ON') {
+      return 'toggle-switch override'
+    }
+    // Otherwise, use normal active/inactive styling
     if (device.status === 'Active') {
       return 'toggle-switch active'
     } else {
@@ -3559,6 +3829,14 @@ export default function ActiveDevice({ onNavigate, userRole = 'Coordinator' }: A
 
       {/* Schedule Conflict Modal */}
       <ScheduleConflictModal />
+
+      {/* Schedule Override Modal */}
+      <ScheduleOverrideModal 
+        scheduleOverrideModal={scheduleOverrideModal}
+        setModalOpen={setModalOpen}
+        setScheduleOverrideModal={setScheduleOverrideModal}
+        onConfirmOverride={handleScheduleOverride}
+      />
 
       {/* Bypass Confirmation Modal */}
       <BypassModal 

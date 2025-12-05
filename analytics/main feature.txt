@@ -1,0 +1,183 @@
+// **INDIVIDUAL LIMIT**
+if (deviceData && !skipIndividualLimitCheck) {
+  const powerLimit = deviceData.relay_control?.auto_cutoff?.power_limit || 0
+  if (deviceData.daily_logs) {
+    const now = new Date()
+    const currentYear = now.getFullYear()
+    const currentMonth = now.getMonth() + 1
+    const daysInMonth = new Date(currentYear, currentMonth, 0).getDate()
+    let totalMonthlyEnergy = 0
+    for (let day = 1; day <= daysInMonth; day++) {
+      const dateKey = `day_${currentYear}_${String(currentMonth).padStart(2, '0')}_${String(day).padStart(2, '0')}`
+      const dayData = deviceData.daily_logs[dateKey]
+      if (dayData && dayData.total_energy) {
+        totalMonthlyEnergy += dayData.total_energy
+      }
+    }
+    if (powerLimit > 0 && totalMonthlyEnergy >= powerLimit) {
+      console.log(`Schedule check: Device ${deviceData.outletName || 'Unknown'} power limit exceeded:`, {
+        monthlyEnergy: `${(totalMonthlyEnergy * 1000).toFixed(3)}W`,
+        powerLimit: `${powerLimit * 1000}W`,
+        scheduleResult: false,
+        reason: 'Monthly energy consumption exceeded power limit'
+      })
+      return false
+    }
+  }
+}
+
+const deviceOutletName = device.outletName || ''
+const deviceOutletNameWithSpace = deviceOutletName.replace('_', ' ')
+// **COMBINED LIMIT CONFIG**
+const combinedLimitRef = ref(realtimeDb, 'combined_limit_settings')
+const combinedLimitSnapshot = await get(combinedLimitRef)
+const combinedLimitData = combinedLimitSnapshot.exists() ? combinedLimitSnapshot.val() : null
+const combinedLimitWh = combinedLimitData?.combinedLimit || combinedLimitData?.combined_limit_watts || 0
+const hasValidCombinedLimit = combinedLimitData?.enabled && (typeof combinedLimitWh === 'number' ? combinedLimitWh > 0 : false)
+const selectedOutletsFromLimit = combinedLimitData?.selected_outlets || combinedLimitData?.selectedOutlets || []
+const isInCombinedGroup = hasValidCombinedLimit && selectedOutletsFromLimit.some((outlet: string) => {
+  const normalizedDeviceName = deviceOutletName.replace(/_/g, ' ').toLowerCase().trim()
+  const normalizedOutletName = outlet.replace(/_/g, ' ').toLowerCase().trim()
+  return normalizedDeviceName === normalizedOutletName ||
+         deviceOutletName === outlet ||
+         deviceOutletNameWithSpace === outlet
+})
+// **COMBINED LIMIT MONTHLY CHECK**
+if (isInCombinedGroup && combinedLimitData) {
+  const monthlyLimitCheck = await checkMonthlyLimitBeforeTurnOn(outletKey, combinedLimitData)
+  if (!monthlyLimitCheck.canTurnOn) {
+    const totalMonthlyEnergy = monthlyLimitCheck.currentMonthlyEnergy || 0
+    const monthlyLimitWatts = monthlyLimitCheck.combinedLimit
+    if (typeof monthlyLimitWatts === 'number' && monthlyLimitWatts > 0) {
+      onLimitExceeded(
+        device.outletName,
+        'monthly',
+        totalMonthlyEnergy,
+        monthlyLimitWatts,
+        timeRange
+      )
+      return
+    }
+  }
+}
+// **COMBINED LIMIT ENFORCEMENT**
+if (isInCombinedGroup) {
+  if (monthlyTotalEnergyWh >= combinedLimitWh) {
+    onLimitExceeded(
+      device.outletName,
+      'combined',
+      monthlyTotalEnergyWh,
+      combinedLimitWh,
+      timeRange
+    )
+    return
+  }
+} else {
+  // **INDIVIDUAL LIMIT FALLBACK**
+  const powerLimit = deviceData.relay_control?.auto_cutoff?.power_limit || 0
+  const powerLimitWh = powerLimit * 1000
+  if (powerLimitWh > 0 && monthlyTotalEnergyWh >= powerLimitWh) {
+    onLimitExceeded(
+      device.outletName,
+      'individual',
+      monthlyTotalEnergyWh,
+      powerLimitWh,
+      timeRange
+    )
+    return
+  }
+}
+
+// **SCHEDULE INTERVAL CHECK**
+useEffect(() => {
+  const initialDelay = setTimeout(() => {
+    checkScheduleAndUpdateDevices()
+    checkPowerLimitsAndTurnOffDevices()
+  }, 500) // 500ms delay to ensure database state is ready
+
+  const scheduleInterval = setInterval(checkScheduleAndUpdateDevices, 10000) // 10 seconds
+  const powerLimitInterval = setInterval(checkPowerLimitsAndTurnOffDevices, 12000) // 12 seconds
+
+  return () => {
+    clearTimeout(initialDelay)
+    clearInterval(scheduleInterval)
+    clearInterval(powerLimitInterval)
+
+    Object.values(autoTurnoffTimers).forEach(timer => {
+      if (timer) {
+        clearTimeout(timer)
+      }
+    })
+  }
+}, [allDepartmentCombinedLimits])
+
+const turnOffPromises = combinedLimitInfo.selectedOutlets.map(async (outletKey: string) => {
+  try {
+    const firebaseKey = outletKey.replace(/\s+/g, '_').replace(/'/g, '')
+    const deviceData = devicesData[firebaseKey]
+
+    console.log(`ActiveDevice: Processing ${outletKey} -> Firebase key: ${firebaseKey}`)
+
+    if (!deviceData) {
+      console.error(`ActiveDevice: Device ${firebaseKey} not found in Firebase!`)
+      return { outletKey, success: false, error: 'Device not found' }
+    }
+
+    const currentMainStatus = deviceData?.relay_control?.main_status || 'ON'
+    if (currentMainStatus === 'ON') {
+      console.log(`ActiveDevice: Skipping ${outletKey} - main_status is ON (bypass mode/override active)`)
+      return { outletKey, success: true, skipped: true, reason: 'Bypass mode active' }
+    }
+
+    const controlRef = ref(realtimeDb, `devices/${firebaseKey}/control`)
+    await update(controlRef, { device: 'off' })
+    console.log(`ActiveDevice: Set control.device='off' for ${firebaseKey}`)
+
+    const statusRef = ref(realtimeDb, `devices/${firebaseKey}`)
+    await update(statusRef, { status: 'OFF' })
+    console.log(`ActiveDevice: Set status='OFF' for ${firebaseKey}`)
+
+    console.log(`ActiveDevice: COMPLETELY TURNED OFF ${outletKey} (${firebaseKey}) due to monthly limit`)
+
+    return { outletKey, success: true }
+  } catch (error) {
+    console.error(` ActiveDevice: FAILED to turn off ${outletKey}:`, error)
+    return { outletKey, success: false, error }
+  }
+})
+
+// **STATUS BADGE**
+const getStatusBadge = (status: string) => {
+  const statusClasses: { [key: string]: string } = {
+    'Active': 'status-active',
+    'Inactive': 'status-inactive',
+    'Idle': 'status-idle',
+    'UNPLUG': 'status-unplug'
+  }
+  
+  return (
+    <span className={`status-badge ${statusClasses[status] || 'status-inactive'}`}>
+      <span className={`status-dot ${statusClasses[status] || 'status-inactive'}`}></span>
+      {status}
+    </span>
+  )
+}
+
+{/* **STATUS CELL** */}
+<td>
+  <div className="status-container">
+    {getStatusBadge(device.status)}
+    {device.schedule?.timeRange && (
+      <div
+        className={`schedule-indicator ${device.status === 'Active' ? 'active' : 'inactive'}`}
+        title={`Schedule: ${device.schedule.timeRange} (${device.schedule.frequency || ''}) - Currently ${device.status === 'Active' ? 'ACTIVE' : device.status === 'UNPLUG' ? 'UNPLUGGED' : 'INACTIVE'}`}
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2"/>
+          <polyline points="12,6 12,12 16,14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+        </svg>
+      </div>
+    )}
+  </div>
+</td>
+

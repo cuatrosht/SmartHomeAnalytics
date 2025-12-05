@@ -531,6 +531,33 @@
   z-index: 1000;
   padding: 20px;
   backdrop-filter: blur(4px);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  box-sizing: border-box;
+  scrollbar-width: none !important; /* Firefox */
+  -ms-overflow-style: none !important; /* IE and Edge */
+}
+
+.modal-overlay::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  background: transparent !important;
+}
+
+.modal-overlay::-webkit-scrollbar-track {
+  display: none !important;
+  background: transparent !important;
+}
+
+.modal-overlay::-webkit-scrollbar-thumb {
+  display: none !important;
+  background: transparent !important;
+}
+
+.modal-overlay::-webkit-scrollbar-corner {
+  display: none !important;
+  background: transparent !important;
 }
 
 .modal-content {
@@ -539,8 +566,43 @@
   box-shadow: 0 25px 50px rgba(0, 0, 0, 0.25);
   max-width: 480px;
   width: 100%;
+  max-width: calc(100vw - 40px);
+  max-height: calc(100vh - 40px);
   border: 1px solid rgba(0, 0, 0, 0.1);
   overflow: hidden;
+  overflow-y: auto;
+  box-sizing: border-box;
+  position: relative;
+}
+
+/* Ensure edit-schedule-modal overrides modal-content */
+.modal-content.edit-schedule-modal {
+  max-width: 650px !important;
+  width: 90% !important;
+  scrollbar-width: none !important; /* Firefox */
+  -ms-overflow-style: none !important; /* IE and Edge */
+}
+
+.modal-content.edit-schedule-modal::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  background: transparent !important;
+}
+
+.modal-content.edit-schedule-modal::-webkit-scrollbar-track {
+  display: none !important;
+  background: transparent !important;
+}
+
+.modal-content.edit-schedule-modal::-webkit-scrollbar-thumb {
+  display: none !important;
+  background: transparent !important;
+}
+
+.modal-content.edit-schedule-modal::-webkit-scrollbar-corner {
+  display: none !important;
+  background: transparent !important;
 }
 
 .modal-header {
@@ -649,12 +711,69 @@
   box-shadow: none;
 }
 
-/* Edit Schedule Modal Specific Styles */
+/* Edit Schedule Modal Specific Styles - Highest Priority */
+.modal-overlay .modal-content.edit-schedule-modal,
+.modal-overlay .edit-schedule-modal,
+.modal-content.edit-schedule-modal,
 .edit-schedule-modal {
-  max-width: 520px;
-  width: 90%;
-  max-height: 90vh;
-  overflow-y: auto;
+  max-width: 650px !important;
+  width: 90% !important;
+  max-height: 90vh !important;
+  overflow-y: auto !important;
+  scrollbar-width: none !important; /* Firefox */
+  -ms-overflow-style: none !important; /* IE and Edge */
+}
+
+.modal-overlay .modal-content.edit-schedule-modal *,
+.modal-overlay .edit-schedule-modal *,
+.modal-content.edit-schedule-modal *,
+.edit-schedule-modal * {
+  scrollbar-width: none !important; /* Firefox */
+  -ms-overflow-style: none !important; /* IE and Edge */
+}
+
+.modal-overlay .modal-content.edit-schedule-modal::-webkit-scrollbar,
+.modal-overlay .edit-schedule-modal::-webkit-scrollbar,
+.modal-content.edit-schedule-modal::-webkit-scrollbar,
+.edit-schedule-modal::-webkit-scrollbar {
+  display: none !important; /* Chrome, Safari, Opera */
+  width: 0 !important;
+  height: 0 !important;
+  background: transparent !important;
+}
+
+.modal-overlay .modal-content.edit-schedule-modal *::-webkit-scrollbar,
+.modal-overlay .edit-schedule-modal *::-webkit-scrollbar,
+.modal-content.edit-schedule-modal *::-webkit-scrollbar,
+.edit-schedule-modal *::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  background: transparent !important;
+}
+
+.modal-overlay .modal-content.edit-schedule-modal::-webkit-scrollbar-track,
+.modal-overlay .edit-schedule-modal::-webkit-scrollbar-track,
+.modal-content.edit-schedule-modal::-webkit-scrollbar-track,
+.edit-schedule-modal::-webkit-scrollbar-track {
+  display: none !important;
+  background: transparent !important;
+}
+
+.modal-overlay .modal-content.edit-schedule-modal::-webkit-scrollbar-thumb,
+.modal-overlay .edit-schedule-modal::-webkit-scrollbar-thumb,
+.modal-content.edit-schedule-modal::-webkit-scrollbar-thumb,
+.edit-schedule-modal::-webkit-scrollbar-thumb {
+  display: none !important;
+  background: transparent !important;
+}
+
+.modal-overlay .modal-content.edit-schedule-modal::-webkit-scrollbar-corner,
+.modal-overlay .edit-schedule-modal::-webkit-scrollbar-corner,
+.modal-content.edit-schedule-modal::-webkit-scrollbar-corner,
+.edit-schedule-modal::-webkit-scrollbar-corner {
+  display: none !important;
+  background: transparent !important;
 }
 
 .device-info {
@@ -1164,10 +1283,21 @@
 
 /* Desktop Responsive Design */
 @media (min-width: 1025px) {
+  .modal-content.edit-schedule-modal,
   .edit-schedule-modal {
-    max-width: 520px;
-    width: 90%;
+    max-width: 650px !important;
+    width: 90% !important;
     margin: 0 auto;
+    scrollbar-width: none !important; /* Firefox */
+    -ms-overflow-style: none !important; /* IE and Edge */
+  }
+
+  .modal-content.edit-schedule-modal::-webkit-scrollbar,
+  .edit-schedule-modal::-webkit-scrollbar {
+    display: none !important;
+    width: 0 !important;
+    height: 0 !important;
+    background: transparent !important;
   }
 
   .edit-schedule-modal .time-section {
@@ -1178,6 +1308,12 @@
   .edit-schedule-modal .days-grid {
     grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
     gap: 12px;
+  }
+  
+  /* Make button text smaller on desktop to match mobile size */
+  .modal-footer .btn-primary,
+  .modal-footer .btn-secondary {
+    font-size: 12px;
   }
 }
 
@@ -1301,10 +1437,21 @@
     border-radius: 12px;
   }
 
+  .modal-content.edit-schedule-modal,
   .edit-schedule-modal {
-    max-width: calc(100vw - 40px);
-    width: 95%;
-    margin: 20px;
+    max-width: calc(100vw - 30px) !important;
+    width: 96% !important;
+    margin: 15px !important;
+    scrollbar-width: none !important; /* Firefox */
+    -ms-overflow-style: none !important; /* IE and Edge */
+  }
+
+  .modal-content.edit-schedule-modal::-webkit-scrollbar,
+  .edit-schedule-modal::-webkit-scrollbar {
+    display: none !important;
+    width: 0 !important;
+    height: 0 !important;
+    background: transparent !important;
   }
 
   /* Edit Schedule Modal Tablet Responsive */
@@ -1428,13 +1575,31 @@
   .modal-content {
     margin: 10px;
     max-width: calc(100vw - 20px);
+    max-height: calc(100vh - 20px);
   }
 
+  .modal-content.edit-schedule-modal,
   .edit-schedule-modal {
+    max-width: calc(100vw - 15px) !important;
+    width: 99% !important;
+    margin: 8px !important;
+    max-height: calc(100vh - 16px) !important;
+    scrollbar-width: none !important; /* Firefox */
+    -ms-overflow-style: none !important; /* IE and Edge */
+  }
+
+  .modal-content.edit-schedule-modal::-webkit-scrollbar,
+  .edit-schedule-modal::-webkit-scrollbar {
+    display: none !important;
+    width: 0 !important;
+    height: 0 !important;
+    background: transparent !important;
+  }
+  
+  .outlet-selection-modal {
     max-width: calc(100vw - 20px);
-    width: 98%;
+    max-height: calc(100vh - 20px);
     margin: 10px;
-    max-height: 95vh;
   }
   
   .modal-body {
@@ -1529,7 +1694,7 @@
   color: white;
   border: none;
   border-radius: 8px;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 500;
   cursor: pointer;
   transition: all 0.2s ease;
@@ -1567,8 +1732,11 @@
 /* Outlet Selection Modal */
 .outlet-selection-modal {
   max-width: 800px;
+  max-width: calc(100vw - 40px);
   max-height: 90vh;
+  max-height: calc(100vh - 40px);
   overflow-y: auto;
+  box-sizing: border-box;
 }
 
 .outlet-selection {

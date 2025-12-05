@@ -27,6 +27,54 @@ body {
   min-width: 320px;
   min-height: 100vh;
   display: block;
+  overflow-x: hidden;
+  -webkit-text-size-adjust: 100%;
+  -moz-text-size-adjust: 100%;
+  -ms-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  font-size: 16px; /* Consistent base font size */
+  line-height: 1.5;
+}
+
+/* Ensure proper viewport scaling on mobile */
+html {
+  -webkit-text-size-adjust: 100%;
+  -moz-text-size-adjust: 100%;
+  -ms-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  overflow-x: hidden;
+  font-size: 16px; /* Consistent base font size */
+}
+
+/* Ensure consistent sizing for all components */
+#root {
+  width: 100%;
+  min-height: 100vh;
+  font-size: 16px; /* Consistent base font size */
+}
+
+/* Standardize component containers */
+main {
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 16px; /* Consistent base font size */
+}
+
+/* Prevent components from overriding base sizing inappropriately */
+* {
+  box-sizing: border-box;
+}
+
+/* Ensure consistent rem/em calculations based on 16px base */
+:root {
+  font-size: 16px;
+}
+
+/* Component-specific overrides should use rem/em for consistency */
+@media (max-width: 768px) {
+  :root {
+    font-size: 16px; /* Keep consistent on mobile */
+  }
 }
 
 h1 {

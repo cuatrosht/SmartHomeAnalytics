@@ -81,7 +81,7 @@ aside.sidebar {
   right: 0;
   bottom: 0;
   background: rgba(0,0,0,0.5);
-  z-index: 999;
+  z-index: 1001; /* Below sidebar (1002) but above other content (1000) */
   backdrop-filter: blur(2px);
 }
 
@@ -128,6 +128,7 @@ aside.sidebar {
     min-height: 100vh !important;
     min-height: 100dvh !important;
     background: #052f66 !important;
+    z-index: 1002 !important; /* Above notification and user profile (z-index: 1000) */
   }
   
   aside.sidebar {
@@ -137,10 +138,24 @@ aside.sidebar {
     min-height: 100vh !important;
     min-height: 100dvh !important;
     background: #052f66 !important;
+    z-index: 1002 !important; /* Above notification and user profile */
   }
   
   .sidebar.open {
     transform: translateX(0);
+  }
+  
+  /* Overlay when sidebar is open on mobile */
+  .sidebar-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 1001; /* Below sidebar but above other content */
+    backdrop-filter: blur(2px);
+    display: block;
   }
   
   .sb-brand {
@@ -164,6 +179,7 @@ aside.sidebar {
     min-height: 100vh !important;
     min-height: 100dvh !important;
     background: #052f66 !important;
+    z-index: 1002 !important; /* Above notification and user profile */
   }
   
   aside.sidebar {
@@ -173,6 +189,7 @@ aside.sidebar {
     min-height: 100vh !important;
     min-height: 100dvh !important;
     background: #052f66 !important;
+    z-index: 1002 !important; /* Above notification and user profile */
   }
   
   .sb-header {
@@ -215,6 +232,7 @@ aside.sidebar {
     min-height: 100vh !important;
     min-height: 100dvh !important;
     background: #052f66 !important;
+    z-index: 1002 !important; /* Above notification and user profile */
   }
   
   aside.sidebar {
@@ -224,6 +242,7 @@ aside.sidebar {
     min-height: 100vh !important;
     min-height: 100dvh !important;
     background: #052f66 !important;
+    z-index: 1002 !important; /* Above notification and user profile */
   }
   
   .sb-header {
@@ -271,6 +290,7 @@ aside.sidebar {
     min-height: 100vh !important;
     min-height: 100dvh !important;
     background: #052f66 !important;
+    z-index: 1002 !important; /* Above notification and user profile */
   }
   
   aside.sidebar {
@@ -280,6 +300,7 @@ aside.sidebar {
     min-height: 100vh !important;
     min-height: 100dvh !important;
     background: #052f66 !important;
+    z-index: 1002 !important; /* Above notification and user profile */
   }
   
   .sb-item {

@@ -287,6 +287,7 @@ interface DeviceData {
   avg_power: number
   peak_power: number
   total_energy: number
+  today_energy?: number // Today's consumption (always current day, regardless of filter)
   lifetime_energy: number
   monthUsage?: string // Add monthly usage
   officeRoom: string // Add office information
@@ -1059,6 +1060,37 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
   }
 
   // Get device data for specific time period (matching chart logic)
+  // Helper function to get today's consumption for a device (white screen protection)
+  const getTodayEnergyForDevice = async (device: DeviceData): Promise<number> => {
+    try {
+      const devicesRef = ref(realtimeDb, `devices/${device.outletId}`)
+      const snapshot = await get(devicesRef)
+      
+      if (!snapshot.exists()) {
+        return 0
+      }
+      
+      const deviceData = snapshot.val()
+      const now = new Date()
+      
+      // Helper function to get date key for database
+      const getDateKey = (date: Date) => {
+        const year = date.getFullYear()
+        const month = String(date.getMonth() + 1).padStart(2, '0')
+        const day = String(date.getDate()).padStart(2, '0')
+        return `day_${year}_${month}_${day}`
+      }
+      
+      // Always get today's data only
+      const todayKey = getDateKey(now)
+      const todayLogs = deviceData?.daily_logs?.[todayKey]
+      return todayLogs?.total_energy || 0
+    } catch (error) {
+      console.error('Error fetching today\'s energy for device:', error)
+      return 0
+    }
+  }
+
   const getDeviceDataForTimePeriod = async (device: DeviceData, period: string) => {
     try {
       const devicesRef = ref(realtimeDb, `devices/${device.outletId}`)
@@ -1150,23 +1182,38 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     }
   }
 
-  // Filter devices based on selected period
+  // Filter devices based on selected period (with white screen protection)
   const filterDevicesByPeriod = async (devicesToFilter: DeviceData[], period: string) => {
-    const filteredDevices = []
-    
-    for (const device of devicesToFilter) {
-      const periodData = await getDeviceDataForTimePeriod(device, period)
+    try {
+      const filteredDevices = []
       
-      if (periodData.total_energy > 0) {
-        filteredDevices.push({
-        ...device,
-          total_energy: periodData.total_energy,
-          peak_power: periodData.peak_power
-        })
+      for (const device of devicesToFilter) {
+        try {
+          const periodData = await getDeviceDataForTimePeriod(device, period)
+          // Always get today's energy separately to preserve it (use existing today_energy if available)
+          const todayEnergy = device.today_energy !== undefined 
+            ? device.today_energy 
+            : await getTodayEnergyForDevice(device)
+          
+          // Include device regardless of period data value (to show all devices)
+          filteredDevices.push({
+            ...device,
+            total_energy: periodData.total_energy,
+            today_energy: todayEnergy, // Preserve today's consumption
+            peak_power: periodData.peak_power
+          })
+        } catch (deviceError) {
+          console.error(`Error processing device ${device.outletId}:`, deviceError)
+          // Continue processing other devices even if one fails
+          continue
+        }
       }
+      
+      return filteredDevices
+    } catch (error) {
+      console.error('Error in filterDevicesByPeriod:', error)
+      return [] // Return empty array on error to prevent white screen
     }
-    
-    return filteredDevices
   }
 
   // Get current time period label for display
@@ -1919,6 +1966,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
               avg_power: todayLogs?.avg_power || 0,
               peak_power: todayLogs?.peak_power || 0,
               total_energy: todayLogs?.total_energy || 0,
+              today_energy: todayLogs?.total_energy || 0, // Preserve today's consumption
               lifetime_energy: lifetimeEnergyKw, // Use the raw kW value for calculations
               monthUsage: calculateMonthlyEnergy(outlet), // Calculate monthly energy
               officeRoom: officeInfo,
@@ -3329,13 +3377,14 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     return filteredOffices
   }
 
-  // Function to calculate office ranking data
+  // Function to calculate office ranking data (with white screen protection)
   const calculateOfficeRanking = async (devices: DeviceData[], period: string) => {
     try {
       const officeConsumptionMap = new Map<string, {
         office: string
         department: string
         totalConsumption: number
+        todayConsumption: number // Today's consumption (always current day)
         totalMonthlyConsumption: number
         deviceCount: number
         outlets: string[]
@@ -3343,47 +3392,66 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
 
       // Group devices by office and calculate total consumption
       for (const device of devices) {
-        let officeName = 'Unknown Office'
-        let departmentName = 'Unknown Department'
-        
-        if (device.office_info && device.office_info.office && device.office_info.department) {
-          officeName = device.office_info.office
-          departmentName = device.office_info.department
-        } else if (device.officeRoom && device.officeRoom !== '—') {
-          officeName = device.officeRoom
-          // Try to find department from officesData
-          const officeData = Object.values(officesData).find((data: any) => 
-            data.office === device.officeRoom
-          )
-          if (officeData && (officeData as any).department) {
-            departmentName = (officeData as any).department
+        try {
+          let officeName = 'Unknown Office'
+          let departmentName = 'Unknown Department'
+          
+          if (device.office_info && device.office_info.office && device.office_info.department) {
+            officeName = device.office_info.office
+            departmentName = device.office_info.department
+          } else if (device.officeRoom && device.officeRoom !== '—') {
+            officeName = device.officeRoom
+            // Try to find department from officesData
+            const officeData = Object.values(officesData).find((data: any) => 
+              data.office === device.officeRoom
+            )
+            if (officeData && (officeData as any).department) {
+              departmentName = (officeData as any).department
+            }
           }
-        }
 
-        const key = `${departmentName}|${officeName}`
-        
-        if (!officeConsumptionMap.has(key)) {
-          officeConsumptionMap.set(key, {
-            office: officeName,
-            department: departmentName,
-            totalConsumption: 0,
-            totalMonthlyConsumption: 0,
-            deviceCount: 0,
-            outlets: []
-          })
-        }
+          const key = `${departmentName}|${officeName}`
+          
+          if (!officeConsumptionMap.has(key)) {
+            officeConsumptionMap.set(key, {
+              office: officeName,
+              department: departmentName,
+              totalConsumption: 0,
+              todayConsumption: 0, // Today's consumption
+              totalMonthlyConsumption: 0,
+              deviceCount: 0,
+              outlets: []
+            })
+          }
 
-        const officeData = officeConsumptionMap.get(key)!
-        // Use total_energy which contains time-period filtered data
-        officeData.totalConsumption += device.total_energy || 0
-        // Sum up monthly consumption (parse the string value)
-        const monthlyValue = parseFloat((device.monthUsage || '0 W').replace(/[^\d.]/g, '')) || 0
-        officeData.totalMonthlyConsumption += monthlyValue
-        officeData.deviceCount += 1
-        const outletNum = (device.outletId && typeof device.outletId === 'string' && device.outletId.includes('_'))
-          ? device.outletId.split('_')[1]
-          : device.outletId || 'Unknown'
-        officeData.outlets.push(outletNum)
+          const officeData = officeConsumptionMap.get(key)!
+          // For Month Consumption: if filter is Day, use current month from monthUsage, otherwise use filtered period data
+          if (period === 'Day') {
+            // Parse monthUsage string (e.g., "10.190 W" -> 10.190) and convert to kW
+            const monthlyValue = parseFloat((device.monthUsage || '0 W').replace(/[^\d.]/g, '')) || 0
+            officeData.totalConsumption += monthlyValue / 1000 // Convert W to kW
+          } else {
+            // Use total_energy which contains time-period filtered data (already in kW)
+            officeData.totalConsumption += device.total_energy || 0
+          }
+          // Use today_energy if available, otherwise get it separately
+          const todayEnergy = device.today_energy !== undefined 
+            ? device.today_energy 
+            : await getTodayEnergyForDevice(device)
+          officeData.todayConsumption += todayEnergy || 0
+          // Store monthly consumption for reference (always current month)
+          const monthlyValue = parseFloat((device.monthUsage || '0 W').replace(/[^\d.]/g, '')) || 0
+          officeData.totalMonthlyConsumption += monthlyValue
+          officeData.deviceCount += 1
+          const outletNum = (device.outletId && typeof device.outletId === 'string' && device.outletId.includes('_'))
+            ? device.outletId.split('_')[1]
+            : device.outletId || 'Unknown'
+          officeData.outlets.push(outletNum)
+        } catch (deviceError) {
+          console.error(`Error processing device ${device.outletId} in office ranking:`, deviceError)
+          // Continue processing other devices even if one fails
+          continue
+        }
       }
 
       // Convert to array and sort by consumption
@@ -3394,8 +3462,8 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
           office: item.office,
           department: item.department,
           outlets: item.outlets.join(', '),
-          consumption: item.totalConsumption * 1000, // Convert to W
-          monthConsumption: item.totalMonthlyConsumption, // Already in W
+          consumption: item.todayConsumption * 1000, // Today's consumption in W
+          monthConsumption: item.totalConsumption * 1000, // Filtered period consumption in W
           deviceCount: item.deviceCount
         }))
 
@@ -3680,63 +3748,89 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
         }
       }
       
-      // Apply time period filtering for Per Device Consumption table
-      if (selectedFilter1 !== 'Day') {
-        const timeFiltered = await filterDevicesByPeriod(filteredByOffice, selectedFilter1)
-        const sorted = [...timeFiltered].sort((a, b) => {
-          const outletNumA = (a.outletId && typeof a.outletId === 'string' && a.outletId.includes('_'))
-            ? parseInt(a.outletId.split('_')[1]) || 0
-            : 0
-          const outletNumB = (b.outletId && typeof b.outletId === 'string' && b.outletId.includes('_'))
-            ? parseInt(b.outletId.split('_')[1]) || 0
-            : 0
-          return outletNumA - outletNumB
-        })
-        setFilteredDevices(sorted)
-      } else {
-        // Use department-filtered devices for Day filter
-        const sorted = [...filteredByOffice].sort((a, b) => {
-          const outletNumA = (a.outletId && typeof a.outletId === 'string' && a.outletId.includes('_'))
-            ? parseInt(a.outletId.split('_')[1]) || 0
-            : 0
-          const outletNumB = (b.outletId && typeof b.outletId === 'string' && b.outletId.includes('_'))
-            ? parseInt(b.outletId.split('_')[1]) || 0
-            : 0
-          return outletNumA - outletNumB
-        })
-        setFilteredDevices(sorted)
+      // Apply time period filtering for Per Device Consumption table (with white screen protection)
+      try {
+        if (selectedFilter1 !== 'Day') {
+          const timeFiltered = await filterDevicesByPeriod(filteredByOffice, selectedFilter1)
+          const sorted = [...timeFiltered].sort((a, b) => {
+            const outletNumA = (a.outletId && typeof a.outletId === 'string' && a.outletId.includes('_'))
+              ? parseInt(a.outletId.split('_')[1]) || 0
+              : 0
+            const outletNumB = (b.outletId && typeof b.outletId === 'string' && b.outletId.includes('_'))
+              ? parseInt(b.outletId.split('_')[1]) || 0
+              : 0
+            return outletNumA - outletNumB
+          })
+          setFilteredDevices(sorted)
+        } else {
+          // Use department-filtered devices for Day filter, ensure today_energy is set
+          const sorted = [...filteredByOffice].map(device => ({
+            ...device,
+            today_energy: device.today_energy !== undefined ? device.today_energy : device.total_energy
+          })).sort((a, b) => {
+            const outletNumA = (a.outletId && typeof a.outletId === 'string' && a.outletId.includes('_'))
+              ? parseInt(a.outletId.split('_')[1]) || 0
+              : 0
+            const outletNumB = (b.outletId && typeof b.outletId === 'string' && b.outletId.includes('_'))
+              ? parseInt(b.outletId.split('_')[1]) || 0
+              : 0
+            return outletNumA - outletNumB
+          })
+          setFilteredDevices(sorted)
+        }
+      } catch (error) {
+        console.error('Error filtering devices for table 1:', error)
+        setFilteredDevices([])
       }
       
-      // Apply time period filtering for Usage Rank table
-      if (selectedFilter2 !== 'Day') {
-        const timeFiltered = await filterDevicesByPeriod(filteredByOffice, selectedFilter2)
-        const sorted = [...timeFiltered].sort((a, b) => {
-          return b.total_energy - a.total_energy
-        })
-        setFilteredDevicesRank(sorted)
-      } else {
-        // Use department-filtered devices for Day filter
-        const sorted = [...filteredByOffice].sort((a, b) => {
-          return b.total_energy - a.total_energy
-        })
-        setFilteredDevicesRank(sorted)
-        
-        console.log('Energy consumption filtering:', {
-          department,
-          office,
-          totalDevices: devices.length,
-          filteredByOffice: filteredByOffice.length,
-          filteredDevices: filteredDevices.length,
-          filteredDevicesRank: sorted.length
-        })
+      // Apply time period filtering for Usage Rank table (with white screen protection)
+      try {
+        if (selectedFilter2 !== 'Day') {
+          const timeFiltered = await filterDevicesByPeriod(filteredByOffice, selectedFilter2)
+          const sorted = [...timeFiltered].sort((a, b) => {
+            return b.total_energy - a.total_energy
+          })
+          setFilteredDevicesRank(sorted)
+        } else {
+          // Use department-filtered devices for Day filter, ensure today_energy is set
+          const sorted = [...filteredByOffice].map(device => ({
+            ...device,
+            today_energy: device.today_energy !== undefined ? device.today_energy : device.total_energy
+          })).sort((a, b) => {
+            return b.total_energy - a.total_energy
+          })
+          setFilteredDevicesRank(sorted)
+          
+          console.log('Energy consumption filtering:', {
+            department,
+            office,
+            totalDevices: devices.length,
+            filteredByOffice: filteredByOffice.length,
+            filteredDevices: filteredDevices.length,
+            filteredDevicesRank: sorted.length
+          })
+        }
+      } catch (error) {
+        console.error('Error filtering devices for table 2:', error)
+        setFilteredDevicesRank([])
       }
 
-      // Calculate office ranking with time period filtering
-      if (selectedFilter3 !== 'Day') {
-        const timeFilteredForRanking = await filterDevicesByPeriod(filteredByOffice, selectedFilter3)
-        await calculateOfficeRanking(timeFilteredForRanking, selectedFilter3)
-      } else {
-        await calculateOfficeRanking(filteredByOffice, selectedFilter3)
+      // Calculate office ranking with time period filtering (with white screen protection)
+      try {
+        if (selectedFilter3 !== 'Day') {
+          const timeFilteredForRanking = await filterDevicesByPeriod(filteredByOffice, selectedFilter3)
+          await calculateOfficeRanking(timeFilteredForRanking, selectedFilter3)
+        } else {
+          // Ensure today_energy is set for Day filter
+          const devicesWithTodayEnergy = filteredByOffice.map(device => ({
+            ...device,
+            today_energy: device.today_energy !== undefined ? device.today_energy : device.total_energy
+          }))
+          await calculateOfficeRanking(devicesWithTodayEnergy, selectedFilter3)
+        }
+      } catch (error) {
+        console.error('Error calculating office ranking:', error)
+        setOfficeRankingData([])
       }
     }
     
@@ -3759,26 +3853,34 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
   }, [overallConsumptionDevices])
 
 
-  // Recalculate stats when filtered devices change
+  // Recalculate stats when overall consumption devices change (NOT affected by table filters)
+  // This ensures overall consumption always shows today's data regardless of table filter selection
   useEffect(() => {
-    if (filteredDevices.length > 0) {
-      // CURRENT USAGE: Sum of lifetime_energy (current power usage in kW from database)
-      const currentUsageSum = filteredDevices.reduce((sum, device) => sum + (device.lifetime_energy || 0), 0)
-      
-      // DAILY AVERAGE: Now calculated separately from today's energy data
-      
-      // TODAY'S TOTAL ENERGY: Sum of total_energy from today's daily_logs (today's energy consumption in kW from database)
-      const todayTotalEnergySum = filteredDevices.reduce((sum, device) => sum + (device.total_energy || 0), 0)
-      
-      setTotalPower(currentUsageSum) // Current usage from lifetime_energy (already in kW)
-      setTotalEnergy(todayTotalEnergySum) // Today's total energy from total_energy (already in kW)
-      // Daily average now calculated separately based on filter period
+    if (overallConsumptionDevices.length > 0) {
+      try {
+        // CURRENT USAGE: Sum of lifetime_energy (current power usage in kW from database)
+        const currentUsageSum = overallConsumptionDevices.reduce((sum, device) => sum + (device.lifetime_energy || 0), 0)
+        
+        // TODAY'S TOTAL ENERGY: Always use today_energy if available, otherwise use total_energy (today's data)
+        // This ensures overall consumption always shows today's consumption, not affected by table filters
+        const todayTotalEnergySum = overallConsumptionDevices.reduce((sum, device) => {
+          // Use today_energy if available (always today's data), otherwise fall back to total_energy
+          const todayEnergy = device.today_energy !== undefined ? device.today_energy : device.total_energy
+          return sum + (todayEnergy || 0)
+        }, 0)
+        
+        setTotalPower(currentUsageSum) // Current usage from lifetime_energy (already in kW)
+        setTotalEnergy(todayTotalEnergySum) // Today's total energy (always today's data, not affected by table filters)
+      } catch (error) {
+        console.error('Error calculating overall consumption stats:', error)
+        setTotalPower(0)
+        setTotalEnergy(0)
+      }
     } else {
       setTotalPower(0)
       setTotalEnergy(0)
-      setDailyAverage(0)
     }
-  }, [filteredDevices])
+  }, [overallConsumptionDevices])
 
   // Calculate current and monthly bills when overall consumption devices or rate changes
   useEffect(() => {
@@ -4536,21 +4638,43 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                 </thead>
                 <tbody>
                   {filteredDevices.length > 0 ? (
-                    filteredDevices.map((device, index) => (
-                      <tr key={device.outletId}>
-                        <td>{(index + 1).toString().padStart(3, '0')}</td>
-                        <td>{(device.outletId && typeof device.outletId === 'string' && device.outletId.includes('_'))
-                          ? device.outletId.split('_')[1]
-                          : device.outletId || 'Unknown'}</td>
-                        <td>{device.appliances}</td>
-                        <td>{formatNumber(device.total_energy * 1000)} W</td>
-                        <td>{device.monthUsage || '0.000 W'}</td>
-                        <td>{device.officeRoom}</td>
-                        <td>
-                          {getStatusBadge(device.status)}
-                        </td>
-                      </tr>
-                    ))
+                    filteredDevices.map((device, index) => {
+                      try {
+                        // Use today_energy if available, otherwise fall back to total_energy (for Day filter)
+                        const todayConsumption = device.today_energy !== undefined 
+                          ? device.today_energy 
+                          : device.total_energy
+                        // For Month Consumption: if filter is Day, use current month from monthUsage, otherwise use filtered period data
+                        let monthConsumption = 0
+                        if (selectedFilter1 === 'Day') {
+                          // Parse monthUsage string (e.g., "10.190 W" -> 10.190) and convert to kW
+                          const monthlyValue = parseFloat((device.monthUsage || '0 W').replace(/[^\d.]/g, '')) || 0
+                          monthConsumption = monthlyValue / 1000 // Convert W to kW
+                        } else {
+                          // Use filtered period data (already in kW)
+                          monthConsumption = device.total_energy
+                        }
+                        
+                        return (
+                          <tr key={device.outletId}>
+                            <td>{(index + 1).toString().padStart(3, '0')}</td>
+                            <td>{(device.outletId && typeof device.outletId === 'string' && device.outletId.includes('_'))
+                              ? device.outletId.split('_')[1]
+                              : device.outletId || 'Unknown'}</td>
+                            <td>{device.appliances}</td>
+                            <td>{formatNumber(todayConsumption * 1000)} W</td>
+                            <td>{formatNumber(monthConsumption * 1000)} W</td>
+                            <td>{device.officeRoom}</td>
+                            <td>
+                              {getStatusBadge(device.status)}
+                            </td>
+                          </tr>
+                        )
+                      } catch (error) {
+                        console.error(`Error rendering device row ${device.outletId}:`, error)
+                        return null
+                      }
+                    })
                   ) : (
                     <tr>
                       <td colSpan={7} className="no-data-message">
@@ -4647,19 +4771,41 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                   {filteredDevicesRank.length > 0 ? (
                     filteredDevicesRank
                       .sort((a, b) => b.total_energy - a.total_energy) // Sort by total_energy (highest first)
-                      .map((device, index) => (
-                      <tr key={device.outletId}>
-                        <td>{index + 1}</td>
-                        <td>{device.outletId.split('_')[1]}</td>
-                        <td>{device.appliances}</td>
-                        <td>{formatNumber(device.total_energy * 1000)} W</td>
-                        <td>{device.monthUsage || '0.000 W'}</td>
-                        <td>{device.officeRoom}</td>
-                        <td>
-                          {getStatusBadge(device.status)}
-                        </td>
-                      </tr>
-                    ))
+                      .map((device, index) => {
+                        try {
+                          // Use today_energy if available, otherwise fall back to total_energy (for Day filter)
+                          const todayConsumption = device.today_energy !== undefined 
+                            ? device.today_energy 
+                            : device.total_energy
+                          // For Month Consumption: if filter is Day, use current month from monthUsage, otherwise use filtered period data
+                          let monthConsumption = 0
+                          if (selectedFilter2 === 'Day') {
+                            // Parse monthUsage string (e.g., "10.190 W" -> 10.190) and convert to kW
+                            const monthlyValue = parseFloat((device.monthUsage || '0 W').replace(/[^\d.]/g, '')) || 0
+                            monthConsumption = monthlyValue / 1000 // Convert W to kW
+                          } else {
+                            // Use filtered period data (already in kW)
+                            monthConsumption = device.total_energy
+                          }
+                          
+                          return (
+                            <tr key={device.outletId}>
+                              <td>{index + 1}</td>
+                              <td>{device.outletId.split('_')[1]}</td>
+                              <td>{device.appliances}</td>
+                              <td>{formatNumber(todayConsumption * 1000)} W</td>
+                              <td>{formatNumber(monthConsumption * 1000)} W</td>
+                              <td>{device.officeRoom}</td>
+                              <td>
+                                {getStatusBadge(device.status)}
+                              </td>
+                            </tr>
+                          )
+                        } catch (error) {
+                          console.error(`Error rendering device rank row ${device.outletId}:`, error)
+                          return null
+                        }
+                      })
                   ) : (
                     <tr>
                       <td colSpan={7} className="no-data-message">
@@ -4754,16 +4900,23 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
               </thead>
               <tbody>
                 {officeRankingData.length > 0 ? (
-                  officeRankingData.map((item) => (
-                    <tr key={`${item.department}-${item.office}`}>
-                      <td>{item.rank}</td>
-                      <td>{item.office}</td>
-                      <td>{item.department}</td>
-                      <td>{item.outlets}</td>
-                      <td>{formatNumber(item.consumption)} W</td>
-                      <td>{formatNumber(item.monthConsumption)} W</td>
-                    </tr>
-                  ))
+                  officeRankingData.map((item) => {
+                    try {
+                      return (
+                        <tr key={`${item.department}-${item.office}`}>
+                          <td>{item.rank}</td>
+                          <td>{item.office}</td>
+                          <td>{item.department}</td>
+                          <td>{item.outlets}</td>
+                          <td>{formatNumber(item.consumption)} W</td>
+                          <td>{formatNumber(item.monthConsumption)} W</td>
+                        </tr>
+                      )
+                    } catch (error) {
+                      console.error(`Error rendering office ranking row ${item.office}:`, error)
+                      return null
+                    }
+                  })
                 ) : (
                   <tr>
                     <td colSpan={6} className="no-data-message">
