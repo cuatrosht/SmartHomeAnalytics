@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { ref, onValue, off, update, remove, get } from 'firebase/database'
+import { ref, onValue, off, update, remove, get, set } from 'firebase/database'
 import { realtimeDb } from '../firebase/config'
 import { logCombinedLimitActivity, logIndividualLimitActivity, logScheduleActivity, logDeviceControlActivity } from '../utils/deviceLogging'
 import { logger, throttledLog } from '../utils/logger'
@@ -3284,6 +3284,27 @@ function AddDeviceModal({ isOpen, onClose, onSave }: AddDeviceModalProps) {
         console.log('Power limit to set (W):', formData.powerLimit)
         console.log('Office to assign:', formData.office)
         
+        // Get the old department before updating (for combined limit cleanup)
+        let oldDepartmentKey: string | null = null
+        try {
+          const outletRef = ref(realtimeDb, `devices/${formData.deviceType}`)
+          const outletSnapshot = await get(outletRef)
+          
+          if (outletSnapshot.exists()) {
+            const outletData = outletSnapshot.val()
+            const oldDepartment = outletData?.office_info?.department
+            
+            if (oldDepartment && typeof oldDepartment === 'string') {
+              // Convert department name to key format (lowercase with hyphens)
+              oldDepartmentKey = oldDepartment.toLowerCase().replace(/\s+/g, '-')
+              console.log('🔍 Add Device: Old department found:', oldDepartment, '-> Key:', oldDepartmentKey)
+            }
+          }
+        } catch (error) {
+          console.error('⚠️ Add Device: Error fetching old department (non-critical):', error)
+          // Continue even if we can't get old department
+        }
+        
         // Update existing outlet in Firebase database
         const outletRef = ref(realtimeDb, `devices/${formData.deviceType}`)
         
@@ -3313,6 +3334,10 @@ function AddDeviceModal({ isOpen, onClose, onSave }: AddDeviceModalProps) {
         // Get the department name from the selected department and format it properly
         const selectedDepartment = formatDepartmentName(formData.department)
         
+        // Convert new department to key format for comparison
+        const newDepartmentKey = formData.department.toLowerCase().replace(/\s+/g, '-')
+        console.log('🔍 Add Device: New department key:', newDepartmentKey)
+        
         // Get the original office name from the database (not formatted)
         let originalOfficeName = formData.office
         if (officesData) {
@@ -3338,6 +3363,114 @@ function AddDeviceModal({ isOpen, onClose, onSave }: AddDeviceModalProps) {
           enable_power_scheduling: enableScheduling // ✅ Update scheduling setting
         })
         console.log('Office update result:', officeUpdate)
+        
+        // Remove outlet from old department's combined limit settings if department changed
+        if (oldDepartmentKey && oldDepartmentKey !== newDepartmentKey) {
+          try {
+            console.log('🔄 Add Device: Department changed - removing outlet from old department combined limit settings')
+            console.log('🔍 Add Device: Old department key:', oldDepartmentKey)
+            console.log('🔍 Add Device: New department key:', newDepartmentKey)
+            
+            // Convert outlet name formats for matching
+            const deviceFormatName = formData.deviceType // "Outlet_1"
+            const combinedFormatName = deviceFormatName.replace(/_/g, ' ') // "Outlet 1"
+            
+            // Get old department's combined limit settings
+            const oldDeptPath = getDepartmentCombinedLimitPath(oldDepartmentKey)
+            const oldDeptRef = ref(realtimeDb, oldDeptPath)
+            const oldDeptSnapshot = await get(oldDeptRef)
+            
+            if (oldDeptSnapshot.exists()) {
+              const oldDeptLimitData = oldDeptSnapshot.val()
+              const oldDeptSelectedOutlets = oldDeptLimitData?.selected_outlets || []
+              
+              console.log('🔍 Add Device: Old department combined limit outlets:', oldDeptSelectedOutlets)
+              
+              // Check if outlet is in old department's combined limit settings
+              const outletFoundInOldDept = oldDeptSelectedOutlets.some((outlet: string) => 
+                outlet.toLowerCase() === deviceFormatName.toLowerCase() || 
+                outlet.toLowerCase() === combinedFormatName.toLowerCase()
+              )
+              
+              if (outletFoundInOldDept) {
+                console.log('✅ Add Device: Removing outlet from old department combined limit settings')
+                
+                // Remove outlet from old department's selected_outlets
+                const updatedOldDeptOutlets = oldDeptSelectedOutlets.filter(
+                  (outlet: string) => 
+                    outlet.toLowerCase() !== deviceFormatName.toLowerCase() && 
+                    outlet.toLowerCase() !== combinedFormatName.toLowerCase()
+                )
+                
+                // Update old department's combined limit settings
+                await update(oldDeptRef, {
+                  ...oldDeptLimitData,
+                  selected_outlets: updatedOldDeptOutlets
+                })
+                
+                console.log('✅ Add Device: Successfully removed outlet from old department combined limit settings')
+                console.log('📊 Add Device: Updated old department outlets:', updatedOldDeptOutlets)
+              } else {
+                console.log('ℹ️ Add Device: Outlet not found in old department combined limit settings')
+              }
+            } else {
+              console.log('ℹ️ Add Device: Old department combined limit settings not found')
+            }
+          } catch (deptChangeError) {
+            console.error('❌ Add Device: Error removing outlet from old department combined limit settings:', deptChangeError)
+            // Don't throw - continue with save even if cleanup fails
+            // This prevents white screen errors
+          }
+          
+          // Clean up schedule data when department changes (preserve basis and disabled_by_unplug)
+          try {
+            console.log('🔄 Add Device: Department changed - cleaning up schedule data (preserving basis and disabled_by_unplug)...')
+            
+            const scheduleRef = ref(realtimeDb, `devices/${formData.deviceType}/schedule`)
+            const scheduleSnapshot = await get(scheduleRef)
+            
+            if (scheduleSnapshot.exists()) {
+              const scheduleData = scheduleSnapshot.val()
+              
+              // Get preserved values
+              const preservedBasis = scheduleData?.basis
+              const preservedDisabledByUnplug = scheduleData?.disabled_by_unplug
+              
+              console.log('🔍 Add Device: Schedule data before cleanup:', scheduleData)
+              console.log('✅ Add Device: Preserving basis:', preservedBasis)
+              console.log('✅ Add Device: Preserving disabled_by_unplug:', preservedDisabledByUnplug)
+              
+              // Reconstruct schedule with only preserved fields
+              const cleanedSchedule: any = {}
+              
+              if (preservedBasis !== undefined && preservedBasis !== null) {
+                cleanedSchedule.basis = preservedBasis
+              }
+              
+              if (preservedDisabledByUnplug !== undefined && preservedDisabledByUnplug !== null) {
+                cleanedSchedule.disabled_by_unplug = preservedDisabledByUnplug
+              }
+              
+              // Use set() to replace the entire schedule with only preserved fields
+              // This ensures all other schedule fields are removed
+              await set(scheduleRef, cleanedSchedule)
+              console.log('✅ Add Device: Schedule cleaned - preserved fields:', Object.keys(cleanedSchedule))
+              console.log('✅ Add Device: Preserved data:', cleanedSchedule)
+            } else {
+              console.log('ℹ️ Add Device: No schedule data found, skipping cleanup')
+            }
+          } catch (scheduleCleanupError) {
+            console.error('❌ Add Device: Error cleaning up schedule data:', scheduleCleanupError)
+            // Don't throw - continue with save even if schedule cleanup fails
+            // This prevents white screen errors
+          }
+        } else {
+          if (!oldDepartmentKey) {
+            console.log('ℹ️ Add Device: No old department found - device may be new')
+          } else {
+            console.log('ℹ️ Add Device: Department unchanged - no cleanup needed')
+          }
+        }
 
         // Handle schedule data based on enableScheduling flag
         const scheduleRef = ref(realtimeDb, `devices/${formData.deviceType}/schedule`)
@@ -3345,24 +3478,38 @@ function AddDeviceModal({ isOpen, onClose, onSave }: AddDeviceModalProps) {
           console.log('Add device: Scheduling is enabled - keeping existing schedule data')
           // Schedule data remains unchanged when scheduling is enabled
         } else {
-          console.log('Add device: Scheduling is disabled - clearing any existing schedule data')
-          // Clear all schedule data when scheduling is disabled
+          console.log('Add device: Scheduling is disabled - clearing schedule data (preserving basis and disabled_by_unplug)')
+          // Clear schedule data when scheduling is disabled, but preserve basis and disabled_by_unplug
           try {
-            await update(scheduleRef, {
-              timeRange: null,
-              startTime: null,
-              endTime: null,
-              days: null,
-              frequency: null,
-              selectedDays: null,
-              combinedScheduleId: null,
-              isCombinedSchedule: false,
-              selectedOutlets: null,
-              enabled: false
-            })
-            console.log(`Add device: Successfully cleared schedule data for ${formData.deviceType}`)
+            // Get current schedule data to preserve basis and disabled_by_unplug
+            const scheduleSnapshot = await get(scheduleRef)
+            const scheduleData = scheduleSnapshot.exists() ? scheduleSnapshot.val() : {}
+            
+            // Get preserved values
+            const preservedBasis = scheduleData?.basis
+            const preservedDisabledByUnplug = scheduleData?.disabled_by_unplug
+            
+            console.log('✅ Add Device: Preserving basis:', preservedBasis)
+            console.log('✅ Add Device: Preserving disabled_by_unplug:', preservedDisabledByUnplug)
+            
+            // Reconstruct schedule with only preserved fields
+            const cleanedSchedule: any = {}
+            
+            if (preservedBasis !== undefined && preservedBasis !== null) {
+              cleanedSchedule.basis = preservedBasis
+            }
+            
+            if (preservedDisabledByUnplug !== undefined && preservedDisabledByUnplug !== null) {
+              cleanedSchedule.disabled_by_unplug = preservedDisabledByUnplug
+            }
+            
+            // Use set() to replace the entire schedule with only preserved fields
+            await set(scheduleRef, cleanedSchedule)
+            console.log(`Add device: Successfully cleared schedule data for ${formData.deviceType} (preserved fields: ${Object.keys(cleanedSchedule).join(', ')})`)
           } catch (error) {
             console.error(`Add device: Error clearing schedule data for ${formData.deviceType}:`, error)
+            // Don't throw - continue with save even if schedule cleanup fails
+            // This prevents white screen errors
           }
         }
         
@@ -6511,45 +6658,99 @@ const checkMonthlyLimit = (deviceData: any): boolean => {
         
         if (combinedLimitSnapshot.exists()) {
           const combinedLimitData = combinedLimitSnapshot.val()
-          const currentSelectedOutlets = combinedLimitData.selected_outlets || []
           
-          console.log('🔍 DEBUG: Current combined limit data:', combinedLimitData)
-          console.log('🔍 DEBUG: Current selected outlets:', currentSelectedOutlets)
-          console.log('🔍 DEBUG: Outlet to delete (device format):', deviceFormatName)
-          console.log('🔍 DEBUG: Outlet to delete (combined format):', combinedFormatName)
-          console.log('🔍 DEBUG: Selected outlets types:', currentSelectedOutlets.map((outlet: string) => typeof outlet))
-          
-          // Check if the outlet to delete is in the selected outlets (try both formats)
-          const outletFound = currentSelectedOutlets.some((outlet: string) => 
-            outlet.toLowerCase() === deviceFormatName.toLowerCase() || 
-            outlet.toLowerCase() === combinedFormatName.toLowerCase()
-          )
-          
-          console.log('🔍 DEBUG: Outlet found in selected outlets:', outletFound)
-          
-          if (outletFound) {
-            console.log('✅ SetUp: Removing outlet from combined limit settings:', combinedFormatName)
+          // Check if this is the old format (root level with selected_outlets)
+          if (combinedLimitData.selected_outlets && Array.isArray(combinedLimitData.selected_outlets)) {
+            const currentSelectedOutlets = combinedLimitData.selected_outlets || []
             
-            // Remove the outlet from the selected_outlets array (try both formats)
-            const updatedSelectedOutlets = currentSelectedOutlets.filter(
-              (outlet: string) => 
-                outlet.toLowerCase() !== deviceFormatName.toLowerCase() && 
-                outlet.toLowerCase() !== combinedFormatName.toLowerCase()
+            console.log('🔍 DEBUG: Current combined limit data (root level):', combinedLimitData)
+            console.log('🔍 DEBUG: Current selected outlets:', currentSelectedOutlets)
+            console.log('🔍 DEBUG: Outlet to delete (device format):', deviceFormatName)
+            console.log('🔍 DEBUG: Outlet to delete (combined format):', combinedFormatName)
+            
+            // Check if the outlet to delete is in the selected outlets (try both formats)
+            const outletFound = currentSelectedOutlets.some((outlet: string) => 
+              outlet.toLowerCase() === deviceFormatName.toLowerCase() || 
+              outlet.toLowerCase() === combinedFormatName.toLowerCase()
             )
             
-            console.log('🔍 DEBUG: Updated selected outlets:', updatedSelectedOutlets)
+            console.log('🔍 DEBUG: Outlet found in selected outlets:', outletFound)
             
-            // Update the combined limit settings
-            await update(combinedLimitRef, {
-              ...combinedLimitData,
-              selected_outlets: updatedSelectedOutlets
-            })
-            
-            console.log('✅ SetUp: Successfully removed outlet from combined limit settings. Updated outlets:', updatedSelectedOutlets)
-          } else {
-            console.log('❌ SetUp: Outlet not found in combined limit settings, no removal needed')
-            console.log('🔍 DEBUG: Available outlets in selected_outlets:', currentSelectedOutlets)
-            console.log('🔍 DEBUG: Looking for outlet:', deviceToDelete.outletName)
+            if (outletFound) {
+              console.log('✅ SetUp: Removing outlet from root combined limit settings:', combinedFormatName)
+              
+              // Remove the outlet from the selected_outlets array (try both formats)
+              const updatedSelectedOutlets = currentSelectedOutlets.filter(
+                (outlet: string) => 
+                  outlet.toLowerCase() !== deviceFormatName.toLowerCase() && 
+                  outlet.toLowerCase() !== combinedFormatName.toLowerCase()
+              )
+              
+              console.log('🔍 DEBUG: Updated selected outlets:', updatedSelectedOutlets)
+              
+              // Update the combined limit settings
+              await update(combinedLimitRef, {
+                ...combinedLimitData,
+                selected_outlets: updatedSelectedOutlets
+              })
+              
+              console.log('✅ SetUp: Successfully removed outlet from root combined limit settings. Updated outlets:', updatedSelectedOutlets)
+            } else {
+              console.log('❌ SetUp: Outlet not found in root combined limit settings')
+            }
+          }
+          
+          // Check all department-specific combined limit settings
+          const departmentKeys = Object.keys(combinedLimitData).filter(key => 
+            key !== 'selected_outlets' && 
+            key !== 'enabled' && 
+            key !== 'combined_limit_watts' &&
+            typeof combinedLimitData[key] === 'object' &&
+            combinedLimitData[key] !== null
+          )
+          
+          console.log('🔍 DEBUG: Found department keys:', departmentKeys)
+          
+          // Remove outlet from each department-specific combined limit setting
+          for (const departmentKey of departmentKeys) {
+            try {
+              const departmentLimitData = combinedLimitData[departmentKey]
+              const departmentSelectedOutlets = departmentLimitData?.selected_outlets || []
+              
+              console.log(`🔍 DEBUG: Checking department "${departmentKey}" with outlets:`, departmentSelectedOutlets)
+              
+              // Check if the outlet to delete is in this department's selected outlets (try both formats)
+              const outletFoundInDept = departmentSelectedOutlets.some((outlet: string) => 
+                outlet.toLowerCase() === deviceFormatName.toLowerCase() || 
+                outlet.toLowerCase() === combinedFormatName.toLowerCase()
+              )
+              
+              if (outletFoundInDept) {
+                console.log(`✅ SetUp: Removing outlet from department "${departmentKey}" combined limit settings:`, combinedFormatName)
+                
+                // Remove the outlet from the department's selected_outlets array (try both formats)
+                const updatedDeptSelectedOutlets = departmentSelectedOutlets.filter(
+                  (outlet: string) => 
+                    outlet.toLowerCase() !== deviceFormatName.toLowerCase() && 
+                    outlet.toLowerCase() !== combinedFormatName.toLowerCase()
+                )
+                
+                // Update the department-specific combined limit settings
+                const departmentPath = getDepartmentCombinedLimitPath(departmentKey)
+                const departmentRef = ref(realtimeDb, departmentPath)
+                await update(departmentRef, {
+                  ...departmentLimitData,
+                  selected_outlets: updatedDeptSelectedOutlets
+                })
+                
+                console.log(`✅ SetUp: Successfully removed outlet from department "${departmentKey}" combined limit settings. Updated outlets:`, updatedDeptSelectedOutlets)
+              } else {
+                console.log(`❌ SetUp: Outlet not found in department "${departmentKey}" combined limit settings`)
+              }
+            } catch (deptError) {
+              console.error(`❌ SetUp: Error removing outlet from department "${departmentKey}" combined limit settings:`, deptError)
+              // Continue with other departments even if one fails
+            }
           }
         } else {
           console.log('❌ SetUp: No combined limit settings found, skipping removal')
@@ -6813,6 +7014,105 @@ const checkMonthlyLimit = (deviceData: any): boolean => {
         console.error('❌ SetUp: Error during office_info and power_limit deletion:', deleteError)
         // Re-throw to be caught by outer catch block
         throw deleteError
+      }
+      
+      // 7. Remove schedule data fields (but preserve basis and disabled_by_unplug)
+      try {
+        console.log('🗑️ SetUp: Starting schedule data cleanup (preserving basis and disabled_by_unplug)...')
+        
+        const scheduleRef = ref(realtimeDb, `devices/${deviceToDelete.outletName}/schedule`)
+        const scheduleSnapshot = await get(scheduleRef)
+        
+        if (scheduleSnapshot.exists()) {
+          const scheduleData = scheduleSnapshot.val()
+          
+          // Get preserved values
+          const preservedBasis = scheduleData?.basis
+          const preservedDisabledByUnplug = scheduleData?.disabled_by_unplug
+          
+          console.log('🔍 SetUp: Schedule data before cleanup:', scheduleData)
+          console.log('✅ SetUp: Preserving basis:', preservedBasis)
+          console.log('✅ SetUp: Preserving disabled_by_unplug:', preservedDisabledByUnplug)
+          
+          // Fields to delete: endTime, frequency, isCombinedSchedule, selectedDays, selectedOutlets, startTime, timeRange
+          const fieldsToDelete = [
+            'endTime',
+            'frequency',
+            'isCombinedSchedule',
+            'selectedDays',
+            'selectedOutlets',
+            'startTime',
+            'timeRange',
+            'enabled',
+            'days',
+            'combinedScheduleId'
+          ]
+          
+          // Reconstruct schedule with only preserved fields
+          const cleanedSchedule: any = {}
+          
+          if (preservedBasis !== undefined && preservedBasis !== null) {
+            cleanedSchedule.basis = preservedBasis
+          }
+          
+          if (preservedDisabledByUnplug !== undefined && preservedDisabledByUnplug !== null) {
+            cleanedSchedule.disabled_by_unplug = preservedDisabledByUnplug
+          }
+          
+          // Use set() to replace the entire schedule with only preserved fields
+          // This ensures all other fields are removed
+          await set(scheduleRef, cleanedSchedule)
+          console.log('✅ SetUp: Schedule cleaned - preserved fields:', Object.keys(cleanedSchedule))
+          console.log('✅ SetUp: Preserved data:', cleanedSchedule)
+          
+          // Verify the cleanup
+          try {
+            const verifyScheduleSnapshot = await get(scheduleRef)
+            if (verifyScheduleSnapshot.exists()) {
+              const verifyScheduleData = verifyScheduleSnapshot.val()
+              
+              // Check that deleted fields are gone
+              const hasDeletedFields = fieldsToDelete.some(field => verifyScheduleData?.[field] !== undefined)
+              
+              // Check that preserved fields are still there
+              const hasBasis = preservedBasis !== undefined && preservedBasis !== null 
+                ? verifyScheduleData?.basis === preservedBasis 
+                : verifyScheduleData?.basis === undefined
+              const hasDisabledByUnplug = preservedDisabledByUnplug !== undefined && preservedDisabledByUnplug !== null
+                ? verifyScheduleData?.disabled_by_unplug === preservedDisabledByUnplug 
+                : verifyScheduleData?.disabled_by_unplug === undefined
+              
+              if (!hasDeletedFields && hasBasis && hasDisabledByUnplug) {
+                console.log('✅ SetUp: VERIFICATION SUCCESSFUL - Schedule fields deleted, preserved fields kept!')
+                console.log('✅ SetUp: Remaining schedule data:', verifyScheduleData)
+              } else {
+                if (hasDeletedFields) {
+                  console.log('⚠️ SetUp: Some schedule fields may still exist')
+                }
+                if (!hasBasis && preservedBasis !== undefined && preservedBasis !== null) {
+                  console.log('⚠️ SetUp: basis field was not preserved')
+                }
+                if (!hasDisabledByUnplug && preservedDisabledByUnplug !== undefined && preservedDisabledByUnplug !== null) {
+                  console.log('⚠️ SetUp: disabled_by_unplug field was not preserved')
+                }
+              }
+            } else if (Object.keys(cleanedSchedule).length === 0) {
+              // If no preserved fields, schedule should be empty or removed
+              console.log('✅ SetUp: Schedule is empty (no fields to preserve)')
+            }
+          } catch (verifyError) {
+            console.warn('⚠️ SetUp: Error during schedule verification (non-critical):', verifyError)
+            // Verification error is not critical, continue
+          }
+        } else {
+          console.log('ℹ️ SetUp: No schedule data found, skipping cleanup')
+        }
+        
+        console.log('✅ SetUp: Schedule cleanup process completed!')
+      } catch (scheduleError) {
+        console.error('❌ SetUp: Error during schedule cleanup:', scheduleError)
+        // Don't throw - continue with deletion even if schedule cleanup fails
+        // This prevents white screen errors
       }
       
       // Show success modal
