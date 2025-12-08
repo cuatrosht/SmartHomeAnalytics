@@ -895,12 +895,12 @@ export default function Reports() {
       yPosition += 7
 
       addText(`Electricity Rate: PHP ${currentRate.toFixed(4)} per kWh`, 20, yPosition, { fontSize: 12 })
-      yPosition += 15
+      yPosition += 10
 
     // I. Outlet Performance Breakdown table
     checkNewPage(50)
     addText('I. Outlet Performance Breakdown', 20, yPosition, { fontSize: 14, bold: true })
-    yPosition += 10
+    yPosition += 8
 
     // Table headers with light blue background and grid structure
     const colWidths = selectedReportType === 'Outlets' ? [15, 20, 30, 25, 30, 25, 25] : [20, 30, 25, 30, 25, 25, 20]
@@ -1070,27 +1070,39 @@ export default function Reports() {
     yPosition += rowHeight
 
     // Add power usage summary text right after the estimated cost row
+    // Ensure it stays on the first page by checking available space
     yPosition += 10
     
-    // Power usage summary text with Aptos font
-    doc.setFont('helvetica', 'normal') // Using helvetica as closest to Aptos in jsPDF
+    // Power usage summary text with helvetica font
+    doc.setFont('helvetica', 'normal')
     doc.setFontSize(12)
     doc.setTextColor('#000000')
     
-    // Create power usage summary text based on whether combined limit is used
-    let powerUsageText = ''
-    powerUsageText = `The outlet performance data shows a total power usage of ${totalMonthlyEnergy.toFixed(3)} W across all monitored appliances, operating for a combined ${totalHours.toFixed(3)} hours, which resulted in an estimated monthly cost of PHP ${totalMonthlyCost.toFixed(2)}. The analysis covers ${totalDevices} EcoPlug devices in ${officeDisplayName}.`
+    // Create power usage summary text
+    const powerUsageText = `The outlet performance data shows a total power usage of ${totalMonthlyEnergy.toFixed(3)} W across all monitored appliances, operating for a combined ${totalHours.toFixed(3)} hours, which resulted in an estimated monthly cost of PHP ${totalMonthlyCost.toFixed(2)}. The analysis covers ${totalDevices} EcoPlug devices in ${officeDisplayName}.`
     
     // Split text into lines to fit page width
     const powerUsageMaxWidth = pageWidth - 40 // 20px margin on each side
     const lines = doc.splitTextToSize(powerUsageText, powerUsageMaxWidth)
     const powerUsageLineHeight = 6
     const powerUsageHeight = lines.length * powerUsageLineHeight + 10
-    checkNewPage(powerUsageHeight)
+    
+    // Check if we need a new page, but try to keep it on first page if possible
+    // Only add new page if absolutely necessary (less than 30px remaining)
+    if (yPosition + powerUsageHeight > pageHeight - 20 - footerReservedSpace) {
+      // If we're too close to the bottom, check if we can reduce spacing
+      const availableSpace = pageHeight - 20 - footerReservedSpace - yPosition
+      if (availableSpace < 30) {
+        checkNewPage(powerUsageHeight)
+      }
+    }
     
     // Add each line
     lines.forEach((line: string) => {
-      checkNewPage(15)
+      // Check if we need new page for each line to ensure it stays on first page if possible
+      if (yPosition + powerUsageLineHeight > pageHeight - 20 - footerReservedSpace) {
+        checkNewPage(15)
+      }
       doc.text(line, 20, yPosition)
       yPosition += powerUsageLineHeight
     })
